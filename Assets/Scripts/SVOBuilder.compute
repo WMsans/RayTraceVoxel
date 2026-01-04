@@ -1,29 +1,29 @@
-#pragma kernel BuildTestScene
+#pragma kernel BuildBricks
 
-// --- Definitions matches C# ---
+// --- Structs ---
 struct SVONode
 {
-    uint topology;     // x: Mask (8) | ChildPtr (24)
-    uint payloadIndex; // y
+    uint topology; 
+    uint payloadIndex;
 };
 
 struct VoxelPayload
 {
-    float sdfValue;
+    uint brickDataIndex;
     uint materialId;
 };
 
 // --- Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
-RWStructuredBuffer<uint> _CounterBuffer; // Index 0: NodeCount, Index 1: PayloadCount
+RWStructuredBuffer<float> _BrickBuffer; // Raw SDF values
+RWStructuredBuffer<uint> _CounterBuffer; // 0: Nodes, 1: Payloads, 2: BrickFloats
 
 // --- Settings ---
-uint _GridSize;      // e.g., 64.0
-float _VoxelSize;     // e.g., 1.0
+uint _GridSize;
+static const uint BRICK_SIZE = 4;
 
-// --- Morton Encoding (Z-Order Curve) ---
-// Expands a 10-bit integer into 30 bits by inserting 2 zeros after each bit.
+// --- Morton Encoding ---
 uint ExpandBits(uint v)
 {
     v = (v * 0x00010001u) & 0xFF0000FFu;
@@ -33,71 +33,84 @@ uint ExpandBits(uint v)
     return v;
 }
 
-// Calculates a 30-bit Morton code for the given 3D coordinates.
 uint MortonEncode3(uint3 pos)
 {
     return ExpandBits(pos.x) | (ExpandBits(pos.y) << 1) | (ExpandBits(pos.z) << 2);
 }
 
-// --- Simple SDF (Sphere) ---
+// --- SDF Function ---
 float GetSDF(float3 pos)
 {
-    // Cast _GridSize to float for math operations here
     float sizeF = (float)_GridSize;
     float3 center = float3(sizeF / 2.0, sizeF / 2.0, sizeF / 2.0);
     float radius = sizeF / 3.0;
+    // Simple sphere
     return length(pos - center) - radius;
 }
 
 [numthreads(8, 8, 8)]
-void BuildTestScene(uint3 id : SV_DispatchThreadID)
+void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= _GridSize || id.y >= _GridSize || id.z >= _GridSize) return;
-
-    // 1. Calculate Position and SDF
-    float3 pos = float3(id.x, id.y, id.z);
-    float dist = GetSDF(pos);
-
-    // 2. Optimization: Only store voxels near the surface (Sparse)
-    // For a smooth surface, we need values slightly inside and outside (Band)
-    float bandWidth = 2.0; 
+    // ID corresponds to the coordinate of the BRICK (not the voxel)
+    // E.g., ID (0,0,0) is the first 4x4x4 block.
     
-    if (abs(dist) < bandWidth)
+    uint bricksAxis = _GridSize / BRICK_SIZE;
+    if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
+
+    // 1. Check if this brick contains surface (Conservative check)
+    // Sample center of the brick
+    float3 brickOrigin = id * BRICK_SIZE;
+    float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
+    
+    float dist = GetSDF(brickCenter);
+    
+    // Diagonal of a 4x4x4 cube is sqrt(16+16+16) approx 6.9
+    // Plus some padding for the band
+    float activeThreshold = (float)BRICK_SIZE * 0.866 + 2.0; 
+
+    if (abs(dist) < activeThreshold)
     {
-        // 3. Allocate Memory
-        uint nodeIndex;
-        uint payloadIndex;
-        
-        // Atomically increment counters to get new indices
+        // 2. Allocate
+        uint nodeIndex, payloadIndex, brickFloatPtr;
         InterlockedAdd(_CounterBuffer[0], 1, nodeIndex);
         InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
+        InterlockedAdd(_CounterBuffer[2], BRICK_SIZE * BRICK_SIZE * BRICK_SIZE, brickFloatPtr);
 
-        // Safety check for buffer overflow
+        // Safety
         uint maxNodes, stride;
         _NodeBuffer.GetDimensions(maxNodes, stride);
         if (nodeIndex >= maxNodes) return;
 
-        // 4. Create Node Data
-        // For this flat test, we simulate leaf nodes. 
-        // In a full SVO, you would calculate parent/child pointers here.
-        // For Phase 1, we just list active nodes mapped by Morton Code.
-        
-        uint mortonCode = MortonEncode3(id);
-        
-        // Encode Topology: Mask (Dummy 255) | ChildPointer (Morton Code as pseudo-ID)
-        // Note: In a real SVO, ChildPtr points to the next node index.
-        uint mask = 0xFF; 
-        uint packedTopology = (mask << 24) | (mortonCode & 0xFFFFFF);
+        // 3. Fill the Brick (64 loops - Unrolled or looped)
+        // We write the SDF values directly to the BrickBuffer
+        // Flattened Index: z * 16 + y * 4 + x
+        for (uint z = 0; z < BRICK_SIZE; z++)
+        {
+            for (uint y = 0; y < BRICK_SIZE; y++)
+            {
+                for (uint x = 0; x < BRICK_SIZE; x++)
+                {
+                    float3 voxelPos = brickOrigin + float3(x, y, z);
+                    float sdf = GetSDF(voxelPos);
+                    
+                    uint localIndex = (z * BRICK_SIZE * BRICK_SIZE) + (y * BRICK_SIZE) + x;
+                    _BrickBuffer[brickFloatPtr + localIndex] = sdf;
+                }
+            }
+        }
 
+        // 4. Create Node & Payload
+        // We use the Brick coordinate for Morton Code to sort them later
+        uint morton = MortonEncode3(id);
+        
         SVONode node;
-        node.topology = packedTopology;
+        node.topology = (0xFF << 24) | (morton & 0xFFFFFF); // Store Morton in ChildPtr slot for Linear Sort
         node.payloadIndex = payloadIndex;
 
         VoxelPayload payload;
-        payload.sdfValue = dist;
-        payload.materialId = 1; // Red material
+        payload.brickDataIndex = brickFloatPtr;
+        payload.materialId = 1;
 
-        // 5. Write to Buffers
         _NodeBuffer[nodeIndex] = node;
         _PayloadBuffer[payloadIndex] = payload;
     }

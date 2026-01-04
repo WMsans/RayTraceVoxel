@@ -9,24 +9,39 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     public class Settings
     {
         public ComputeShader raytraceShader;
+        public Shader compositeShader; 
         public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingOpaques;
     }
 
     public Settings settings = new Settings();
     private VoxelRaytracerPass _pass;
+    private Material _compositeMaterial;
 
     public override void Create()
     {
         _pass = new VoxelRaytracerPass(settings);
+        
+        // Fallback or setup composite material
+        if (settings.compositeShader != null)
+            _compositeMaterial = new Material(settings.compositeShader);
+        else
+            // Basic Blit shader that supports blending
+            _compositeMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/Universal Render Pipeline/Blit"));
     }
 
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
         if (settings.raytraceShader == null) return;
-        // Check SVO readiness
         if (SVOManager.Instance == null || !SVOManager.Instance.IsReady) return;
 
+        // Ensure we pass the material to the pass
+        _pass.Setup(_compositeMaterial);
         renderer.EnqueuePass(_pass);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        CoreUtils.Destroy(_compositeMaterial);
     }
 
     // --- The Render Pass ---
@@ -34,6 +49,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         private Settings _settings;
         private ComputeShader _shader;
+        private Material _compositeMaterial;
         
         // Shader Property IDs
         private static readonly int _ResultParams = Shader.PropertyToID("_Result");
@@ -41,18 +57,31 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
         private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
         
-        // SVO IDs
         private static readonly int _NodeBufferParams = Shader.PropertyToID("_NodeBuffer");
         private static readonly int _PayloadBufferParams = Shader.PropertyToID("_PayloadBuffer");
+        private static readonly int _BrickBufferParams = Shader.PropertyToID("_BrickBuffer"); // New
+
+        public VoxelRaytracerPass(Settings settings)
+        {
+            _settings = settings;
+            _shader = settings.raytraceShader;
+            renderPassEvent = settings.injectionPoint;
+        }
+
+        public void Setup(Material mat)
+        {
+            _compositeMaterial = mat;
+        }
 
         private class PassData
         {
             public ComputeShader computeShader;
             public int kernel;
             public TextureHandle sourceDepth;
-            public TextureHandle targetColor; // Temporary writable texture
+            public TextureHandle targetColor; 
             public GraphicsBuffer nodeBuffer;
             public GraphicsBuffer payloadBuffer;
+            public GraphicsBuffer brickBuffer; // New
             public Matrix4x4 cameraToWorld;
             public Matrix4x4 cameraInverseProjection;
             public int width;
@@ -62,98 +91,88 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private class BlitPassData
         {
             public TextureHandle source;
-        }
-
-        public VoxelRaytracerPass(Settings settings)
-        {
-            _settings = settings;
-            _shader = settings.raytraceShader;
-            renderPassEvent = settings.injectionPoint;
+            public Material material;
         }
 
         public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
         {
-            // 1. Get Resources
             var resourceData = frameData.Get<UniversalResourceData>();
             var cameraData = frameData.Get<UniversalCameraData>();
-
-            // 2. Define Texture Descriptors manually (Fixes CS0029 & CS0266)
             var cameraDesc = cameraData.cameraTargetDescriptor;
+
+            // 1. Setup Compute Target (Temporary RGBA)
             TextureDesc desc = new TextureDesc(cameraDesc.width, cameraDesc.height);
-            desc.colorFormat = cameraDesc.graphicsFormat;
-            desc.depthBufferBits = DepthBits.None; // We don't need depth in the result texture
-            desc.enableRandomWrite = true;         // Required for Compute Shader UAV
-            desc.msaaSamples = MSAASamples.None;   // Compute shaders don't support MSAA targets directly
+            desc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat;
+            desc.depthBufferBits = DepthBits.None;
+            desc.enableRandomWrite = true;
             desc.name = "VoxelRaytraceResult";
 
-            // 3. Setup the Compute Pass
+            TextureHandle tempResult = renderGraph.CreateTexture(desc);
+
+            // 2. Compute Pass
             using (var builder = renderGraph.AddComputePass("Voxel Raytracer Pass", out PassData data))
             {
-                // Setup Pass Data
                 data.computeShader = _shader;
                 data.kernel = _shader.FindKernel("CSMain");
                 data.nodeBuffer = SVOManager.Instance.NodeBuffer;
                 data.payloadBuffer = SVOManager.Instance.PayloadBuffer;
+                data.brickBuffer = SVOManager.Instance.BrickBuffer; // New
                 data.width = desc.width;
                 data.height = desc.height;
-                
-                // Camera Matrices
                 data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                 data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
-
-                // Dependencies
                 data.sourceDepth = resourceData.cameraDepthTexture;
-                builder.UseTexture(data.sourceDepth, AccessFlags.Read); 
-
-                // Output
-                TextureHandle tempResult = renderGraph.CreateTexture(desc);
                 data.targetColor = tempResult;
+
+                builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                 builder.UseTexture(data.targetColor, AccessFlags.Write);
 
-                // Execution Logic
                 builder.SetRenderFunc((PassData passData, ComputeGraphContext ctx) =>
                 {
                     var cs = passData.computeShader;
                     var kernel = passData.kernel;
                     var cmd = ctx.cmd;
 
-                    // Bind SVO Buffers
                     cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, passData.nodeBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, passData.payloadBuffer);
+                    cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer); // New
 
-                    // Bind Camera Data
                     cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, passData.cameraToWorld);
                     cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, passData.cameraInverseProjection);
 
-                    // Bind Textures
                     cmd.SetComputeTextureParam(cs, kernel, _CameraDepthTextureParams, passData.sourceDepth);
                     cmd.SetComputeTextureParam(cs, kernel, _ResultParams, passData.targetColor);
 
-                    // Dispatch
-                    int threadGroupsX = Mathf.CeilToInt(passData.width / 8.0f);
-                    int threadGroupsY = Mathf.CeilToInt(passData.height / 8.0f);
-                    cmd.DispatchCompute(cs, kernel, threadGroupsX, threadGroupsY, 1);
+                    int groupsX = Mathf.CeilToInt(passData.width / 8.0f);
+                    int groupsY = Mathf.CeilToInt(passData.height / 8.0f);
+                    cmd.DispatchCompute(cs, kernel, groupsX, groupsY, 1);
                 });
+            }
 
-                // 4. Blit Pass (Fixes CS0122 & CS1061)
-                // Manually add a Raster Pass to blit the compute result back to the camera
-                using (var blitBuilder = renderGraph.AddRasterRenderPass<BlitPassData>("Blit Voxel to Camera", out var blitData))
+            // 3. Composite Pass (Blend Over Opaque)
+            using (var builder = renderGraph.AddRasterRenderPass<BlitPassData>("Composite Voxels", out var blitData))
+            {
+                blitData.source = tempResult;
+                blitData.material = _compositeMaterial;
+
+                // Read the Voxel result
+                builder.UseTexture(blitData.source, AccessFlags.Read);
+                
+                // Write to Camera Color (Standard Forward Pipeline Integration)
+                // We use LoadAction.Load to keep existing opaque geometry
+                builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
+
+                builder.SetRenderFunc((BlitPassData bData, RasterGraphContext context) =>
                 {
-                    blitData.source = tempResult;
-                    
-                    // Read from the compute result
-                    blitBuilder.UseTexture(blitData.source, AccessFlags.Read);
-                    
-                    // Write to the active camera color
-                    blitBuilder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
+                    // Important: Set Blend Mode for Compositing
+                    // SrcAlpha (Voxel Alpha) + OneMinusSrcAlpha (Background)
+                    bData.material.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                    bData.material.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                    bData.material.SetInt("_ZWrite", 0);
 
-                    blitBuilder.SetRenderFunc((BlitPassData bData, RasterGraphContext context) =>
-                    {
-                        // Blitter.BlitTexture draws a full-screen quad using the source texture
-                        // onto the currently bound RenderTarget (set by SetRenderAttachment)
-                        Blitter.BlitTexture(context.cmd, bData.source, new Vector4(1, 1, 0, 0), 0, false);
-                    });
-                }
+                    // Draw full screen quad blending 'source' over the current attachment
+                    Blitter.BlitTexture(context.cmd, bData.source, new Vector4(1, 1, 0, 0), bData.material, 0);
+                });
             }
         }
     }
