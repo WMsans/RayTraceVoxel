@@ -1,0 +1,104 @@
+#pragma kernel BuildTestScene
+
+// --- Definitions matches C# ---
+struct SVONode
+{
+    uint topology;     // x: Mask (8) | ChildPtr (24)
+    uint payloadIndex; // y
+};
+
+struct VoxelPayload
+{
+    float sdfValue;
+    uint materialId;
+};
+
+// --- Buffers ---
+RWStructuredBuffer<SVONode> _NodeBuffer;
+RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
+RWStructuredBuffer<uint> _CounterBuffer; // Index 0: NodeCount, Index 1: PayloadCount
+
+// --- Settings ---
+uint _GridSize;      // e.g., 64.0
+float _VoxelSize;     // e.g., 1.0
+
+// --- Morton Encoding (Z-Order Curve) ---
+// Expands a 10-bit integer into 30 bits by inserting 2 zeros after each bit.
+uint ExpandBits(uint v)
+{
+    v = (v * 0x00010001u) & 0xFF0000FFu;
+    v = (v * 0x00000101u) & 0x0F00F00Fu;
+    v = (v * 0x00000011u) & 0xC30C30C3u;
+    v = (v * 0x00000005u) & 0x49249249u;
+    return v;
+}
+
+// Calculates a 30-bit Morton code for the given 3D coordinates.
+uint MortonEncode3(uint3 pos)
+{
+    return ExpandBits(pos.x) | (ExpandBits(pos.y) << 1) | (ExpandBits(pos.z) << 2);
+}
+
+// --- Simple SDF (Sphere) ---
+float GetSDF(float3 pos)
+{
+    // Cast _GridSize to float for math operations here
+    float sizeF = (float)_GridSize;
+    float3 center = float3(sizeF / 2.0, sizeF / 2.0, sizeF / 2.0);
+    float radius = sizeF / 3.0;
+    return length(pos - center) - radius;
+}
+
+[numthreads(8, 8, 8)]
+void BuildTestScene(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _GridSize || id.y >= _GridSize || id.z >= _GridSize) return;
+
+    // 1. Calculate Position and SDF
+    float3 pos = float3(id.x, id.y, id.z);
+    float dist = GetSDF(pos);
+
+    // 2. Optimization: Only store voxels near the surface (Sparse)
+    // For a smooth surface, we need values slightly inside and outside (Band)
+    float bandWidth = 2.0; 
+    
+    if (abs(dist) < bandWidth)
+    {
+        // 3. Allocate Memory
+        uint nodeIndex;
+        uint payloadIndex;
+        
+        // Atomically increment counters to get new indices
+        InterlockedAdd(_CounterBuffer[0], 1, nodeIndex);
+        InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
+
+        // Safety check for buffer overflow
+        uint maxNodes, stride;
+        _NodeBuffer.GetDimensions(maxNodes, stride);
+        if (nodeIndex >= maxNodes) return;
+
+        // 4. Create Node Data
+        // For this flat test, we simulate leaf nodes. 
+        // In a full SVO, you would calculate parent/child pointers here.
+        // For Phase 1, we just list active nodes mapped by Morton Code.
+        
+        uint mortonCode = MortonEncode3(id);
+        
+        // Encode Topology: Mask (Dummy 255) | ChildPointer (Morton Code as pseudo-ID)
+        // Note: In a real SVO, ChildPtr points to the next node index.
+        uint mask = 0xFF; 
+        uint packedTopology = (mask << 24) | (mortonCode & 0xFFFFFF);
+
+        SVONode node;
+        node.topology = packedTopology;
+        node.payloadIndex = payloadIndex;
+
+        VoxelPayload payload;
+        payload.sdfValue = dist;
+        payload.materialId = 1; // Red material
+
+        // 5. Write to Buffers
+        _NodeBuffer[nodeIndex] = node;
+        _PayloadBuffer[payloadIndex] = payload;
+    }
+}

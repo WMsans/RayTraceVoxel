@@ -1,0 +1,68 @@
+#pragma kernel CSMain
+
+// --- Definitions (Must match C#) ---
+struct SVONode
+{
+    uint topology; 
+    uint payloadIndex;
+};
+
+struct VoxelPayload
+{
+    float sdfValue;
+    uint materialId;
+};
+
+// --- Inputs ---
+StructuredBuffer<SVONode> _NodeBuffer;
+StructuredBuffer<VoxelPayload> _PayloadBuffer;
+
+// URP/Unity Standard Inputs
+Texture2D<float> _CameraDepthTexture; // The Depth Buffer
+RWTexture2D<float4> _Result;          // The Output Color
+SamplerState sampler_CameraDepthTexture;
+
+// Camera Matrices for Ray Reconstruction
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+
+// Lighting (Basic setup for PBR injection later)
+float4 _MainLightPosition;
+float4 _MainLightColor;
+
+// --- Helper: Depth Sampling ---
+float GetSceneDepth(uint2 uv)
+{
+    // Note: In Unity 6 / Compute, direct load is often safer than SampleLevel for exact pixels
+    return _CameraDepthTexture[uv]; 
+}
+
+// --- Main Kernel ---
+[numthreads(8, 8, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    uint width, height;
+    _Result.GetDimensions(width, height);
+    if (id.x >= width || id.y >= height) return;
+
+    // 1. Generate Ray from Camera
+    // Convert Pixel ID to UV [-1, 1]
+    float2 uv = (id.xy / float2(width, height)) * 2.0 - 1.0;
+    
+    // Unproject to get Ray Direction (Camera Space -> World Space)
+    // (Standard ray generation logic will go here)
+
+    // 2. Fetch Existing Depth (Rasterized Opaques)
+    float rawDepth = GetSceneDepth(id.xy);
+    // Convert rawDepth to LinearEyeDepth if needed for comparison
+
+    // 3. SVO Traversal (Placeholder)
+    // TODO: March ray. If (t_hit < t_scene_depth), we render the voxel.
+    
+    // 4. Output (Debugging Setup)
+    // Just outputting the depth for now to prove we have the buffer
+    // _Result[id.xy] = float4(rawDepth, rawDepth, rawDepth, 1.0);
+    
+    // Default transparent (pass-through)
+    _Result[id.xy] = float4(0, 0, 0, 0); 
+}
