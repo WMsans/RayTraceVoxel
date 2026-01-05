@@ -10,7 +10,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         public ComputeShader raytraceShader;
         public Shader compositeShader; 
-        public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingOpaques;
+        public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingTransparents;
     }
 
     public Settings settings = new Settings();

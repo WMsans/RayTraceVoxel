@@ -178,7 +178,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float cosTheta = dot(rayDir, forward);
     
     // Protect against division by zero (though cosTheta should be positive for view rays)
-    float tScene = linearDepth / max(cosTheta, 0.0001);
+    // Use abs() to handle potential Forward vector direction mismatches (RH vs LH coordinate systems)
+    float tScene = linearDepth / max(abs(cosTheta), 0.0001);
     
     // 4. Update tEnd
     // If tScene is closer than the box exit, we stop there.
