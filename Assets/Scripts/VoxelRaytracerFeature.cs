@@ -337,7 +337,12 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                     bData.material.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
                     bData.material.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
                     bData.material.SetInt("_ZWrite", 1);
-                    bData.material.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+                    
+                    // Handle ZTest based on Reverse Z (standard in URP)
+                    // If Reverse Z (Near=1, Far=0), we want to draw if VoxelDepth >= BufferDepth (Closer or Equal) -> GreaterEqual
+                    // If Standard Z (Near=0, Far=1), we want to draw if VoxelDepth <= BufferDepth (Closer or Equal) -> LessEqual
+                    var compareFunc = SystemInfo.usesReversedZBuffer ? UnityEngine.Rendering.CompareFunction.GreaterEqual : UnityEngine.Rendering.CompareFunction.LessEqual;
+                    bData.material.SetInt("_ZTest", (int)compareFunc);
 
                     bData.material.SetTexture(_VoxelDepthTextureParams, bData.depthSource);
 

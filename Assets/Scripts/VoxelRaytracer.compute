@@ -24,6 +24,9 @@ SamplerState sampler_MainLightShadowmapTexture;
 float4x4 _MainLightWorldToShadow[4];
 float4 _MainLightShadowParams; // x: cascade count
 
+// Sampler for Depth Texture
+SamplerState sampler_CameraDepthTexture;
+
 struct VoxelLight
 {
     float4 position;
@@ -166,8 +169,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float tEnd = tBox.y;
 
     // Depth Buffer Culling
-    // 1. Sample Depth (Raw)
-    float rawDepth = _CameraDepthTexture.Load(int3(id.xy, 0));
+    // 1. Sample Depth (Using UV to handle resolution/flip issues)
+    float2 uv01 = (id.xy + 0.5) / float2(width, height);
+    float rawDepth = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, uv01, 0);
     
     // 2. Linearize Depth (View Space Z)
     // LinearEyeDepth(z) = 1.0 / (_ZBufferParams.z * z + _ZBufferParams.w)
