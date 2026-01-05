@@ -22,8 +22,8 @@ public class VoxelDefinitionManager : MonoBehaviour
     public Texture2DArray normalTextureArray;
     public Texture2DArray maskTextureArray; // Packed: G=AO, A=Smoothness
     
-    private ComputeBuffer _voxelMaterialBuffer;
-    public ComputeBuffer VoxelMaterialBuffer => _voxelMaterialBuffer;
+    private GraphicsBuffer _voxelMaterialBuffer;
+    public GraphicsBuffer VoxelMaterialBuffer => _voxelMaterialBuffer;
 
     private void Awake()
     {
@@ -126,7 +126,7 @@ public class VoxelDefinitionManager : MonoBehaviour
         maskTextureArray = CreateArray(maskPixels, true); // Linear for masks
 
         // --- 4. Upload Buffer ---
-        _voxelMaterialBuffer = new ComputeBuffer(gpuData.Length, Marshal.SizeOf<VoxelTypeGPU>());
+        _voxelMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, gpuData.Length, Marshal.SizeOf<VoxelTypeGPU>());
         _voxelMaterialBuffer.SetData(gpuData);
 
         Debug.Log($"VoxelDefinitionManager: Initialized. {definitions.Count} Definitions. AlbedoArray: {albedoPixels.Count}, NormalArray: {normalPixels.Count}, MaskArray: {maskPixels.Count}");

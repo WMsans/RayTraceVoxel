@@ -3,10 +3,40 @@
 struct SVONode { uint topology; uint payloadIndex; };
 struct VoxelPayload { uint brickDataIndex; uint materialId; };
 
+// --- PALETTE DATA STRUCTURES ---
+struct VoxelTypeGPU
+{
+    uint sideAlbedoIndex;
+    uint sideNormalIndex;
+    uint sideMaskIndex;     // R=Metallic(unused), G=AO, B=Smoothness
+    
+    uint topAlbedoIndex;
+    uint topNormalIndex;
+    uint topMaskIndex;
+    
+    float sideMetallic;
+    float topMetallic;
+    
+    uint renderType;
+};
+
+// Buffers
 StructuredBuffer<SVONode> _NodeBuffer;
 StructuredBuffer<VoxelPayload> _PayloadBuffer;
 StructuredBuffer<float> _BrickBuffer;
+StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer; // <--- The Property Buffer
+
+// Textures
 Texture2D<float> _CameraDepthTexture;
+
+// Arrays
+Texture2DArray _AlbedoTextureArray;
+Texture2DArray _NormalTextureArray;
+Texture2DArray _MaskTextureArray;
+
+SamplerState sampler_AlbedoTextureArray; // Linear Wrap is standard
+// or use inline samplers like sampler_LinearRepeat
+
 RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
 
@@ -22,17 +52,8 @@ float4 _MainLightColor;
 Texture2D<float> _MainLightShadowmapTexture;
 SamplerState sampler_MainLightShadowmapTexture;
 float4x4 _MainLightWorldToShadow[4];
-float4 _MainLightShadowParams; // x: cascade count
 
-// Sampler for Depth Texture
-SamplerState sampler_CameraDepthTexture;
-
-struct VoxelLight
-{
-    float4 position;
-    float4 color;
-    float4 attenuation;
-};
+struct VoxelLight { float4 position; float4 color; float4 attenuation; };
 StructuredBuffer<VoxelLight> _AdditionalLights;
 int _AdditionalLightCount;
 
@@ -40,7 +61,6 @@ int _AdditionalLightCount;
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
-#define LARGE_DIST 10000.0
 #define PI 3.14159265359
 
 float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax)
@@ -290,7 +310,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                     
                     if (dist < EPSILON)
                     {
-                        // HIT!
                         surface = true;
                         hitWorldPos = p;
                         
