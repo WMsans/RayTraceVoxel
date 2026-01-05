@@ -12,6 +12,7 @@ RWTexture2D<float4> _Result;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 float _GridSize;
+float4 _ZBufferParams;
 
 // --- LIGHTING UNIFORMS ---
 float4 _MainLightPosition;
@@ -161,6 +162,27 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float2 tBox = IntersectBox(rayOrigin, rayDir, volMin, volMax);
     float tCurrent = max(0.0, tBox.x);
     float tEnd = tBox.y;
+
+    // Depth Buffer Culling
+    // 1. Sample Depth (Raw)
+    float rawDepth = _CameraDepthTexture.Load(int3(id.xy, 0));
+    
+    // 2. Linearize Depth (View Space Z)
+    // LinearEyeDepth(z) = 1.0 / (_ZBufferParams.z * z + _ZBufferParams.w)
+    float linearDepth = 1.0 / (_ZBufferParams.z * rawDepth + _ZBufferParams.w);
+    
+    // 3. Convert to Ray Distance (t)
+    // We need the cosine of the angle between ray and camera forward vector.
+    // _CameraToWorld transforms View Space (where Forward is +Z) to World Space.
+    float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0,0,1)));
+    float cosTheta = dot(rayDir, forward);
+    
+    // Protect against division by zero (though cosTheta should be positive for view rays)
+    float tScene = linearDepth / max(cosTheta, 0.0001);
+    
+    // 4. Update tEnd
+    // If tScene is closer than the box exit, we stop there.
+    tEnd = min(tEnd, tScene);
 
     if (tCurrent >= tEnd)
     {

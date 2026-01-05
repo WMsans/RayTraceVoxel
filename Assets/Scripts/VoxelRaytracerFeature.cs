@@ -21,7 +21,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         // Force injection point to ensure we render after Skybox/Transparents
         // This prevents the Skybox from overdrawing our voxels (since we don't write depth)
-        settings.injectionPoint = RenderPassEvent.AfterRenderingTransparents;
+        // settings.injectionPoint = RenderPassEvent.AfterRenderingSkybox;
 
         _pass = new VoxelRaytracerPass(settings);
         
@@ -72,6 +72,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
         private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
         private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
+        private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
         private static readonly int _GridSizeParams = Shader.PropertyToID("_GridSize"); 
         
         // Lighting Params
@@ -114,6 +115,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             public GraphicsBuffer brickBuffer;
             public Matrix4x4 cameraToWorld;
             public Matrix4x4 cameraInverseProjection;
+            public Vector4 zBufferParams;
             public int width;
             public int height;
             public float gridSize;
@@ -173,6 +175,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 data.height = desc.height;
                 data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                 data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
+                data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
                 data.sourceDepth = resourceData.cameraDepthTexture;
                 data.targetColor = tempResult;
                 data.gridSize = (float)SVOManager.Instance.resolution;
@@ -265,6 +268,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
 
                     cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, passData.cameraToWorld);
                     cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, passData.cameraInverseProjection);
+                    cmd.SetComputeVectorParam(cs, _ZBufferParamsID, passData.zBufferParams);
                     cmd.SetComputeFloatParam(cs, _GridSizeParams, passData.gridSize);
 
                     cmd.SetComputeTextureParam(cs, kernel, _CameraDepthTextureParams, passData.sourceDepth);
