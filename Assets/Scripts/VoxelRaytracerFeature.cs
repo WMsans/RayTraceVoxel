@@ -315,15 +315,73 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         // Helper for light extraction
         private void SetupLights(UniversalRenderingData renderingData, UniversalLightData lightData, out Vector4 mainPos, out Vector4 mainCol, out int addCount)
         {
-             // (Logic identical to previous file content, omitted for brevity to focus on Palette)
-             mainPos = new Vector4(0,1,0,0); mainCol = Color.black; addCount = 0;
-             // ... [Logic to fill _lightDataArray] ...
-             if (_lightBuffer == null || _lightBuffer.count < _lightDataArray.Length)
-             {
-                 _lightBuffer?.Dispose();
-                 _lightBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _lightDataArray.Length, System.Runtime.InteropServices.Marshal.SizeOf<VoxelLight>());
-             }
-             _lightBuffer.SetData(_lightDataArray, 0, 0, 64);
+            mainPos = new Vector4(0, 1, 0, 0);
+            mainCol = Color.white; // Default to white, not black
+            addCount = 0;
+
+            var lights = lightData.visibleLights;
+            int mainLightIndex = lightData.mainLightIndex;
+
+            if (mainLightIndex != -1 && mainLightIndex < lights.Length)
+            {
+                VisibleLight mainLight = lights[mainLightIndex];
+                if (mainLight.lightType == LightType.Directional)
+                {
+                    // Directional Light: Position is Direction (w=0)
+                    // VisibleLight.localToWorldMatrix.GetColumn(2) is Forward (Z). 
+                    // Light direction is usually -Forward.
+                    Vector4 dir = -mainLight.localToWorldMatrix.GetColumn(2);
+                    dir.w = 0;
+                    mainPos = dir;
+                    mainCol = mainLight.finalColor;
+                }
+            }
+
+            // Collect Additional Lights
+            int count = 0;
+            for (int i = 0; i < lights.Length; i++)
+            {
+                if (i == mainLightIndex) continue;
+                if (count >= _lightDataArray.Length) break;
+
+                VisibleLight vl = lights[i];
+                VoxelLight voxelLight = new VoxelLight();
+                
+                // Color
+                voxelLight.color = vl.finalColor;
+                
+                // Position / Direction
+                if (vl.lightType == LightType.Directional)
+                {
+                    Vector4 dir = -vl.localToWorldMatrix.GetColumn(2);
+                    dir.w = 0;
+                    voxelLight.position = dir;
+                    voxelLight.attenuation = new Vector4(1, 0, 0, 0); // No attenuation for directional
+                }
+                else
+                {
+                    // Point/Spot
+                    Vector4 pos = vl.localToWorldMatrix.GetColumn(3);
+                    pos.w = 1;
+                    voxelLight.position = pos;
+                    
+                    // Attenuation
+                    // Range in x, Falloff in y
+                    float range = vl.range;
+                    voxelLight.attenuation = new Vector4(range, 1.0f / (range * range), 0, 0);
+                }
+                
+                _lightDataArray[count] = voxelLight;
+                count++;
+            }
+            addCount = count;
+            
+            if (_lightBuffer == null || _lightBuffer.count < _lightDataArray.Length)
+            {
+                _lightBuffer?.Dispose();
+                _lightBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _lightDataArray.Length, System.Runtime.InteropServices.Marshal.SizeOf<VoxelLight>());
+            }
+            _lightBuffer.SetData(_lightDataArray, 0, 0, 64);
         }
         
         private class BlitPassData { public TextureHandle source; public TextureHandle depthSource; public Material material; }

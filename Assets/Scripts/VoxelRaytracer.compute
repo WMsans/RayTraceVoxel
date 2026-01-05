@@ -6,7 +6,7 @@ struct VoxelPayload { uint brickDataIndex; uint materialId; };
 // --- PALETTE DATA STRUCTURES ---
 struct VoxelTypeGPU
 {
-    uint sideAlbedoIndex;
+    uint sideAlbedoIndex; 
     uint sideNormalIndex;
     uint sideMaskIndex;     // R=Metallic(unused), G=AO, B=Smoothness
     
@@ -144,7 +144,7 @@ float SampleShadow(float3 worldPos)
         if (mapDepth < shadowCoord.z) return 0.0; // Shadow
     #endif
     
-    // Bias is critical.
+    // Bias is critical.                                                                                        
     float bias = 0.005;
     if (mapDepth < shadowCoord.z - bias) return 0.2; // Shadowed (ambient)
     
