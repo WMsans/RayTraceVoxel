@@ -12,11 +12,30 @@ RWTexture2D<float4> _Result;
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 float _GridSize;
+
+// --- LIGHTING UNIFORMS ---
+float4 _MainLightPosition;
+float4 _MainLightColor;
+Texture2D<float> _MainLightShadowmapTexture;
+SamplerState sampler_MainLightShadowmapTexture;
+float4x4 _MainLightWorldToShadow[4];
+float4 _MainLightShadowParams; // x: cascade count
+
+struct VoxelLight
+{
+    float4 position;
+    float4 color;
+    float4 attenuation;
+};
+StructuredBuffer<VoxelLight> _AdditionalLights;
+int _AdditionalLightCount;
+
 #define BRICK_SIZE 4
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
 #define LARGE_DIST 10000.0
+#define PI 3.14159265359
 
 float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax)
 {
@@ -29,28 +48,12 @@ float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMa
     return float2(tNear, tFar);
 }
 
-// --- FIXED SAMPLE FUNCTION (Extrapolation) ---
 float SampleBrick(uint brickPtr, float3 localPos)
 {
-    // 1. Remove the 0.75 scaling. Use raw coordinates (0..4).
     float3 p = localPos;
-
-    // 2. Identify the base voxel index.
-    // We have data at indices 0, 1, 2, 3.
-    // We MUST clamp the base index 'i' to 2.
-    // This forces us to always interpolate using the pair [2, 3] 
-    // whenever we are in the "gap" (3.0 to 4.0).
     int3 i = clamp((int3)floor(p), 0, 2);
-
-    // 3. Calculate the weight 'f' relative to that clamped index.
-    // If localPos is 3.5:
-    //    i = 2
-    //    f = 3.5 - 2.0 = 1.5
-    // The lerp function handles values > 1.0 perfectly by extrapolating
-    // along the slope defined by indices 2 and 3.
     float3 f = p - (float3)i;
     
-    // 4. Standard Trilinear Lookup
     uint baseIdx = brickPtr + i.z * 16 + i.y * 4 + i.x;
 
     float c000 = _BrickBuffer[baseIdx];
@@ -71,12 +74,70 @@ float SampleBrick(uint brickPtr, float3 localPos)
 
 float3 CalculateNormal(uint brickPtr, float3 localPos)
 {
-    // Use a small epsilon for sharper details
-    float d = 0.01;
+    float d = 0.05; // Slightly larger epsilon for smoother normals
     float dx = SampleBrick(brickPtr, localPos + float3(d,0,0)) - SampleBrick(brickPtr, localPos - float3(d,0,0));
     float dy = SampleBrick(brickPtr, localPos + float3(0,d,0)) - SampleBrick(brickPtr, localPos - float3(0,d,0));
     float dz = SampleBrick(brickPtr, localPos + float3(0,0,d)) - SampleBrick(brickPtr, localPos - float3(0,0,d));
     return normalize(float3(dx, dy, dz));
+}
+
+float SampleShadow(float3 worldPos)
+{
+    // Simple Cascade 0 selection for now. 
+    // Real implementation would calculate view depth and select index.
+    float4 shadowCoord = mul(_MainLightWorldToShadow[0], float4(worldPos, 1.0));
+    
+    if (shadowCoord.w == 0) return 1.0;
+    
+    shadowCoord.xyz /= shadowCoord.w;
+    
+    // Check bounds
+    if (any(shadowCoord.xyz < 0.0) || any(shadowCoord.xyz > 1.0)) return 1.0;
+
+    // Sample Shadow Map (Comparison or Raw)
+    // _MainLightShadowmapTexture is Texture2D<float> (Depth)
+    // We compare our depth (shadowCoord.z) vs map depth.
+    // If map depth < our depth, we are in shadow.
+    // Note: URP Shadow map depends on platform (reverse Z etc).
+    // Assuming standard for now.
+    
+    float mapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_MainLightShadowmapTexture, shadowCoord.xy, 0);
+    
+    #if defined(UNITY_REVERSED_Z)
+        // Reverse Z: Near is 1, Far is 0.
+        // Shadow (closer to light) > Fragment => Occluded? 
+        // If mapDepth > shadowCoord.z (closer to light), then lit?
+        // Wait, Map Depth is distance from light?
+        // Standard Shadow Map: Depth is distance from light.
+        // If mapDepth < shadowCoord.z (map is closer), then we are occluded.
+        // BUT Unity handles Reverse Z in the matrix usually?
+        // Let's assume standard logic: 
+        if (mapDepth < shadowCoord.z) return 0.0; // Shadow
+    #else
+        if (mapDepth < shadowCoord.z) return 0.0; // Shadow
+    #endif
+    
+    // Bias is critical.
+    float bias = 0.005;
+    if (mapDepth < shadowCoord.z - bias) return 0.2; // Shadowed (ambient)
+    
+    return 1.0;
+}
+
+float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float shadow)
+{
+    float3 H = normalize(V + L);
+    float NdotL = max(0.0, dot(N, L));
+    float NdotH = max(0.0, dot(N, H));
+    
+    // Simple Blinn-Phong Specular
+    float specPower = 32.0;
+    float spec = pow(NdotH, specPower);
+    
+    float3 diffuse = albedo / PI;
+    float3 specular = float3(0.04, 0.04, 0.04) * spec; // Dielectric F0
+    
+    return (diffuse + specular) * lightColor * NdotL * shadow;
 }
 
 [numthreads(8, 8, 1)]
@@ -92,8 +153,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     rayDir = normalize(rayDir);
     float3 rayOrigin = _CameraToWorld._m03_m13_m23;
     
-    float3 skyColor = lerp(float3(0.1, 0.3, 0.6), float3(0.6, 0.8, 1.0), rayDir.y * 0.5 + 0.5);
-
     // Render Settings
     float gridSz = 64.0;
     float3 volMin = float3(0, 0, 0);
@@ -110,7 +169,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     }
 
     int iter = 0;
-    float3 finalColor = float3(0.05, 0.2, 0.05); 
+    float3 finalColor = float3(0,0,0); 
     float finalAlpha = 0;
 
     while (tCurrent < tEnd && iter < MAX_ITERATIONS)
@@ -201,11 +260,59 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                     
                     if (dist < EPSILON)
                     {
-                        float3 normal = CalculateNormal(brickPtr, localPos);
-                        float ndotl = max(0.2, dot(normal, normalize(float3(1, 2, -1))));
-                        finalColor = float3(0.8, 0.9, 1.0) * ndotl;
-                        finalAlpha = 1.0;
+                        // HIT!
                         surface = true;
+                        
+                        // 1. Calculate Properties
+                        float3 worldPos = p; // Approx
+                        float3 normal = CalculateNormal(brickPtr, localPos);
+                        float3 albedo = float3(0.8, 0.9, 1.0); // Placeholder
+                        
+                        float3 V = normalize(rayOrigin - worldPos);
+                        
+                        // 2. Main Light Calculation
+                        float3 L;
+                        if (_MainLightPosition.w == 0)
+                            L = normalize(_MainLightPosition.xyz);
+                        else
+                            L = normalize(_MainLightPosition.xyz - worldPos);
+                            
+                        float shadow = SampleShadow(worldPos);
+                        
+                        float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow);
+                        float3 ambient = float3(0.1, 0.1, 0.1) * albedo;
+                        
+                        finalColor = directLight + ambient;
+                        
+                        // 3. Additional Lights
+                        for (int i = 0; i < _AdditionalLightCount; i++)
+                        {
+                            VoxelLight light = _AdditionalLights[i];
+                            float3 L_add;
+                            float atten = 1.0;
+                            
+                            if (light.position.w == 0) // Directional
+                            {
+                                L_add = normalize(light.position.xyz);
+                            }
+                            else // Point/Spot
+                            {
+                                float3 toLight = light.position.xyz - worldPos;
+                                float d = length(toLight);
+                                L_add = normalize(toLight);
+                                
+                                float range = light.attenuation.x;
+                                float dSqr = d * d;
+                                // Simple Quadratic Falloff
+                                atten = 1.0 / (1.0 + dSqr * light.attenuation.y);
+                                float window = max(0, 1 - pow(d/range, 4));
+                                atten *= window * window;
+                            }
+                            
+                            finalColor += LightingPBR(albedo, normal, V, L_add, light.color.rgb, 1.0) * atten;
+                        }
+                        
+                        finalAlpha = 1.0;
                         break;
                     }
                     tMarch += max(dist, 0.05);
