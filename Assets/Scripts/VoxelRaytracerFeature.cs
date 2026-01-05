@@ -32,7 +32,18 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
     {
         if (settings.raytraceShader == null) return;
-        if (SVOManager.Instance == null || !SVOManager.Instance.IsReady) return;
+        
+        if (SVOManager.Instance == null)
+        {
+            // Debug.LogWarning("VoxelRaytracer: SVOManager instance is missing.");
+            return;
+        }
+
+        if (!SVOManager.Instance.IsReady)
+        {
+            // Debug.LogWarning("VoxelRaytracer: SVOManager is not ready.");
+            return;
+        }
 
         // Ensure we pass the material to the pass
         _pass.Setup(_compositeMaterial);
@@ -56,10 +67,11 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
         private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
         private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
+        private static readonly int _GridSizeParams = Shader.PropertyToID("_GridSize"); // New
         
         private static readonly int _NodeBufferParams = Shader.PropertyToID("_NodeBuffer");
         private static readonly int _PayloadBufferParams = Shader.PropertyToID("_PayloadBuffer");
-        private static readonly int _BrickBufferParams = Shader.PropertyToID("_BrickBuffer"); // New
+        private static readonly int _BrickBufferParams = Shader.PropertyToID("_BrickBuffer"); 
 
         public VoxelRaytracerPass(Settings settings)
         {
@@ -81,11 +93,12 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             public TextureHandle targetColor; 
             public GraphicsBuffer nodeBuffer;
             public GraphicsBuffer payloadBuffer;
-            public GraphicsBuffer brickBuffer; // New
+            public GraphicsBuffer brickBuffer;
             public Matrix4x4 cameraToWorld;
             public Matrix4x4 cameraInverseProjection;
             public int width;
             public int height;
+            public float gridSize; // New
         }
 
         private class BlitPassData
@@ -116,13 +129,14 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 data.kernel = _shader.FindKernel("CSMain");
                 data.nodeBuffer = SVOManager.Instance.NodeBuffer;
                 data.payloadBuffer = SVOManager.Instance.PayloadBuffer;
-                data.brickBuffer = SVOManager.Instance.BrickBuffer; // New
+                data.brickBuffer = SVOManager.Instance.BrickBuffer;
                 data.width = desc.width;
                 data.height = desc.height;
                 data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                 data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
                 data.sourceDepth = resourceData.cameraDepthTexture;
                 data.targetColor = tempResult;
+                data.gridSize = (float)SVOManager.Instance.resolution; // New
 
                 builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                 builder.UseTexture(data.targetColor, AccessFlags.Write);
@@ -135,10 +149,11 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
 
                     cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, passData.nodeBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, passData.payloadBuffer);
-                    cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer); // New
+                    cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer);
 
                     cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, passData.cameraToWorld);
                     cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, passData.cameraInverseProjection);
+                    cmd.SetComputeFloatParam(cs, _GridSizeParams, passData.gridSize); // New
 
                     cmd.SetComputeTextureParam(cs, kernel, _CameraDepthTextureParams, passData.sourceDepth);
                     cmd.SetComputeTextureParam(cs, kernel, _ResultParams, passData.targetColor);

@@ -206,7 +206,7 @@ Transform:
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 1, z: -10}
+  m_LocalPosition: {x: 32, y: 32, z: -40}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -464,7 +464,9 @@ MonoBehaviour:
   svoCompute: {fileID: 7200000, guid: 2857a9a78428a720d8ef270c2fdec704, type: 3}
   resolution: 64
   maxNodes: 100000
+  maxBricks: 50000
   nodeCount: 0
+  brickCount: 0
 --- !u!4 &1934085457
 Transform:
   m_ObjectHideFlags: 0

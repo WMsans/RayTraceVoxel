@@ -15,8 +15,8 @@ MonoBehaviour:
   m_Active: 1
   settings:
     raytraceShader: {fileID: 7200000, guid: 3df9fb35cd1f6e6cb98239204f808a24, type: 3}
-    compositeShader: {fileID: 0}
-    injectionPoint: 300
+    compositeShader: {fileID: 4800000, guid: 2991eb697ecd14c98a06d3f35413a176, type: 3}
+    injectionPoint: 500
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0

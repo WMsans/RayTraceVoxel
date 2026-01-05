@@ -1,40 +1,92 @@
 #pragma kernel CSMain
 
-// --- Definitions (Must match C#) ---
+// --- Structs ---
 struct SVONode
 {
-    uint topology; 
-    uint payloadIndex;
+    uint topology; // x: [ChildrenMask (8 bits) | ChildPointer (24 bits)]
+    uint payloadIndex; // Points to Payload if leaf (or empty if 0)
 };
 
 struct VoxelPayload
 {
-    float sdfValue;
+    uint brickDataIndex; // Pointer to start of float array in BrickBuffer
     uint materialId;
 };
 
 // --- Inputs ---
 StructuredBuffer<SVONode> _NodeBuffer;
 StructuredBuffer<VoxelPayload> _PayloadBuffer;
+StructuredBuffer<float> _BrickBuffer;
 
-// URP/Unity Standard Inputs
-Texture2D<float> _CameraDepthTexture; // The Depth Buffer
-RWTexture2D<float4> _Result;          // The Output Color
+Texture2D<float> _CameraDepthTexture;
+RWTexture2D<float4> _Result;
 SamplerState sampler_CameraDepthTexture;
 
-// Camera Matrices for Ray Reconstruction
+// Camera Matrices
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
 
-// Lighting (Basic setup for PBR injection later)
-float4 _MainLightPosition;
-float4 _MainLightColor;
+// Settings
+float _GridSize;
 
-// --- Helper: Depth Sampling ---
-float GetSceneDepth(uint2 uv)
+// Constants
+#define BRICK_SIZE 4
+#define MAX_ITERATIONS 128
+#define MAX_MARCH_STEPS 32
+#define EPSILON 0.001
+#define LARGE_DIST 10000.0
+
+// --- Helper Functions ---
+
+// Ray-Box Intersection
+float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax)
 {
-    // Note: In Unity 6 / Compute, direct load is often safer than SampleLevel for exact pixels
-    return _CameraDepthTexture[uv]; 
+    float3 tMin = (boxMin - rayOrigin) / rayDir;
+    float3 tMax = (boxMax - rayOrigin) / rayDir;
+    float3 t1 = min(tMin, tMax);
+    float3 t2 = max(tMin, tMax);
+    float tNear = max(max(t1.x, t1.y), t1.z);
+    float tFar = min(min(t2.x, t2.y), t2.z);
+    return float2(tNear, tFar);
+}
+
+// Trilinear Interpolation from Brick Buffer
+float SampleBrick(uint brickPtr, float3 localPos)
+{
+    // Clamp to valid sample range (0..3) to prevent reading garbage or next brick
+    float3 p = clamp(localPos, 0.0, 3.0);
+    
+    int3 i = (int3)floor(p);
+    float3 f = frac(p);
+    
+    // Strides: Z*16 + Y*4 + X
+    uint baseIdx = brickPtr + i.z * 16 + i.y * 4 + i.x;
+    
+    float c000 = _BrickBuffer[baseIdx];
+    float c001 = _BrickBuffer[baseIdx + 1];
+    float c010 = _BrickBuffer[baseIdx + 4];
+    float c011 = _BrickBuffer[baseIdx + 5];
+    float c100 = _BrickBuffer[baseIdx + 16];
+    float c101 = _BrickBuffer[baseIdx + 17];
+    float c110 = _BrickBuffer[baseIdx + 20];
+    float c111 = _BrickBuffer[baseIdx + 21];
+    
+    return lerp(
+        lerp(lerp(c000, c001, f.x), lerp(c010, c011, f.x), f.y),
+        lerp(lerp(c100, c101, f.x), lerp(c110, c111, f.x), f.y),
+        f.z
+    );
+}
+
+float3 CalculateNormal(uint brickPtr, float3 localPos)
+{
+    float d = 0.01;
+    // Note: This simple difference might fail at the exact edge (3.0) due to clamping,
+    // but works fine for the interior of the SDF.
+    float dx = SampleBrick(brickPtr, localPos + float3(d,0,0)) - SampleBrick(brickPtr, localPos - float3(d,0,0));
+    float dy = SampleBrick(brickPtr, localPos + float3(0,d,0)) - SampleBrick(brickPtr, localPos - float3(0,d,0));
+    float dz = SampleBrick(brickPtr, localPos + float3(0,0,d)) - SampleBrick(brickPtr, localPos - float3(0,0,d));
+    return normalize(float3(dx, dy, dz));
 }
 
 // --- Main Kernel ---
@@ -45,24 +97,178 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     _Result.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) return;
 
-    // 1. Generate Ray from Camera
-    // Convert Pixel ID to UV [-1, 1]
-    float2 uv = (id.xy / float2(width, height)) * 2.0 - 1.0;
+    // 1. Generate Ray
+    float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
+    float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
+    float3 rayDir = mul((float3x3)_CameraToWorld, viewRay.xyz);
+    rayDir = normalize(rayDir);
+    float3 rayOrigin = _CameraToWorld._m03_m13_m23;
     
-    // Unproject to get Ray Direction (Camera Space -> World Space)
-    // (Standard ray generation logic will go here)
+    // 2. Depth Buffer Optimization
+    float depth = _CameraDepthTexture[id.xy];
+    float tMax = LARGE_DIST;
+    
+    // Reverse Z handling
+    if (depth > 0.0001)
+    {
+        float4 clipPos = float4(uv, depth, 1.0);
+        float4 viewPos = mul(_CameraInverseProjection, clipPos);
+        viewPos /= viewPos.w;
+        float4 worldPos = mul(_CameraToWorld, float4(viewPos.xyz, 1.0));
+        tMax = distance(rayOrigin, worldPos.xyz);
+    }
+    
+    // 3. Intersect SVO Volume
+    float3 volMin = float3(0, 0, 0);
+    float3 volMax = float3(_GridSize, _GridSize, _GridSize);
+    
+    float2 tBox = IntersectBox(rayOrigin, rayDir, volMin, volMax);
+    float tCurrent = max(0.0, tBox.x);
+    float tEnd = tBox.y;
+    
+    float3 finalColor = float3(0,0,0);
+    float finalAlpha = 0.0;
 
-    // 2. Fetch Existing Depth (Rasterized Opaques)
-    float rawDepth = GetSceneDepth(id.xy);
-    // Convert rawDepth to LinearEyeDepth if needed for comparison
+    // Clip with tMax from opaque geometry
+    if (tCurrent >= tEnd || tCurrent > tMax)
+    {
+        _Result[id.xy] = float4(0,0,0,0);
+        return;
+    }
+    
+    // DEBUG: Visualize Bounding Box
+    // If the ray hits the box, give it a base alpha/color so we know the camera is looking at it.
+    finalColor += float3(0.0, 0.05, 0.1); // Faint Blue
+    finalAlpha = 0.1;
 
-    // 3. SVO Traversal (Placeholder)
-    // TODO: March ray. If (t_hit < t_scene_depth), we render the voxel.
+    // 4. Traversal (KD-Restart)
+    int iter = 0;
     
-    // 4. Output (Debugging Setup)
-    // Just outputting the depth for now to prove we have the buffer
-    // _Result[id.xy] = float4(rawDepth, rawDepth, rawDepth, 1.0);
+    // Limit tEnd to opaque geometry
+    tEnd = min(tEnd, tMax);
+
+    while (tCurrent < tEnd && iter < MAX_ITERATIONS)
+    {
+        iter++;
+        
+        // Point just inside the voxel
+        float3 pos = rayOrigin + rayDir * (tCurrent + EPSILON);
+        
+        // Restart from Root
+        uint nodeIndex = 0;
+        float nodeSize = _GridSize;
+        float3 nodePos = float3(0,0,0);
+        
+        bool hitLeaf = false;
+        
+        // Descent Loop
+        for (int depth = 0; depth < 10; depth++)
+        {
+            float halfSize = nodeSize * 0.5;
+            float3 center = nodePos + halfSize;
+            
+            int octant = 0;
+            if (pos.x >= center.x) octant |= 1;
+            if (pos.y >= center.y) octant |= 2;
+            if (pos.z >= center.z) octant |= 4;
+            
+            SVONode node = _NodeBuffer[nodeIndex];
+            uint childMask = (node.topology >> 24) & 0xFF;
+            
+            if ((childMask & (1 << octant)) != 0)
+            {
+                uint childBase = node.topology & 0xFFFFFF;
+                uint maskBefore = childMask & ((1 << octant) - 1);
+                uint offset = countbits(maskBefore);
+                
+                nodeIndex = childBase + offset;
+                nodeSize = halfSize;
+                nodePos = nodePos + float3(
+                    (octant & 1) ? halfSize : 0,
+                    (octant & 2) ? halfSize : 0,
+                    (octant & 4) ? halfSize : 0
+                );
+                
+                if (nodeSize <= BRICK_SIZE + EPSILON)
+                {
+                    hitLeaf = true;
+                    break; 
+                }
+            }
+            else
+            {
+                // Empty Space -> Advance tCurrent to exit of this octant
+                float3 octantMin = nodePos + float3(
+                    (octant & 1) ? halfSize : 0,
+                    (octant & 2) ? halfSize : 0,
+                    (octant & 4) ? halfSize : 0
+                );
+                float3 octantMax = octantMin + halfSize;
+                float2 tOctant = IntersectBox(rayOrigin, rayDir, octantMin, octantMax);
+                tCurrent = tOctant.y;
+                break; // Restart loop
+            }
+        }
+        
+        if (hitLeaf)
+        {
+            SVONode leafNode = _NodeBuffer[nodeIndex];
+            
+            if (leafNode.payloadIndex != 0)
+            {
+                VoxelPayload payload = _PayloadBuffer[leafNode.payloadIndex];
+                uint brickPtr = payload.brickDataIndex;
+                
+                float tMarch = tCurrent;
+                bool surface = false;
+                
+                for (int m = 0; m < MAX_MARCH_STEPS; m++)
+                {
+                    float3 p = rayOrigin + rayDir * tMarch;
+                    
+                    // Check bounds of brick
+                    if (p.x < nodePos.x || p.x > nodePos.x + BRICK_SIZE ||
+                        p.y < nodePos.y || p.y > nodePos.y + BRICK_SIZE ||
+                        p.z < nodePos.z || p.z > nodePos.z + BRICK_SIZE)
+                    {
+                        tCurrent = tMarch;
+                        break;
+                    }
+                    
+                    float3 localPos = p - nodePos;
+                    float dist = SampleBrick(brickPtr, localPos);
+                    
+                    if (dist < EPSILON)
+                    {
+                        // Hit!
+                        float3 normal = CalculateNormal(brickPtr, localPos);
+                        float ndotl = max(0.2, dot(normal, normalize(float3(1, 2, -1))));
+                        
+                        // Solid Surface Color
+                        finalColor = float3(1, 1, 1) * ndotl;
+                        finalAlpha = 1.0;
+                        surface = true;
+                        break;
+                    }
+                    
+                    tMarch += max(dist, EPSILON);
+                    if (tMarch > tEnd) break;
+                }
+                
+                if (surface)
+                {
+                    _Result[id.xy] = float4(finalColor, finalAlpha);
+                    return;
+                }
+            }
+            else
+            {
+                // Empty leaf - advance to exit
+                float2 tLeaf = IntersectBox(rayOrigin, rayDir, nodePos, nodePos + BRICK_SIZE);
+                tCurrent = tLeaf.y;
+            }
+        }
+    }
     
-    // Default transparent (pass-through)
-    _Result[id.xy] = float4(0, 0, 0, 0); 
+    _Result[id.xy] = float4(finalColor, finalAlpha);
 }

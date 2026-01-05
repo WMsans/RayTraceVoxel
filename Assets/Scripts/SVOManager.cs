@@ -21,7 +21,7 @@ public class SVOManager : MonoBehaviour
     // GPU Buffers
     private GraphicsBuffer _nodeBuffer;
     private GraphicsBuffer _payloadBuffer;
-    private GraphicsBuffer _brickBuffer; // New: Stores raw SDF floats (Bricks)
+    private GraphicsBuffer _brickBuffer;
     private GraphicsBuffer _counterBuffer; 
 
     // Accessors
@@ -60,31 +60,41 @@ public class SVOManager : MonoBehaviour
     private void BuildSVO()
     {
         if (svoCompute == null) return;
-        int kernel = svoCompute.FindKernel("BuildBricks"); // Renamed kernel
+        
+        // 1. Initialize Dense Structure
+        int kernelInit = svoCompute.FindKernel("InitDenseStructure");
+        svoCompute.SetBuffer(kernelInit, "_NodeBuffer", _nodeBuffer);
+        // Dispatch 4681 threads. 64 per group.
+        // 4681 / 64 = 73.1 -> 74 groups
+        svoCompute.Dispatch(kernelInit, 74, 1, 1);
 
-        svoCompute.SetBuffer(kernel, "_NodeBuffer", _nodeBuffer);
-        svoCompute.SetBuffer(kernel, "_PayloadBuffer", _payloadBuffer);
-        svoCompute.SetBuffer(kernel, "_BrickBuffer", _brickBuffer);
-        svoCompute.SetBuffer(kernel, "_CounterBuffer", _counterBuffer);
+        // 2. Build Bricks
+        int kernelBuild = svoCompute.FindKernel("BuildBricks");
+
+        svoCompute.SetBuffer(kernelBuild, "_NodeBuffer", _nodeBuffer);
+        svoCompute.SetBuffer(kernelBuild, "_PayloadBuffer", _payloadBuffer);
+        svoCompute.SetBuffer(kernelBuild, "_BrickBuffer", _brickBuffer);
+        svoCompute.SetBuffer(kernelBuild, "_CounterBuffer", _counterBuffer);
 
         svoCompute.SetInt("_GridSize", resolution); 
         
-        // Dispatch one thread per 4x4x4 Block
-        // Resolution 64 -> 16 blocks wide. 
-        // 16 / 8 threads = 2 groups.
         int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
         int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 8.0f);
         
-        svoCompute.Dispatch(kernel, threadGroups, threadGroups, threadGroups);
+        svoCompute.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
         
-        Debug.Log($"SVO Generation Dispatched. Grid: {resolution}, BricksAxis: {numBricksPerAxis}");
+        Debug.Log($"SVO Generation Dispatched. Grid: {resolution}");
     }
 
     private void ReadbackCounters()
     {
         uint[] counters = new uint[3];
         _counterBuffer.GetData(counters);
-        nodeCount = (int)counters[0];
+        
+        // Since InitDenseStructure doesn't use the atomic counter (it uses fixed indices),
+        // the buffer count remains 0. We manually set the known dense node count here.
+        nodeCount = 4681; 
+        
         brickCount = (int)counters[2] / 64; // Convert float count back to bricks
     }
 
