@@ -83,9 +83,8 @@ float GetSDF(float3 pos)
     float sizeF = (float)_GridSize;
     float3 center = float3(sizeF * 0.5, sizeF * 0.5, sizeF * 0.5);
     
-    // Huge Box: 40% of grid size radius (covers 80% of volume)
-    float3 d = abs(pos - center) - float3(sizeF * 0.4, sizeF * 0.4, sizeF * 0.4);
-    return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));
+    // Sphere: 40% of grid size radius
+    return length(pos - center) - (sizeF * 0.4);
 }
 
 [numthreads(8, 8, 8)]
