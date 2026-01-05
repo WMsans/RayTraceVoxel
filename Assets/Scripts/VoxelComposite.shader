@@ -8,10 +8,10 @@ Shader "Hidden/VoxelComposite"
     SubShader
     {
         Tags { "RenderType"="Overlay" "RenderPipeline" = "UniversalPipeline" }
+        // Controlled by C# but defaults here
         ZTest Always
-        ZWrite Off
+        ZWrite On
         Cull Off
-        // Force the blend mode here to ensure it composites over the opaque scene
         Blend SrcAlpha OneMinusSrcAlpha
 
         Pass
@@ -26,10 +26,18 @@ Shader "Hidden/VoxelComposite"
             TEXTURE2D(_BlitTexture);
             SAMPLER(sampler_BlitTexture);
             
+            TEXTURE2D(_VoxelDepthTexture);
+            
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
                 float2 uv : TEXCOORD0;
+            };
+
+            struct FragOutput
+            {
+                half4 color : SV_Target;
+                float depth : SV_Depth;
             };
 
             // Modified Vertex Shader for Procedural Blit
@@ -42,11 +50,23 @@ Shader "Hidden/VoxelComposite"
                 return output;
             }
 
-            half4 Frag(Varyings input) : SV_Target
+            FragOutput Frag(Varyings input)
             {
+                FragOutput output;
                 // _BlitTexture is automatically bound by Blitter.BlitTexture
                 half4 color = SAMPLE_TEXTURE2D(_BlitTexture, sampler_BlitTexture, input.uv);
-                return color;
+                
+                if (color.a <= 0.0)
+                {
+                    discard;
+                }
+                
+                output.color = color;
+                // Sample depth from our compute shader result
+                // We use the same sampler as blit texture (point/bilinear depending on setup, but likely point/bilinear matches)
+                output.depth = SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv).r;
+                
+                return output;
             }
             ENDHLSL
         }

@@ -8,9 +8,11 @@ StructuredBuffer<VoxelPayload> _PayloadBuffer;
 StructuredBuffer<float> _BrickBuffer;
 Texture2D<float> _CameraDepthTexture;
 RWTexture2D<float4> _Result;
+RWTexture2D<float> _ResultDepth;
 
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
+float4x4 _CameraViewProjection;
 float _GridSize;
 float4 _ZBufferParams;
 
@@ -265,6 +267,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 
                 float tMarch = tCurrent;
                 bool surface = false;
+                float3 hitWorldPos = float3(0,0,0);
                 
                 for (int m = 0; m < MAX_MARCH_STEPS; m++)
                 {
@@ -285,6 +288,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                     {
                         // HIT!
                         surface = true;
+                        hitWorldPos = p;
                         
                         // 1. Calculate Properties
                         float3 worldPos = p; // Approx
@@ -343,6 +347,12 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 
                 if (surface) {
                     _Result[id.xy] = float4(finalColor, finalAlpha);
+                    
+                    // Calculate Depth for Compositing
+                    float4 clipPos = mul(_CameraViewProjection, float4(hitWorldPos, 1.0));
+                    float depth = clipPos.z / clipPos.w;
+                    _ResultDepth[id.xy] = depth;
+                    
                     return;
                 }
             }

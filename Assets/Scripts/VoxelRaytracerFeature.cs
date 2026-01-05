@@ -10,7 +10,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         public ComputeShader raytraceShader;
         public Shader compositeShader; 
-        public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingTransparents;
+        public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
     }
 
     public Settings settings = new Settings();
@@ -69,9 +69,12 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         
         // Shader Property IDs
         private static readonly int _ResultParams = Shader.PropertyToID("_Result");
+        private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
         private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
         private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
+        private static readonly int _CameraViewProjectionParams = Shader.PropertyToID("_CameraViewProjection");
         private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
+        private static readonly int _VoxelDepthTextureParams = Shader.PropertyToID("_VoxelDepthTexture");
         private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
         private static readonly int _GridSizeParams = Shader.PropertyToID("_GridSize"); 
         
@@ -110,11 +113,13 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             public int kernel;
             public TextureHandle sourceDepth;
             public TextureHandle targetColor; 
+            public TextureHandle targetDepth;
             public GraphicsBuffer nodeBuffer;
             public GraphicsBuffer payloadBuffer;
             public GraphicsBuffer brickBuffer;
             public Matrix4x4 cameraToWorld;
             public Matrix4x4 cameraInverseProjection;
+            public Matrix4x4 cameraViewProjection;
             public Vector4 zBufferParams;
             public int width;
             public int height;
@@ -142,6 +147,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private class BlitPassData
         {
             public TextureHandle source;
+            public TextureHandle depthSource;
             public Material material;
         }
 
@@ -162,6 +168,14 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             desc.name = "VoxelRaytraceResult";
 
             TextureHandle tempResult = renderGraph.CreateTexture(desc);
+            
+            TextureDesc depthDesc = new TextureDesc(cameraDesc.width, cameraDesc.height);
+            depthDesc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat;
+            depthDesc.depthBufferBits = DepthBits.None;
+            depthDesc.enableRandomWrite = true;
+            depthDesc.name = "VoxelRaytraceDepth";
+            
+            TextureHandle tempResultDepth = renderGraph.CreateTexture(depthDesc);
 
             // 2. Compute Pass
             using (var builder = renderGraph.AddComputePass("Voxel Raytracer Pass", out PassData data))
@@ -175,9 +189,15 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 data.height = desc.height;
                 data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                 data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
+                
+                var proj = GL.GetGPUProjectionMatrix(cameraData.camera.projectionMatrix, false);
+                var view = cameraData.camera.worldToCameraMatrix;
+                data.cameraViewProjection = proj * view;
+                
                 data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
                 data.sourceDepth = resourceData.cameraDepthTexture;
                 data.targetColor = tempResult;
+                data.targetDepth = tempResultDepth;
                 data.gridSize = (float)SVOManager.Instance.resolution;
 
                 // --- Main Light Setup ---
@@ -252,6 +272,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
 
                 builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                 builder.UseTexture(data.targetColor, AccessFlags.Write);
+                builder.UseTexture(data.targetDepth, AccessFlags.Write);
                 
                 if (data.shadowMap.IsValid())
                     builder.UseTexture(data.shadowMap, AccessFlags.Read);
@@ -268,11 +289,13 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
 
                     cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, passData.cameraToWorld);
                     cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, passData.cameraInverseProjection);
+                    cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, passData.cameraViewProjection);
                     cmd.SetComputeVectorParam(cs, _ZBufferParamsID, passData.zBufferParams);
                     cmd.SetComputeFloatParam(cs, _GridSizeParams, passData.gridSize);
 
                     cmd.SetComputeTextureParam(cs, kernel, _CameraDepthTextureParams, passData.sourceDepth);
                     cmd.SetComputeTextureParam(cs, kernel, _ResultParams, passData.targetColor);
+                    cmd.SetComputeTextureParam(cs, kernel, _ResultDepthParams, passData.targetDepth);
                     
                     // Main Light
                     cmd.SetComputeVectorParam(cs, _MainLightPositionParams, passData.mainLightPosition);
@@ -295,14 +318,17 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             using (var builder = renderGraph.AddRasterRenderPass<BlitPassData>("Composite Voxels", out var blitData))
             {
                 blitData.source = tempResult;
+                blitData.depthSource = tempResultDepth;
                 blitData.material = _compositeMaterial;
 
                 // Read the Voxel result
                 builder.UseTexture(blitData.source, AccessFlags.Read);
+                builder.UseTexture(blitData.depthSource, AccessFlags.Read);
                 
                 // Write to Camera Color (Standard Forward Pipeline Integration)
                 // We use LoadAction.Load to keep existing opaque geometry
                 builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
+                builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.Write);
 
                 builder.SetRenderFunc((BlitPassData bData, RasterGraphContext context) =>
                 {
@@ -310,7 +336,10 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                     // SrcAlpha (Voxel Alpha) + OneMinusSrcAlpha (Background)
                     bData.material.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
                     bData.material.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-                    bData.material.SetInt("_ZWrite", 0);
+                    bData.material.SetInt("_ZWrite", 1);
+                    bData.material.SetInt("_ZTest", (int)UnityEngine.Rendering.CompareFunction.Always);
+
+                    bData.material.SetTexture(_VoxelDepthTextureParams, bData.depthSource);
 
                     // Draw full screen quad blending 'source' over the current attachment
                     Blitter.BlitTexture(context.cmd, bData.source, new Vector4(1, 1, 0, 0), bData.material, 0);
