@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9c9aa08fa05d0a443aaebd24d73e13d1, type: 3}
+  m_Name: GrassVoxel
+  m_EditorClassIdentifier: Assembly-CSharp::SolidVoxelDefinition
+  id: 1
+  voxelName: Grass
+  renderType: 1
+  blockTextures:
+    Albedo: {fileID: 2800000, guid: 8e3972ad0a0dce34e9c1a44d3b4ff5a7, type: 3}
+    Normal: {fileID: 2800000, guid: 6149208393558c84e85a91227c42bfdb, type: 3}
+    Smoothness: {fileID: 2800000, guid: ae0cc47f58a273d6a974575b8ff607af, type: 3}
+    Metallic: 0
+    AmbientOcclusion: {fileID: 2800000, guid: c928b6d2f01a5f546b2c3b834fd9b612, type: 3}
+    TopAlbedo: {fileID: 2800000, guid: c4a948e64ab20034f96d6b623d792f81, type: 3}
+    TopNormal: {fileID: 2800000, guid: 6e37e3af340063c489c512337f5b9a7e, type: 3}
+    TopSmoothness: {fileID: 2800000, guid: e928178bc9caaf5b48b8996966a2722e, type: 3}
+    TopMetallic: 0
+    TopAmbientOcclusion: {fileID: 2800000, guid: f08505e247dfb3f46a0da3ffb1d3947b, type: 3}
