@@ -28,6 +28,7 @@ StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer; // <--- The Property Buffer
 
 // Textures
 Texture2D<float> _CameraDepthTexture;
+SamplerState sampler_CameraDepthTexture;
 
 // Arrays
 Texture2DArray _AlbedoTextureArray;
@@ -164,6 +165,73 @@ float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColo
     float3 specular = float3(0.04, 0.04, 0.04) * spec; // Dielectric F0
     
     return (diffuse + specular) * lightColor * NdotL * shadow;
+}
+
+float3 UnpackNormal(float4 packed)
+{
+    return packed.xyz * 2.0 - 1.0;
+}
+
+void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outSmoothness, out float outAO)
+{
+    VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
+    
+    float3 blend = abs(normal);
+    blend = max(blend, 0.0001); // Prevent div by zero
+    blend /= (blend.x + blend.y + blend.z);
+    
+    float textureScale = 0.25;
+    
+    // UVs
+    float2 uvX = worldPos.zy * textureScale;
+    float2 uvY = worldPos.xz * textureScale;
+    float2 uvZ = worldPos.xy * textureScale;
+    
+    // Albedo
+    float3 albedoX = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideAlbedoIndex), 0).rgb;
+    float3 albedoY = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topAlbedoIndex), 0).rgb;
+    float3 albedoZ = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
+    
+    outAlbedo = albedoX * blend.x + albedoY * blend.y + albedoZ * blend.z;
+    
+    // Mask (G=AO, B=Smoothness)
+    float4 maskX = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideMaskIndex), 0);
+    float4 maskY = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topMaskIndex), 0);
+    float4 maskZ = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideMaskIndex), 0);
+    
+    float aoX = maskX.g; float smoothX = maskX.b;
+    float aoY = maskY.g; float smoothY = maskY.b;
+    float aoZ = maskZ.g; float smoothZ = maskZ.b;
+    
+    outAO = aoX * blend.x + aoY * blend.y + aoZ * blend.z;
+    outSmoothness = smoothX * blend.x + smoothY * blend.y + smoothZ * blend.z;
+    
+    // Normals
+    float3 nX = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideNormalIndex), 0));
+    float3 nY = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topNormalIndex), 0));
+    float3 nZ = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideNormalIndex), 0));
+    
+    // Swizzle to World Space
+    // X Plane (Side): T=(0,0,1), B=(0,1,0), N=(1,0,0) -> UV=zy -> u=z, v=y
+    // map(x,y,z) -> x*T + y*B + z*N -> x*(0,0,1) + y*(0,1,0) + z*(1,0,0) -> (z, y, x)
+    float3 worldNormalX = float3(nX.z, nX.y, nX.x);
+    
+    // Y Plane (Top): T=(1,0,0), B=(0,0,1), N=(0,1,0) -> UV=xz -> u=x, v=z
+    // map(x,y,z) -> x*T + y*B + z*N -> x*(1,0,0) + y*(0,0,1) + z*(0,1,0) -> (x, z, y)
+    float3 worldNormalY = float3(nY.x, nY.z, nY.y);
+    
+    // Z Plane (Side): T=(1,0,0), B=(0,1,0), N=(0,0,1) -> UV=xy -> u=x, v=y
+    // map(x,y,z) -> x*T + y*B + z*N -> x*(1,0,0) + y*(0,1,0) + z*(0,0,1) -> (x, y, z)
+    float3 worldNormalZ = float3(nZ.x, nZ.y, nZ.z);
+    
+    // Handle signs
+    float3 axisSign = sign(normal);
+    worldNormalX.x *= axisSign.x;
+    worldNormalY.y *= axisSign.y;
+    worldNormalZ.z *= axisSign.z;
+    
+    float3 triplanarNormal = worldNormalX * blend.x + worldNormalY * blend.y + worldNormalZ * blend.z;
+    outNormal = normalize(triplanarNormal + normal); 
 }
 
 [numthreads(8, 8, 1)]
@@ -314,9 +382,16 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                         hitWorldPos = p;
                         
                         // 1. Calculate Properties
-                        float3 worldPos = p; // Approx
-                        float3 normal = CalculateNormal(brickPtr, localPos);
-                        float3 albedo = float3(0.8, 0.9, 1.0); // Placeholder
+                        float3 worldPos = p; 
+                        float3 geomNormal = CalculateNormal(brickPtr, localPos);
+                        
+                        // --- TRIPLANAR MAPPING ---
+                        float3 albedo;
+                        float3 normal;
+                        float smoothness;
+                        float ao;
+                        
+                        TriplanarSampling(worldPos, geomNormal, payload.materialId, albedo, normal, smoothness, ao);
                         
                         float3 V = normalize(rayOrigin - worldPos);
                         
@@ -329,8 +404,16 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                             
                         float shadow = SampleShadow(worldPos);
                         
+                        // Apply Ambient Occlusion to shadow or ambient
+                        shadow *= ao;
+                        
                         float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow);
-                        float3 ambient = float3(0.1, 0.1, 0.1) * albedo;
+                        
+                        // Apply Smoothness to specular? LightingPBR uses hardcoded specPower.
+                        // Ideally pass smoothness to LightingPBR. For now, we just use it implicitly via normal map detail.
+                        // Future: Update LightingPBR to use smoothness/roughness.
+                        
+                        float3 ambient = float3(0.1, 0.1, 0.1) * albedo * ao;
                         
                         finalColor = directLight + ambient;
                         

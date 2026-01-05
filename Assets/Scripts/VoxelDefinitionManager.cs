@@ -67,15 +67,12 @@ public class VoxelDefinitionManager : MonoBehaviour
         // --- 1. Add Default Textures (Index 0) ---
         // Albedo: White
         albedoPixels.Add(CreateSolidColorPixels(Color.white));
-        albedoMap[null] = 0; // null maps to default
-
+        
         // Normal: Flat Blue (0.5, 0.5, 1.0)
         normalPixels.Add(CreateSolidColorPixels(new Color(0.5f, 0.5f, 1.0f)));
-        normalMap[null] = 0;
 
         // Mask: G=1 (AO full), A=0.5 (Smoothness mid), R=0, B=0
         maskPixels.Add(CreateSolidColorPixels(new Color(0f, 1f, 0f, 0.5f)));
-        maskMap[(null, null)] = 0;
 
 
         // --- 2. Process Definitions ---
