@@ -1,11 +1,10 @@
 #pragma kernel InitDenseStructure
 #pragma kernel BuildBricks
 
-// --- Structs ---
 struct SVONode
 {
-    uint topology;     // x: [ChildrenMask (8 bits) | ChildPointer (24 bits)]
-    uint payloadIndex; // Points to VoxelPayload
+    uint topology; 
+    uint payloadIndex; 
 };
 
 struct VoxelPayload
@@ -14,96 +13,48 @@ struct VoxelPayload
     uint materialId;
 };
 
-// --- Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer; 
 RWStructuredBuffer<uint> _CounterBuffer; 
 
-// --- Settings ---
 uint _GridSize;
 static const uint BRICK_SIZE = 4;
 
-// --- Helper: Tree Indexing ---
-// For a dense octree of specific depth, we can calculate indices deterministically.
-// Level 0: 1 node (Index 0)
-// Level 1: 8 nodes (Indices 1..8)
-// Level 2: 64 nodes (Indices 9..72)
-// Level 3: 512 nodes (Indices 73..584)
-// Level 4 (Leaves): 4096 nodes (Indices 585..4680) 
-// Total nodes = 4681.
-
 uint GetNodeIndex(uint level, uint3 gridPos)
 {
-    // Simplified offset logic for fixed 64^3 grid (16^3 bricks)
-    // Level 0: 0
-    // Level 1: 1 + Morton(gridPos >> 3)
-    // Level 2: 9 + Morton(gridPos >> 2)
-    // ...
-    // Better: just compute offsets.
     uint offset = 0;
     if (level > 0) offset += 1;
     if (level > 1) offset += 8;
     if (level > 2) offset += 64;
     if (level > 3) offset += 512;
-    
-    // We need Morton code for the position within the level
-    // GridPos is in terms of Bricks (0..15)
-    // At Level 1, we look at bit 3 (size 8 blocks).
-    // At Level 2, we look at bits 2..3
-    
-    // Let's implement a simple recursive offset or just hardcode for Phase 3.
-    // Fixed hierarchy for 16x16x16 bricks (Depth 4 from root? 16 -> 8 -> 4 -> 2 -> 1? No 16 is 2^4).
-    // Root covers 16. Children cover 8. Grandchildren 4. Great 2. GreatGreat 1.
-    // So levels 0, 1, 2, 3, 4.
-    // Level 0 (Size 16): 1 Node.
-    // Level 1 (Size 8): 8 Nodes.
-    // Level 2 (Size 4): 64 Nodes.
-    // Level 3 (Size 2): 512 Nodes.
-    // Level 4 (Size 1): 4096 Nodes.
-    
-    // Morton encoding for current level position
+
     uint3 p = gridPos;
-    // Shift to extract relevant bits for the level
     if (level == 0) p = uint3(0,0,0);
     else if (level == 1) p = p >> 3;
     else if (level == 2) p = p >> 2;
     else if (level == 3) p = p >> 1;
-    // Level 4 is direct p
     
-    // We need to mask p to get local index? 
-    // No, standard dense packing uses full Morton index at that level.
-    
-    // Encode
-    p = p & ( (1<<(level)) - 1 ); // Keep bits relevant to level? No.
-    // Just full Morton of the coord at that resolution.
-    
-    uint m = (p.x) | (p.y << 1) | (p.z << 2); // Simple bit interleave needed
-    // Simple 3D Morton:
-    m = 0;
-    for (int i = 0; i < 4; i++) // max 4 bits
+    uint m = 0;
+    for (int i = 0; i < 4; i++) 
     {
         uint mask = 1 << i;
         m |= ((p.x & mask) ? (1 << (3*i)) : 0);
         m |= ((p.y & mask) ? (1 << (3*i + 1)) : 0);
         m |= ((p.z & mask) ? (1 << (3*i + 2)) : 0);
     }
-    
     return offset + m;
 }
 
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
 {
-    // Total Nodes = 4681. 
-    // We can just run 4681 threads or loop.
     if (id >= 4681) return;
     
     SVONode node;
     node.payloadIndex = 0;
     node.topology = 0;
-    
-    // Determine Level
+
     uint level = 0;
     uint indexInLevel = id;
     if (id >= 585) { level = 4; indexInLevel = id - 585; }
@@ -111,73 +62,52 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     else if (id >= 9) { level = 2; indexInLevel = id - 9; }
     else if (id >= 1) { level = 1; indexInLevel = id - 1; }
     
-    // If not leaf, point to first child
     if (level < 4)
     {
-        // My child base is at next level offset + my_index * 8
         uint nextLevelOffset = 0;
         if (level == 0) nextLevelOffset = 1;
         if (level == 1) nextLevelOffset = 9;
         if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
-        
+
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
-        
-        // Mark all children as valid for now (Dense)
-        // Mask: 0xFF (8 bits)
-        // Ptr: childPtr (24 bits)
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
-    }
-    else
-    {
-        // Leaf Node.
-        // Initially empty.
-        node.topology = 0; 
     }
     
     _NodeBuffer[id] = node;
 }
 
-// --- SDF Function ---
+// --- SIMPLIFIED SDF ---
 float GetSDF(float3 pos)
 {
     float sizeF = (float)_GridSize;
     float3 center = float3(sizeF * 0.5, sizeF * 0.5, sizeF * 0.5);
-    float radius = sizeF * 0.35;
     
-    // Sphere
-    float d1 = length(pos - center) - radius;
-    
-    // Subtract a box to make it interesting
-    float3 d2 = abs(pos - center) - float3(radius*0.7, radius*0.2, radius*0.7);
-    float box = min(max(d2.x, max(d2.y, d2.z)), 0.0) + length(max(d2, 0.0));
-    
-    return max(d1, -box); // Hollow cut
+    // Huge Box: 40% of grid size radius (covers 80% of volume)
+    float3 d = abs(pos - center) - float3(sizeF * 0.4, sizeF * 0.4, sizeF * 0.4);
+    return min(max(d.x, max(d.y, d.z)), 0.0) + length(max(d, 0.0));
 }
 
 [numthreads(8, 8, 8)]
 void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
-    // ID is Brick Coordinate (0..15)
     uint bricksAxis = _GridSize / BRICK_SIZE;
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
 
-    // 1. Conservative Check
     float3 brickOrigin = id * BRICK_SIZE;
     float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
     
-    // Use slightly larger bound for safe interpolation
-    float activeThreshold = (float)BRICK_SIZE * 0.866 + 4.0; 
+    // Check if brick is potentially relevant
+    // Since we want to ensure visibility, we check a large threshold
+    float activeThreshold = (float)BRICK_SIZE * 1.5; 
     float dist = GetSDF(brickCenter);
 
-    if (abs(dist) < activeThreshold)
+    // Build if inside (negative) or near surface
+    if (dist < activeThreshold)
     {
-        // 2. Allocate Brick Memory
         uint brickFloatPtr;
-        // Allocate 64 floats
         InterlockedAdd(_CounterBuffer[2], 64, brickFloatPtr);
 
-        // 3. Fill Brick
         for (uint z = 0; z < BRICK_SIZE; z++)
         {
             for (uint y = 0; y < BRICK_SIZE; y++)
@@ -191,10 +121,8 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             }
         }
 
-        // 4. Create Payload
         uint payloadIndex;
         InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
-        // Offset by 1 because 0 is usually null/empty
         payloadIndex += 1; 
 
         VoxelPayload payload;
@@ -202,27 +130,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         payload.materialId = 1;
         _PayloadBuffer[payloadIndex] = payload;
 
-        // 5. Link to Tree
-        // We need to find the specific Leaf Node index for this brick (id)
-        // Level 4 index.
         uint nodeIndex = GetNodeIndex(4, id);
-        
-        // Update the Node to point to payload
-        // Topology is 0 (Leaf) usually, or we can use mask to indicate "Has Payload"?
-        // Usually leaf nodes use topology=0 or special mask.
-        // We will just set payloadIndex.
-        
-        // Note: Race condition if multiple threads write to same node? 
-        // No, each thread handles one unique brick (one unique leaf node).
         _NodeBuffer[nodeIndex].payloadIndex = payloadIndex;
-        
-        // Also ensure topology marks it as leaf (0 children)
-        _NodeBuffer[nodeIndex].topology = 0; 
+        _NodeBuffer[nodeIndex].topology = 0;
     }
     else
     {
-        // Empty brick
-        // Ensure payload is 0
         uint nodeIndex = GetNodeIndex(4, id);
         _NodeBuffer[nodeIndex].payloadIndex = 0;
         _NodeBuffer[nodeIndex].topology = 0;

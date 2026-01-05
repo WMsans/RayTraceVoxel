@@ -19,6 +19,10 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
 
     public override void Create()
     {
+        // Force injection point to ensure we render after Skybox/Transparents
+        // This prevents the Skybox from overdrawing our voxels (since we don't write depth)
+        settings.injectionPoint = RenderPassEvent.AfterRenderingTransparents;
+
         _pass = new VoxelRaytracerPass(settings);
         
         // Fallback or setup composite material
@@ -35,13 +39,13 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         
         if (SVOManager.Instance == null)
         {
-            // Debug.LogWarning("VoxelRaytracer: SVOManager instance is missing.");
+            Debug.LogWarning("VoxelRaytracer: SVOManager instance is missing.");
             return;
         }
 
         if (!SVOManager.Instance.IsReady)
         {
-            // Debug.LogWarning("VoxelRaytracer: SVOManager is not ready.");
+            Debug.LogWarning("VoxelRaytracer: SVOManager is not ready.");
             return;
         }
 
