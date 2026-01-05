@@ -39,7 +39,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         
         if (SVOManager.Instance == null)
         {
-            Debug.LogWarning("VoxelRaytracer: SVOManager instance is missing.");
+            // Debug.LogWarning("VoxelRaytracer: SVOManager instance is missing.");
             return;
         }
 
