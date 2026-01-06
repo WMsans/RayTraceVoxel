@@ -319,7 +319,8 @@ float TraceInternalShadow(float3 rayOrigin, float3 rayDir, float maxDist)
                 VoxelPayload payload = _PayloadBuffer[leafNode.payloadIndex];
                 uint brickPtr = payload.brickDataIndex;
                 
-                float tMarch = tCurrent;
+                // Add bias to skip boundary artifacts
+                float tMarch = tCurrent + 1;
                 float marchEnd = min(tEnd, tLeaf.y);
 
                 for (int m = 0; m < MAX_MARCH_STEPS; m++)
