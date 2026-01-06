@@ -18,3 +18,30 @@ public struct VoxelPayload
     public uint brickDataIndex; // Pointer to start of float array in BrickBuffer
     public uint materialId;
 }
+
+/// <summary>
+/// GPU representation of a Voxel Definition.
+/// Stride should match the HLSL struct.
+/// </summary>
+[System.Serializable]
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct VoxelTypeGPU
+{
+    public uint sideAlbedoIndex;
+    public uint sideNormalIndex;
+    public uint sideMaskIndex; // R=Metallic(Unused if float), G=AO, B=Smoothness
+    
+    public uint topAlbedoIndex;
+    public uint topNormalIndex;
+    public uint topMaskIndex;
+    
+    public float sideMetallic;
+    public float topMetallic;
+    
+    public uint renderType;
+    
+    // Padding to ensure 4-byte alignment or specific stride if needed. 
+    // Currently: 6 uints + 2 floats + 1 uint = 36 bytes.
+    // If strict 16-byte alignment is needed (e.g. for constant buffers), more padding is required.
+    // For StructuredBuffer, 36 bytes is usually fine as long as HLSL matches.
+}
