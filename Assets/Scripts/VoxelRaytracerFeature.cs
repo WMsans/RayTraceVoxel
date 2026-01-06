@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.Rendering.RenderGraphModule;
+using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 
 public class VoxelRaytracerFeature : ScriptableRendererFeature
@@ -34,8 +35,10 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         if (settings.raytraceShader == null) return;
         
-        // Ensure both SVOManager and VoxelDefinitionManager are ready
-        if (SVOManager.Instance == null || !SVOManager.Instance.IsReady) return;
+        // Check Registry instead of Singleton
+        if (VoxelVolumeRegistry.Volumes.Count == 0) return;
+        
+        // Ensure VoxelDefinitionManager is ready
         if (VoxelDefinitionManager.Instance == null || VoxelDefinitionManager.Instance.VoxelMaterialBuffer == null) return;
 
         _pass.Setup(_compositeMaterial);
@@ -55,7 +58,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private Material _compositeMaterial;
         
         // --- Shader Property IDs ---
-        // Result & Camera
         private static readonly int _ResultParams = Shader.PropertyToID("_Result");
         private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
         private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
@@ -73,7 +75,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private static readonly int _BrickMaterialBufferParams = Shader.PropertyToID("_BrickMaterialBuffer");
         private static readonly int _RaycastBufferParams = Shader.PropertyToID("_RaycastBuffer");
 
-        // Palette / Materials (GPU Data Structures)
+        // Palette / Materials
         private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
         private static readonly int _AlbedoTextureArrayParams = Shader.PropertyToID("_AlbedoTextureArray");
         private static readonly int _NormalTextureArrayParams = Shader.PropertyToID("_NormalTextureArray");
@@ -89,7 +91,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private GraphicsBuffer _lightBuffer;
         private VoxelLight[] _lightDataArray = new VoxelLight[64];
         
-        // RTHandle Wrappers for External Textures
         private RTHandle _albedoHandle;
         private RTHandle _normalHandle;
         private RTHandle _maskHandle;
@@ -165,16 +166,20 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             public int additionalLightsCount;
         }
 
-        // --- Render Graph Recording ---
         public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
         {
+            if (VoxelVolumeRegistry.Volumes.Count == 0) return;
+            // For now, render the FIRST volume found. 
+            // Multi-volume support requires shader changes (e.g. depth compositing).
+            var activeVolume = VoxelVolumeRegistry.Volumes[0];
+            if (!activeVolume.IsReady) return;
+
             var resourceData = frameData.Get<UniversalResourceData>();
             var cameraData = frameData.Get<UniversalCameraData>();
             var lightData = frameData.Get<UniversalLightData>();
             var renderingData = frameData.Get<UniversalRenderingData>();
             var cameraDesc = cameraData.cameraTargetDescriptor;
 
-            // Create Temporary Textures
             TextureDesc desc = new TextureDesc(cameraDesc.width, cameraDesc.height);
             desc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat;
             desc.depthBufferBits = DepthBits.None;
@@ -189,10 +194,8 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             depthDesc.name = "VoxelRaytraceDepth";
             TextureHandle tempResultDepth = renderGraph.CreateTexture(depthDesc);
 
-            // Setup Lights (Simplified for brevity, same as previous)
             SetupLights(renderingData, lightData, out var mainPos, out var mainCol, out int addCount);
 
-            // Ensure Handles are valid
             CheckTextureHandle(ref _albedoHandle, VoxelDefinitionManager.Instance.albedoTextureArray);
             CheckTextureHandle(ref _normalHandle, VoxelDefinitionManager.Instance.normalTextureArray);
             CheckTextureHandle(ref _maskHandle, VoxelDefinitionManager.Instance.maskTextureArray);
@@ -202,25 +205,23 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 data.computeShader = _shader;
                 data.kernel = _shader.FindKernel("CSMain");
                 
-                // SVO Data
-                data.nodeBuffer = SVOManager.Instance.NodeBuffer;
-                data.payloadBuffer = SVOManager.Instance.PayloadBuffer;
-                data.brickBuffer = SVOManager.Instance.BrickBuffer;
-                data.brickMaterialBuffer = SVOManager.Instance.BrickMaterialBuffer;
+                // Bind Active Volume Buffers
+                data.nodeBuffer = activeVolume.NodeBuffer;
+                data.payloadBuffer = activeVolume.PayloadBuffer;
+                data.brickBuffer = activeVolume.BrickBuffer;
+                data.brickMaterialBuffer = activeVolume.BrickMaterialBuffer;
                 
                 if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
                 {
-                     VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16); // float4
+                     VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16); 
                 }
                 data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
                 
-                // Palette Data
                 data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
                 if (_albedoHandle != null) data.albedoArray = renderGraph.ImportTexture(_albedoHandle);
                 if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                 if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
 
-                // Camera Data
                 data.width = desc.width;
                 data.height = desc.height;
                 data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
@@ -229,20 +230,18 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 var view = cameraData.camera.worldToCameraMatrix;
                 data.cameraViewProjection = proj * view;
                 data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
-                data.gridSize = (float)SVOManager.Instance.resolution;
+                data.gridSize = (float)activeVolume.Resolution;
 
                 data.sourceDepth = resourceData.cameraDepthTexture;
                 data.targetColor = tempResult;
                 data.targetDepth = tempResultDepth;
 
-                // Light Data
                 data.mainLightPosition = mainPos;
                 data.mainLightColor = mainCol;
                 data.shadowMap = resourceData.mainShadowsTexture;
                 data.additionalLightsBuffer = _lightBuffer;
                 data.additionalLightsCount = addCount;
 
-                // Resource Declarations
                 builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                 builder.UseTexture(data.targetColor, AccessFlags.Write);
                 builder.UseTexture(data.targetDepth, AccessFlags.Write);
@@ -258,14 +257,12 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                     var kernel = passData.kernel;
                     var cmd = ctx.cmd;
 
-                    // Bind SVO
                     cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, passData.nodeBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, passData.payloadBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _BrickMaterialBufferParams, passData.brickMaterialBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _RaycastBufferParams, passData.raycastBuffer);
 
-                    // Bind Palette (NEW)
                     if (passData.materialBuffer != null)
                         cmd.SetComputeBufferParam(cs, kernel, _VoxelMaterialBufferParams, passData.materialBuffer);
                     if (passData.albedoArray.IsValid())
@@ -275,7 +272,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                     if (passData.maskArray.IsValid())
                         cmd.SetComputeTextureParam(cs, kernel, _MaskTextureArrayParams, passData.maskArray);
 
-                    // Bind Camera & Others
                     cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, passData.cameraToWorld);
                     cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, passData.cameraInverseProjection);
                     cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, passData.cameraViewProjection);
@@ -286,7 +282,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                     cmd.SetComputeTextureParam(cs, kernel, _ResultParams, passData.targetColor);
                     cmd.SetComputeTextureParam(cs, kernel, _ResultDepthParams, passData.targetDepth);
 
-                    // Bind Lights
                     cmd.SetComputeVectorParam(cs, _MainLightPositionParams, passData.mainLightPosition);
                     cmd.SetComputeVectorParam(cs, _MainLightColorParams, passData.mainLightColor);
                     if (passData.shadowMap.IsValid()) cmd.SetComputeTextureParam(cs, kernel, _MainLightShadowmapTextureParams, passData.shadowMap);
@@ -299,7 +294,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 });
             }
 
-            // Composite Pass
             using (var builder = renderGraph.AddRasterRenderPass<BlitPassData>("Composite Voxels", out var blitData))
             {
                 blitData.source = tempResult;
@@ -323,11 +317,10 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             }
         }
 
-        // Helper for light extraction
         private void SetupLights(UniversalRenderingData renderingData, UniversalLightData lightData, out Vector4 mainPos, out Vector4 mainCol, out int addCount)
         {
             mainPos = new Vector4(0, 1, 0, 0);
-            mainCol = Color.white; // Default to white, not black
+            mainCol = Color.white; 
             addCount = 0;
 
             var lights = lightData.visibleLights;
@@ -338,9 +331,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 VisibleLight mainLight = lights[mainLightIndex];
                 if (mainLight.lightType == LightType.Directional)
                 {
-                    // Directional Light: Position is Direction (w=0)
-                    // VisibleLight.localToWorldMatrix.GetColumn(2) is Forward (Z). 
-                    // Light direction is usually -Forward.
                     Vector4 dir = -mainLight.localToWorldMatrix.GetColumn(2);
                     dir.w = 0;
                     mainPos = dir;
@@ -348,7 +338,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 }
             }
 
-            // Collect Additional Lights
             int count = 0;
             for (int i = 0; i < lights.Length; i++)
             {
@@ -357,27 +346,20 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
 
                 VisibleLight vl = lights[i];
                 VoxelLight voxelLight = new VoxelLight();
-                
-                // Color
                 voxelLight.color = vl.finalColor;
                 
-                // Position / Direction
                 if (vl.lightType == LightType.Directional)
                 {
                     Vector4 dir = -vl.localToWorldMatrix.GetColumn(2);
                     dir.w = 0;
                     voxelLight.position = dir;
-                    voxelLight.attenuation = new Vector4(1, 0, 0, 0); // No attenuation for directional
+                    voxelLight.attenuation = new Vector4(1, 0, 0, 0); 
                 }
                 else
                 {
-                    // Point/Spot
                     Vector4 pos = vl.localToWorldMatrix.GetColumn(3);
                     pos.w = 1;
                     voxelLight.position = pos;
-                    
-                    // Attenuation
-                    // Range in x, Falloff in y
                     float range = vl.range;
                     voxelLight.attenuation = new Vector4(range, 1.0f / (range * range), 0, 0);
                 }

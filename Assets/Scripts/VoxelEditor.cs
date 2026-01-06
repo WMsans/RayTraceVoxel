@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Rendering;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Editing;
 using VoxelEngine.Core.Interfaces;
@@ -15,7 +16,7 @@ public class VoxelEditor : MonoBehaviour
 
     [Header("References")]
     public ComputeShader svoEditorCompute;
-    public SVOManager svoManager;
+    public VoxelVolume targetVolume; // Was SVOManager
     public Camera mainCamera;
 
     [Header("Debug")]
@@ -25,22 +26,19 @@ public class VoxelEditor : MonoBehaviour
     public Vector3Int maxBrickId;
 
     // Buffers
-    private GraphicsBuffer _affectedNodeBuffer; // Stores indices of nodes to update
-    private GraphicsBuffer _argBuffer; // For DrawProcedural/Indirect arguments if needed (not needed for simple append readback, but good practice)
-    
-    // We need a buffer to count how many nodes we found
+    private GraphicsBuffer _affectedNodeBuffer; 
     private GraphicsBuffer _countBuffer; 
     private InputSystem_Actions playerControls;
     private VoxelModifier _modifier;
 
-    private const int MAX_AFFECTED_NODES = 1024; // Arbitrary limit for a single brush stroke
+    private const int MAX_AFFECTED_NODES = 1024; 
 
     private void Awake()
     {
         playerControls = new InputSystem_Actions();
-
         playerControls.Player.Attack.performed += _ => OnAttack();
     }
+
     private void OnEnable()
     {
         playerControls.Player.Enable();
@@ -50,18 +48,20 @@ public class VoxelEditor : MonoBehaviour
     {
         playerControls.Player.Disable();
     }
+
     private void Start()
     {
         if (mainCamera == null) mainCamera = Camera.main;
-        if (svoManager == null) svoManager = SVOManager.Instance;
+        
+        // Auto-find if not assigned (Support single volume for now)
+        if (targetVolume == null) targetVolume = FindFirstObjectByType<VoxelVolume>();
 
-        // Append Buffer for results
         _affectedNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured | GraphicsBuffer.Target.Append, MAX_AFFECTED_NODES, sizeof(uint));
         _countBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured | GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint));
         
-        if (svoManager != null)
+        if (targetVolume != null)
         {
-            _modifier = new VoxelModifier(svoEditorCompute, svoManager);
+            _modifier = new VoxelModifier(svoEditorCompute, targetVolume);
         }
     }
 
@@ -73,6 +73,12 @@ public class VoxelEditor : MonoBehaviour
 
     private void Update()
     {
+        if (targetVolume == null && _modifier == null)
+        {
+             targetVolume = FindFirstObjectByType<VoxelVolume>();
+             if (targetVolume != null) _modifier = new VoxelModifier(svoEditorCompute, targetVolume);
+        }
+
         PerformRaycast();
     }
 
@@ -92,19 +98,29 @@ public class VoxelEditor : MonoBehaviour
         var buffer = VoxelRaytracerFeature.RaycastHitBuffer;
         if (buffer != null && buffer.IsValid())
         {
-            Vector4[] result = new Vector4[1];
-            buffer.GetData(result);
-            
-            // w component holds hit flag (1.0 = hit, 0.0 = miss)
-            if (result[0].w > 0.5f)
+            // ASYNC READBACK
+            AsyncGPUReadback.Request(buffer, (request) =>
             {
-                isHitting = true;
-                lastHitPoint = (Vector3)result[0];
-            }
-            else
-            {
-                isHitting = false;
-            }
+                if (request.hasError) return;
+
+                using (var data = request.GetData<Vector4>())
+                {
+                    if (data.Length > 0)
+                    {
+                        Vector4 result = data[0];
+                         // w component holds hit flag (1.0 = hit, 0.0 = miss)
+                        if (result.w > 0.5f)
+                        {
+                            isHitting = true;
+                            lastHitPoint = (Vector3)result;
+                        }
+                        else
+                        {
+                            isHitting = false;
+                        }
+                    }
+                }
+            });
         }
         else
         {
@@ -114,8 +130,8 @@ public class VoxelEditor : MonoBehaviour
 
     public void ApplyEdit()
     {
-        if (svoManager == null || !svoManager.IsReady) return;
-        if (_modifier == null) _modifier = new VoxelModifier(svoEditorCompute, svoManager);
+        if (targetVolume == null || !targetVolume.IsReady) return;
+        if (_modifier == null) _modifier = new VoxelModifier(svoEditorCompute, targetVolume);
 
         VoxelBrush brush = new VoxelBrush();
         brush.position = lastHitPoint;
@@ -125,7 +141,7 @@ public class VoxelEditor : MonoBehaviour
         brush.shape = (int)brushShape;
         brush.op = (int)brushOp;
 
-        _modifier.Apply(brush, svoManager.Resolution);
+        _modifier.Apply(brush, targetVolume.Resolution);
     }
 
     private Bounds GetBrushAABB(Vector3 center)

@@ -1,12 +1,13 @@
+using System;
 using UnityEngine;
+using UnityEngine.Rendering;
+using VoxelEngine.Core;
 using VoxelEngine.Core.Buffers;
 using VoxelEngine.Core.Generators;
 using VoxelEngine.Core.Interfaces;
 
-public class SVOManager : MonoBehaviour, IVoxelStorage
+public class VoxelVolume : MonoBehaviour, IVoxelStorage
 {
-    public static SVOManager Instance { get; private set; }
-
     [Header("Settings")]
     public ComputeShader svoCompute;
     public int resolution = 64;
@@ -31,17 +32,25 @@ public class SVOManager : MonoBehaviour, IVoxelStorage
     public int MaxBricks => maxBricks;
     public bool IsReady => _bufferManager != null && _bufferManager.NodeBuffer != null;
 
-    private void Awake()
+    private void OnEnable()
     {
-        if (Instance != null && Instance != this) Destroy(this);
-        else Instance = this;
+        VoxelVolumeRegistry.Register(this);
+    }
+
+    private void OnDisable()
+    {
+        VoxelVolumeRegistry.Unregister(this);
     }
 
     private void Start()
     {
         InitializeBuffers();
         BuildSVO();
-        ReadbackCounters(); 
+    }
+
+    private void Update()
+    {
+        UpdateCounters();
     }
 
     private void InitializeBuffers()
@@ -55,14 +64,30 @@ public class SVOManager : MonoBehaviour, IVoxelStorage
         SVOGenerator.Build(svoCompute, _bufferManager, resolution);
     }
 
-    private void ReadbackCounters()
+    private void UpdateCounters()
     {
-        if (_bufferManager == null) return;
-        
-        uint[] counters = new uint[3];
-        _bufferManager.CounterBuffer.GetData(counters);
-        nodeCount = 4681; 
-        brickCount = (int)counters[2] / 64; 
+        if (_bufferManager == null || _bufferManager.CounterBuffer == null) return;
+
+        AsyncGPUReadback.Request(_bufferManager.CounterBuffer, (request) =>
+        {
+            if (request.hasError) return;
+            
+            // Counters: [0]=AllocatedNodes (Atomic), [1]=AllocatedPayloads, [2]=AllocatedBricksPtr
+            using (var data = request.GetData<uint>())
+            {
+                if (data.Length >= 3)
+                {
+                    // Note: nodeCount logic from original script was hardcoded 4681, 
+                    // but usually you want the actual atomic count or the SVO structure size.
+                    // For now, I will read the atomic counters.
+                    // If the original logic was specific, we can adapt. 
+                    // [2] is the pointer in floats. Divide by 64 to get bricks.
+                    
+                    brickCount = (int)data[2] / 64;
+                    // nodeCount = (int)data[0]; // If we were counting nodes atomically
+                }
+            }
+        });
     }
 
     private void OnDestroy()
