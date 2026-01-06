@@ -1,0 +1,148 @@
+#pragma kernel InitDenseStructure
+#pragma kernel BuildBricks
+
+#include "./Includes/VoxelStructures.hlsl"
+
+RWStructuredBuffer<SVONode> _NodeBuffer;
+RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
+RWStructuredBuffer<float> _BrickBuffer; 
+RWStructuredBuffer<uint> _BrickMaterialBuffer;
+RWStructuredBuffer<uint> _CounterBuffer; 
+
+// --- New Inputs for Phase 3 ---
+StructuredBuffer<float> _DenseSDFBuffer; // The dense SDF from Phase 2
+int _TargetMaterialID;                   // Material ID to assign to solid voxels
+uint _GridSize;                          // Resolution (e.g., 64)
+
+// Reuse the InitDenseStructure logic to build the Octree Nodes
+// Note: This logic assumes a depth of 4 (Resolution 64) for the node topology.
+[numthreads(64, 1, 1)]
+void InitDenseStructure(uint id : SV_DispatchThreadID)
+{
+    // Initialize Counter for Depth 4 (Resolution 64)
+    if (id == 0)
+    {
+        _CounterBuffer[0] = 4681; // 1 + 8 + 64 + 512 + 4096 nodes
+    }
+
+    if (id >= 4681) return;
+
+    SVONode node;
+    node.payloadIndex = 0;
+    node.topology = 0;
+
+    uint level = 0;
+    uint indexInLevel = id;
+
+    if (id >= 585) { level = 4; indexInLevel = id - 585; }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
+    
+    if (level < 4)
+    {
+        uint nextLevelOffset = 0;
+        if (level == 0) nextLevelOffset = 1;
+        if (level == 1) nextLevelOffset = 9;
+        if (level == 2) nextLevelOffset = 73;
+        if (level == 3) nextLevelOffset = 585;
+
+        uint childPtr = nextLevelOffset + (indexInLevel * 8);
+        node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
+    }
+    
+    _NodeBuffer[id] = node;
+}
+
+[numthreads(8, 8, 8)]
+void BuildBricks(uint3 id : SV_DispatchThreadID)
+{
+    // id corresponds to the Brick Coordinate (0 to Resolution/4)
+    uint bricksAxis = _GridSize / BRICK_SIZE;
+    if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
+
+    float3 brickOrigin = id * BRICK_SIZE;
+    
+    // Check if we should allocate this brick
+    // We sample the center of the brick from the Dense SDF
+    // The Dense SDF is flattened: x + y*w + z*w*h
+    uint centerX = id.x * BRICK_SIZE + BRICK_SIZE / 2;
+    uint centerY = id.y * BRICK_SIZE + BRICK_SIZE / 2;
+    uint centerZ = id.z * BRICK_SIZE + BRICK_SIZE / 2;
+    
+    // Safety clamp
+    if (centerX >= _GridSize) centerX = _GridSize - 1;
+    if (centerY >= _GridSize) centerY = _GridSize - 1;
+    if (centerZ >= _GridSize) centerZ = _GridSize - 1;
+
+    uint centerIdx = centerX + centerY * _GridSize + centerZ * _GridSize * _GridSize;
+    float distCenter = _DenseSDFBuffer[centerIdx];
+    
+    // Threshold to decide if we allocate the brick (surface or inside)
+    float allocationThreshold = (float)BRICK_SIZE * 1.5;
+
+    if (distCenter < allocationThreshold)
+    {
+        uint brickPtr;
+        // Allocate space for 64 voxels (Float buffer and Material buffer align)
+        InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
+
+        // Iterate through the 4x4x4 voxels in this brick
+        for (uint z = 0; z < BRICK_SIZE; z++)
+        {
+            for (uint y = 0; y < BRICK_SIZE; y++)
+            {
+                for (uint x = 0; x < BRICK_SIZE; x++)
+                {
+                    uint3 voxelLocal = uint3(x, y, z);
+                    uint3 voxelGlobal = (uint3)brickOrigin + voxelLocal;
+
+                    // Calculate index for Dense SDF Buffer
+                    uint sdfIdx = voxelGlobal.x + voxelGlobal.y * _GridSize + voxelGlobal.z * _GridSize * _GridSize;
+                    
+                    // Safety check for array bounds
+                    if (voxelGlobal.x < _GridSize && voxelGlobal.y < _GridSize && voxelGlobal.z < _GridSize)
+                    {
+                        float sdf = _DenseSDFBuffer[sdfIdx];
+                        
+                        // Write to Brick Buffer
+                        uint destIdx = brickPtr + (z*16 + y*4 + x);
+                        _BrickBuffer[destIdx] = sdf;
+
+                        // Material Assignment
+                        // If voxel is solid (sdf < 0 or small epsilon), set material
+                        if (sdf <= 0.5) 
+                        {
+                            _BrickMaterialBuffer[destIdx] = _TargetMaterialID;
+                        }
+                        else
+                        {
+                            _BrickMaterialBuffer[destIdx] = 0; // Empty/Air
+                        }
+                    }
+                }
+            }
+        }
+
+        // Link the Payload
+        uint payloadIndex;
+        InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
+        payloadIndex += 1; 
+
+        VoxelPayload payload;
+        payload.brickDataIndex = brickPtr;
+        
+        _PayloadBuffer[payloadIndex] = payload;
+
+        uint nodeIndex = GetNodeIndex(4, id);
+        _NodeBuffer[nodeIndex].payloadIndex = payloadIndex;
+        _NodeBuffer[nodeIndex].topology = 0;
+    }
+    else
+    {
+        // Empty Node
+        uint nodeIndex = GetNodeIndex(4, id);
+        _NodeBuffer[nodeIndex].payloadIndex = 0;
+        _NodeBuffer[nodeIndex].topology = 0;
+    }
+}

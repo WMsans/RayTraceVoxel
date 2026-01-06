@@ -14,6 +14,12 @@ uint _GridSize;
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
 {
+    // FIX: Set the Node Count (4681 for depth 4) so the Serializer knows how many nodes to save.
+    if (id == 0)
+    {
+        _CounterBuffer[0] = 4681;
+    }
+
     if (id >= 4681) return;
  SVONode node;
     node.payloadIndex = 0;

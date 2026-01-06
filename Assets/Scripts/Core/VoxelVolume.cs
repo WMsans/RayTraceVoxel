@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 using VoxelEngine.Core.Buffers;
 using VoxelEngine.Core.Generators;
 using VoxelEngine.Core.Interfaces;
+using VoxelEngine.Core.Serialization;
 
 namespace VoxelEngine.Core
 {
@@ -32,6 +33,16 @@ namespace VoxelEngine.Core
         public int MaxNodes => maxNodes;
         public int MaxBricks => maxBricks;
         public bool IsReady => _bufferManager != null && _bufferManager.NodeBuffer != null;
+
+        public void Save(string filePath, Action<bool> onComplete = null)
+        {
+            VoxelDataSerializer.Save(this, filePath, onComplete);
+        }
+
+        public void Load(string filePath)
+        {
+            VoxelDataSerializer.Load(this, filePath);
+        }
 
         private void OnEnable()
         {

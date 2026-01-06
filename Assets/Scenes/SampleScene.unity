@@ -762,6 +762,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1934085457}
   - component: {fileID: 1934085459}
+  - component: {fileID: 1934085460}
   m_Layer: 0
   m_Name: SVOManager
   m_TagString: Untagged
@@ -802,6 +803,19 @@ MonoBehaviour:
   maxBricks: 50000
   nodeCount: 0
   brickCount: 0
+--- !u!114 &1934085460
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1934085455}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8badc7886809b3646b31a0ce449f9381, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Serialization.VoxelSaveLoadController
+  defaultSaveName: world_save.vxvol
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
