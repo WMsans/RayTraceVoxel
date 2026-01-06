@@ -89,6 +89,9 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _MainLightShadowmapTextureParams = Shader.PropertyToID("_MainLightShadowmapTexture");
             private static readonly int _AdditionalLightsParams = Shader.PropertyToID("_AdditionalLights");
             private static readonly int _AdditionalLightCountParams = Shader.PropertyToID("_AdditionalLightCount");
+            
+            // --- Cascade Shadow Params ---
+            private static readonly int _ShadowCascadeCountParams = Shader.PropertyToID("_ShadowCascadeCount");
 
             private GraphicsBuffer _lightBuffer;
             private VoxelLight[] _lightDataArray = new VoxelLight[64];
@@ -166,13 +169,15 @@ namespace VoxelEngine.Core.Rendering
                 public TextureHandle shadowMap;
                 public GraphicsBuffer additionalLightsBuffer;
                 public int additionalLightsCount;
+                
+                // NEW: Cascades
+                public int shadowCascadeCount;
+                // REMOVED: Manual split sphere vectors and matrix arrays
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
                 if (VoxelVolumeRegistry.Volumes.Count == 0) return;
-                // For now, render the FIRST volume found. 
-                // Multi-volume support requires shader changes (e.g. depth compositing).
                 var activeVolume = VoxelVolumeRegistry.Volumes[0];
                 if (!activeVolume.IsReady) return;
 
@@ -180,6 +185,7 @@ namespace VoxelEngine.Core.Rendering
                 var cameraData = frameData.Get<UniversalCameraData>();
                 var lightData = frameData.Get<UniversalLightData>();
                 var renderingData = frameData.Get<UniversalRenderingData>();
+                var shadowData = frameData.Get<UniversalShadowData>(); 
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
                 TextureDesc desc = new TextureDesc(cameraDesc.width, cameraDesc.height);
@@ -207,7 +213,6 @@ namespace VoxelEngine.Core.Rendering
                     data.computeShader = _shader;
                     data.kernel = _shader.FindKernel("CSMain");
                     
-                    // Bind Active Volume Buffers
                     data.nodeBuffer = activeVolume.NodeBuffer;
                     data.payloadBuffer = activeVolume.PayloadBuffer;
                     data.brickBuffer = activeVolume.BrickBuffer;
@@ -244,6 +249,11 @@ namespace VoxelEngine.Core.Rendering
                     data.additionalLightsBuffer = _lightBuffer;
                     data.additionalLightsCount = addCount;
 
+                    // --- Capture Cascade Data ---
+                    data.shadowCascadeCount = shadowData.mainLightShadowCascadesCount;
+                    // REMOVED: Fetching split spheres and matrices here. 
+                    // We let the shader pick up the Globals set by URP during frame execution.
+
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
@@ -259,6 +269,7 @@ namespace VoxelEngine.Core.Rendering
                         var kernel = passData.kernel;
                         var cmd = ctx.cmd;
 
+                        // ... (Existing Buffer Sets) ...
                         cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, passData.nodeBuffer);
                         cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, passData.payloadBuffer);
                         cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer);
@@ -287,8 +298,15 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeVectorParam(cs, _MainLightPositionParams, passData.mainLightPosition);
                         cmd.SetComputeVectorParam(cs, _MainLightColorParams, passData.mainLightColor);
                         if (passData.shadowMap.IsValid()) cmd.SetComputeTextureParam(cs, kernel, _MainLightShadowmapTextureParams, passData.shadowMap);
+                        
+                        // REMOVED: Manual Matrix Array setting. This allows the shader to read the Global State directly.
+
                         cmd.SetComputeBufferParam(cs, kernel, _AdditionalLightsParams, passData.additionalLightsBuffer);
                         cmd.SetComputeIntParam(cs, _AdditionalLightCountParams, passData.additionalLightsCount);
+
+                        // --- Send Cascade Data ---
+                        cmd.SetComputeIntParam(cs, _ShadowCascadeCountParams, passData.shadowCascadeCount);
+                        // REMOVED: Manual Split Sphere settings.
 
                         int groupsX = Mathf.CeilToInt(passData.width / 8.0f);
                         int groupsY = Mathf.CeilToInt(passData.height / 8.0f);
@@ -318,6 +336,7 @@ namespace VoxelEngine.Core.Rendering
                     });
                 }
             }
+            // ... (Rest of class) ...
 
             private void SetupLights(UniversalRenderingData renderingData, UniversalLightData lightData, out Vector4 mainPos, out Vector4 mainCol, out int addCount)
             {
@@ -383,4 +402,3 @@ namespace VoxelEngine.Core.Rendering
         }
     }
 }
-
