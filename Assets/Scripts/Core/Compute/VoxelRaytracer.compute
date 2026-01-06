@@ -1,5 +1,5 @@
 #pragma kernel CSMain
-
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 #include "../../../Resources/Shaders/Includes/VoxelStructures.hlsl"
 
 StructuredBuffer<SVONode> _NodeBuffer;
@@ -36,13 +36,17 @@ float4 _MainLightColor;
 Texture2D<float> _MainLightShadowmapTexture;
 SamplerState sampler_MainLightShadowmapTexture;
 float4x4 _MainLightWorldToShadow[4];
+int _ShadowCascadeCount;
+float4 _CascadeShadowSplitSpheres0;
+float4 _CascadeShadowSplitSpheres1;
+float4 _CascadeShadowSplitSpheres2;
+float4 _CascadeShadowSplitSpheres3;
 StructuredBuffer<VoxelLight> _AdditionalLights;
 int _AdditionalLightCount;
 
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
-#define PI 3.14159265359
 
 float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax)
 {
@@ -91,47 +95,52 @@ float3 CalculateNormal(uint brickPtr, float3 localPos)
     return len > 1e-6 ? v / len : float3(0, 1, 0); 
  }
 
+ uint GetCascadeIndex(float3 posWS)
+{
+    float3 fromCenter0 = posWS - _CascadeShadowSplitSpheres0.xyz;
+    float dist0 = dot(fromCenter0, fromCenter0);
+    if (dist0 < _CascadeShadowSplitSpheres0.w) return 0;
+    
+    float3 fromCenter1 = posWS - _CascadeShadowSplitSpheres1.xyz;
+    float dist1 = dot(fromCenter1, fromCenter1);
+    if (dist1 < _CascadeShadowSplitSpheres1.w) return 1;
+    
+    float3 fromCenter2 = posWS - _CascadeShadowSplitSpheres2.xyz;
+    float dist2 = dot(fromCenter2, fromCenter2);
+    if (dist2 < _CascadeShadowSplitSpheres2.w) return 2;
+    
+    return 3;
+ }
+
 float SampleShadow(float3 worldPos)
 {
-    // Simple Cascade 0 selection for now.
- // Real implementation would calculate view depth and select index.
-    float4 shadowCoord = mul(_MainLightWorldToShadow[0], float4(worldPos, 1.0));
- if (shadowCoord.w == 0) return 1.0;
+    // 1. Select the correct cascade matrix based on position
+    uint cascadeIdx = 0;
+    if (_ShadowCascadeCount > 1)
+    {
+        cascadeIdx = GetCascadeIndex(worldPos);
+    }
     
+    // 2. Transform using that specific cascade's matrix
+    float4 shadowCoord = mul(_MainLightWorldToShadow[cascadeIdx], float4(worldPos, 1.0));
+    
+    if (shadowCoord.w <= 0.0) return 1.0;
     shadowCoord.xyz /= shadowCoord.w;
     
-    // Check bounds
     if (any(shadowCoord.xyz < 0.0) || any(shadowCoord.xyz > 1.0)) return 1.0;
- // Sample Shadow Map (Comparison or Raw)
-    // _MainLightShadowmapTexture is Texture2D<float> (Depth)
+
+    float mapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_MainLightShadowmapTexture, shadowCoord.xy, 0);
+    float bias = 0.002;
     
- float mapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_MainLightShadowmapTexture, shadowCoord.xy, 0);
-    
-    // FIX: Correct Comparison for Unity Reverse Z
+    // FIX (From previous step): Correct Comparison for Unity Reverse Z
     #if defined(UNITY_REVERSED_Z)
-        // Reverse Z: Near is 1, Far is 0.
-        // Shadow (closer to light) has LARGER depth value.
-        // If mapDepth > shadowCoord.z, map is closer -> Occluded.
-        if (mapDepth > shadowCoord.z) return 0.0;
+        if (mapDepth > shadowCoord.z + bias) return 0.2; // Shadowed
     #else
-        // Standard Z: Near is 0, Far is 1.
-        // Shadow (closer to light) has SMALLER depth value.
-        // If mapDepth < shadowCoord.z, map is closer -> Occluded.
-        if (mapDepth < shadowCoord.z) return 0.0;
-    #endif
-    
-    // Bias is critical.
- float bias = 0.005;
-    
-    // Apply bias to the comparison (Re-check with bias)
-    #if defined(UNITY_REVERSED_Z)
-         if (mapDepth > shadowCoord.z + bias) return 0.2;
-    #else
-         if (mapDepth < shadowCoord.z - bias) return 0.2;
+        if (mapDepth < shadowCoord.z - bias) return 0.2; // Shadowed
     #endif
 
     return 1.0;
- }
+}
 
 float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float shadow)
 {
