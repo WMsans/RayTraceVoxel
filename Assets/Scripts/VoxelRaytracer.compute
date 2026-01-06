@@ -36,9 +36,7 @@ Texture2DArray _AlbedoTextureArray;
 Texture2DArray _NormalTextureArray;
 Texture2DArray _MaskTextureArray;
 
-SamplerState sampler_AlbedoTextureArray;
- // Linear Wrap is standard
-// or use inline samplers like sampler_LinearRepeat
+SamplerState sampler_LinearRepeat;
 
 RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
@@ -190,15 +188,15 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
  float2 uvY = worldPos.xz * textureScale;
     float2 uvZ = worldPos.xy * textureScale;
  // Albedo
-    float3 albedoX = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideAlbedoIndex), 0).rgb;
-    float3 albedoY = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topAlbedoIndex), 0).rgb;
- float3 albedoZ = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
+    float3 albedoX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), 0).rgb;
+    float3 albedoY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topAlbedoIndex), 0).rgb;
+ float3 albedoZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
     
     outAlbedo = albedoX * blend.x + albedoY * blend.y + albedoZ * blend.z;
  // Mask (G=AO, B=Smoothness)
-    float4 maskX = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideMaskIndex), 0);
- float4 maskY = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topMaskIndex), 0);
-    float4 maskZ = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideMaskIndex), 0);
+    float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), 0);
+ float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topMaskIndex), 0);
+    float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), 0);
     
     float aoX = maskX.g;
  float smoothX = maskX.b;
@@ -207,9 +205,9 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
  outAO = aoX * blend.x + aoY * blend.y + aoZ * blend.z;
  outSmoothness = smoothX * blend.x + smoothY * blend.y + smoothZ * blend.z;
  // Normals
-    float3 nX = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideNormalIndex), 0));
-    float3 nY = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topNormalIndex), 0));
- float3 nZ = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideNormalIndex), 0));
+    float3 nX = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideNormalIndex), 0));
+    float3 nY = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topNormalIndex), 0));
+ float3 nZ = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideNormalIndex), 0));
     
     // Swizzle to World Space
     // X Plane (Side): T=(0,0,1), B=(0,1,0), N=(1,0,0) -> UV=zy -> u=z, v=y
