@@ -45,3 +45,29 @@ public struct VoxelTypeGPU
     // If strict 16-byte alignment is needed (e.g. for constant buffers), more padding is required.
     // For StructuredBuffer, 36 bytes is usually fine as long as HLSL matches.
 }
+
+public enum BrushShape
+{
+    Sphere = 0,
+    Cube = 1,
+    Plane = 2
+}
+
+public enum BrushOp
+{
+    Add = 0,
+    Subtract = 1,
+    Paint = 2
+}
+
+[System.Serializable]
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+public struct VoxelBrush
+{
+    public Vector3 position;
+    public Vector3 bounds; // Size for Cube/Plane
+    public float radius;   // For Sphere
+    public int materialId;
+    public int shape;      // BrushShape
+    public int op;         // BrushOp
+}
