@@ -1,23 +1,43 @@
-#pragma kernel FindAffectedNodes
+#pragma kernel AllocateNodes
+#pragma kernel EditVoxels
 
-// --- structs ---
+// --- Structs ---
 struct SVONode
 {
     uint topology;
     uint payloadIndex; 
 };
 
+struct VoxelPayload
+{
+    uint brickDataIndex;
+    uint materialId;
+};
+
 // --- Buffers ---
-StructuredBuffer<SVONode> _NodeBuffer;
-AppendStructuredBuffer<uint> _AffectedNodeBuffer; // Stores Indices of Nodes (Level 4)
+RWStructuredBuffer<SVONode> _NodeBuffer;
+RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
+RWStructuredBuffer<float> _BrickBuffer;
+RWStructuredBuffer<uint> _CounterBuffer; // [0]=Nodes, [1]=Payloads, [2]=BrickFloats
 
 // --- Uniforms ---
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
+// Flattened Brush Uniforms
+float3 _BrushPosition;
+float3 _BrushBounds;
+float _BrushRadius;
+int _BrushMaterialId;
+int _BrushShape; // 0=Sphere, 1=Cube, 2=Plane
+int _BrushOp;    // 0=Add, 1=Subtract, 2=Paint
+
+uint _MaxBricks;
+float _GridSize;
+
+static const uint BRICK_SIZE = 4;
+static const float MAX_SDF = 10000.0; // "Empty"
 
 // --- Helpers ---
-// Duplicated from SVOBuilder.compute for now.
-// In a real project, include a common .hlsl file.
 uint GetNodeIndex(uint level, uint3 gridPos)
 {
     uint offset = 0;
@@ -43,29 +63,160 @@ uint GetNodeIndex(uint level, uint3 gridPos)
     return offset + m;
 }
 
-[numthreads(8, 8, 8)]
-void FindAffectedNodes(uint3 id : SV_DispatchThreadID)
+float GetBrushSDF(float3 p)
 {
-    // 1. Calculate the Brick Index this thread is responsible for
+    float3 localP = p - _BrushPosition;
+    
+    if (_BrushShape == 0) // Sphere
+    {
+        return length(localP) - _BrushRadius;
+    }
+    else if (_BrushShape == 1) // Cube
+    {
+        float3 d = abs(localP) - _BrushBounds * 0.5;
+        return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
+    }
+    else if (_BrushShape == 2) // Plane (Infinite floor at Y)
+    {
+        // Simple plane: localP.y
+        return localP.y;
+    }
+    return MAX_SDF;
+}
+
+[numthreads(8, 8, 8)]
+void AllocateNodes(uint3 id : SV_DispatchThreadID)
+{
     int3 brickIdx = _MinBrickIndex + (int3)id;
 
-    // 2. Bounds Check (Thread ID might overshoot range)
     if (brickIdx.x > _MaxBrickIndex.x || 
         brickIdx.y > _MaxBrickIndex.y || 
         brickIdx.z > _MaxBrickIndex.z)
         return;
 
-    // 3. Get Node Index for Level 4 (Leaf/Brick Pointer)
     uint nodeIndex = GetNodeIndex(4, (uint3)brickIdx);
+    
+    // Check if node has payload
+    if (_NodeBuffer[nodeIndex].payloadIndex == 0)
+    {
+        // Only allocate if we are ADDING or PAINTING (Paint on empty? Maybe not, but Add definitely)
+        // If Subtracting from empty, no need to allocate.
+        if (_BrushOp == 1) return; // Subtract
 
-    // 4. Check if it points to a payload
-    // Note: Even if it doesn't (Empty space), if we are ADDING, we might need to know.
-    // However, the prompt asks to find "Existing" nodes.
-    // If we want to support Adding, we would simply return this NodeIndex, 
-    // and the next step would check if it needs allocation.
+        // Calculate if this brick is actually within the brush influence?
+        // Optimization: Check distance of brick center to brush.
+        float3 brickOrigin = (float3)brickIdx * (float)BRICK_SIZE;
+        float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
+        // Conservative check (radius + brick radius)
+        // Brick Radius ~ 3.5 (sqrt(4^2+4^2+4^2)/2)
+        if (GetBrushSDF(brickCenter) > 3.5) return; 
+
+        // Allocate
+        uint payloadPtr, brickPtr;
+        // Check limits? (Naive: just add)
+        InterlockedAdd(_CounterBuffer[1], 1, payloadPtr);
+        InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
+        
+        payloadPtr += 1; // 1-based index for safety/convention
+
+        if (brickPtr + 64 >= _MaxBricks * 64) return; // Limit reached
+
+        // Initialize Brick Data (Empty)
+        for (uint i = 0; i < 64; i++)
+        {
+            _BrickBuffer[brickPtr + i] = MAX_SDF;
+        }
+
+        // Setup Payload
+        VoxelPayload pl;
+        pl.brickDataIndex = brickPtr;
+        pl.materialId = _BrushMaterialId; // Default to brush material? Or Air?
+        // Usually, new space is Air, but here we allocate it because we are about to fill it.
+        // Let's set it to brush material so it's ready.
+        _PayloadBuffer[payloadPtr] = pl;
+
+        // Link Node
+        _NodeBuffer[nodeIndex].payloadIndex = payloadPtr;
+        _NodeBuffer[nodeIndex].topology = 0;
+    }
+}
+
+[numthreads(4, 4, 4)]
+void EditVoxels(uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
+{
+    // Group corresponds to a Brick in the range
+    int3 brickIdx = _MinBrickIndex + (int3)groupID;
     
-    // For now, let's just append the NodeIndex.
-    // The consumer (Step C) will read the node and see if payloadIndex == 0.
+    // Safety check just in case dispatch is padded
+    // (Dispatch is usually exact if we calculate groups correctly, but let's be safe)
+    if (brickIdx.x > _MaxBrickIndex.x || 
+        brickIdx.y > _MaxBrickIndex.y || 
+        brickIdx.z > _MaxBrickIndex.z)
+        return;
+
+    uint nodeIndex = GetNodeIndex(4, (uint3)brickIdx);
+    uint payloadIdx = _NodeBuffer[nodeIndex].payloadIndex;
+
+    // If no payload, it means it was empty and AllocateNodes deemed it unnecessary (e.g. Subtract)
+    if (payloadIdx == 0) return;
+
+    // Load Payload
+    VoxelPayload pl = _PayloadBuffer[payloadIdx];
+    uint brickPtr = pl.brickDataIndex;
+
+    // Voxel Coordinate within Brick
+    uint3 voxelLocal = groupThreadID;
+    uint voxelIndex = brickPtr + (voxelLocal.z * 16 + voxelLocal.y * 4 + voxelLocal.x);
     
-    _AffectedNodeBuffer.Append(nodeIndex);
+    // World Position
+    float3 brickOrigin = (float3)brickIdx * (float)BRICK_SIZE;
+    float3 voxelPos = brickOrigin + (float3)voxelLocal; // Center? Or Corner?
+    // In Raytracer, we used floor(p) to sample. Voxel centers are at +0.5?
+    // Standard: Voxel (x,y,z) is the volume from x to x+1.
+    // Distance field is usually defined at corners or centers.
+    // Let's assume corners or node centers.
+    // If SDF is sampled at integer coordinates in raytracer "SampleBrick", then we use integer here.
+    
+    // Calculate SDF
+    float brushVal = GetBrushSDF(voxelPos);
+    float currentVal = _BrickBuffer[voxelIndex];
+    float newVal = currentVal;
+
+    // Operation
+    if (_BrushOp == 0) // Add
+    {
+        newVal = min(currentVal, brushVal);
+        
+        // Material Update:
+        // If we are adding matter (brushVal < currentVal) and brushVal is inside surface (< 0),
+        // we might want to update material.
+        // Simple Logic: If new value comes from Brush, take Brush Material.
+        if (newVal == brushVal && brushVal < 0.5) // Epsilon
+        {
+             // Update Material ID for the whole brick?
+             // Current system: 1 Material per Brick.
+             // This is a limitation. If we paint/add, we convert the whole brick.
+             pl.materialId = _BrushMaterialId;
+             _PayloadBuffer[payloadIdx] = pl;
+        }
+    }
+    else if (_BrushOp == 1) // Subtract
+    {
+        // Subtract: Intersect with inverse of brush
+        // result = max(existing, -brush)
+        newVal = max(currentVal, -brushVal);
+    }
+    else if (_BrushOp == 2) // Paint
+    {
+        // Paint only changes material if we are near surface
+        // Check if voxel is "surface" (SDF near 0) and inside brush (brushVal < 0)
+        if (currentVal < 1.0 && brushVal < 0.0)
+        {
+             pl.materialId = _BrushMaterialId;
+             _PayloadBuffer[payloadIdx] = pl;
+        }
+    }
+
+    // Write back
+    _BrickBuffer[voxelIndex] = newVal;
 }

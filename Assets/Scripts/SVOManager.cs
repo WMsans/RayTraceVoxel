@@ -28,6 +28,7 @@ public class SVOManager : MonoBehaviour
     public GraphicsBuffer NodeBuffer => _nodeBuffer;
     public GraphicsBuffer PayloadBuffer => _payloadBuffer;
     public GraphicsBuffer BrickBuffer => _brickBuffer;
+    public GraphicsBuffer CounterBuffer => _counterBuffer;
     public bool IsReady => _nodeBuffer != null && _brickBuffer != null;
 
     private void Awake()

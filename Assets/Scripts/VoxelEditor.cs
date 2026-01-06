@@ -72,7 +72,7 @@ public class VoxelEditor : MonoBehaviour
         Debug.Log(isHitting);
         if (isHitting)
         {
-            IdentifyAffectedBricks();
+            ApplyEdit();
         }
     }
 
@@ -104,7 +104,7 @@ public class VoxelEditor : MonoBehaviour
         }
     }
 
-    public void IdentifyAffectedBricks()
+    public void ApplyEdit()
     {
         if (svoManager == null || !svoManager.IsReady) return;
 
@@ -125,34 +125,86 @@ public class VoxelEditor : MonoBehaviour
         minBrickId = Vector3Int.FloorToInt(min / brickSize);
         maxBrickId = Vector3Int.FloorToInt(max / brickSize);
 
-        // 3. Setup Compute Shader
-        int kernel = svoEditorCompute.FindKernel("FindAffectedNodes");
-        
-        // Reset Counter
-        _affectedNodeBuffer.SetCounterValue(0);
-
-        svoEditorCompute.SetBuffer(kernel, "_NodeBuffer", svoManager.NodeBuffer);
-        svoEditorCompute.SetBuffer(kernel, "_AffectedNodeBuffer", _affectedNodeBuffer);
-        
-        svoEditorCompute.SetInts("_MinBrickIndex", new int[] { minBrickId.x, minBrickId.y, minBrickId.z });
-        svoEditorCompute.SetInts("_MaxBrickIndex", new int[] { maxBrickId.x, maxBrickId.y, maxBrickId.z });
-        
-        // Dispatch threads covering the range
-        // Threads = (RangeX, RangeY, RangeZ)
-        // We can do 1 thread per brick.
+        // Calculate Range
         int rangeX = Mathf.Max(1, maxBrickId.x - minBrickId.x + 1);
         int rangeY = Mathf.Max(1, maxBrickId.y - minBrickId.y + 1);
         int rangeZ = Mathf.Max(1, maxBrickId.z - minBrickId.z + 1);
 
-        // Dispatch (groups of 1 is fine for small brushes, or we optimize groups)
-        // Let's use [numthreads(8,8,8)]
-        int groupsX = Mathf.CeilToInt(rangeX / 8.0f);
-        int groupsY = Mathf.CeilToInt(rangeY / 8.0f);
-        int groupsZ = Mathf.CeilToInt(rangeZ / 8.0f);
+        // 3. Setup Compute Shader kernels
+        int kernelAlloc = svoEditorCompute.FindKernel("AllocateNodes");
+        int kernelEdit = svoEditorCompute.FindKernel("EditVoxels");
 
-        svoEditorCompute.Dispatch(kernel, groupsX, groupsY, groupsZ);
+        // Uniforms
+        svoEditorCompute.SetInts("_MinBrickIndex", new int[] { minBrickId.x, minBrickId.y, minBrickId.z });
+        svoEditorCompute.SetInts("_MaxBrickIndex", new int[] { maxBrickId.x, maxBrickId.y, maxBrickId.z });
+        svoEditorCompute.SetFloat("_GridSize", gridSize);
+        svoEditorCompute.SetInt("_MaxBricks", svoManager.maxBricks); // Ensure this is public in SVOManager
 
-        Debug.Log($"Dispatched IdentifyAffectedBricks. Range: {rangeX}x{rangeY}x{rangeZ}");
+        // Set Brush Struct
+        // HLSL: float3 position, float3 bounds, float radius, int materialId, int shape, int op
+        // We can use SetFloats / SetInts or a simple buffer. 
+        // Since it's a struct uniform "VoxelBrush _Brush", simpler to pass fields individually if shader allows?
+        // No, Unity doesn't auto-unwrap structs for SetFloats unless we define property block.
+        // It's easier to just passing arrays matching the alignment or use SetVector.
+        // Or simpler: Just change the shader to use individual uniforms if struct packing is annoying.
+        // BUT, let's try to set it via SetVector since it's small.
+        // Struct Layout: 
+        // float3 position (12) + 4 padding? -> float4
+        // float3 bounds (12) + 4 padding? -> float4
+        // float radius, int material, int shape, int op (16) -> float4
+        // Unity "SetFloats" can set a float array to a struct uniform if we know the offsets.
+        // Safer: Use SetValues via a trivial ComputeBuffer or define uniforms separately.
+        // Let's assume standard packing and try setting floats.
+        
+        // Actually, let's just use separate uniforms in C# to avoid struct alignment headache in one shot
+        // But wait, the shader defines `VoxelBrush _Brush;`.
+        // I'll assume I can set `_Brush.position` etc via `svoEditorCompute.SetVector("_Brush.position", ...)`?
+        // No, Unity ComputeShader doesn't support dot notation for SetVector easily on structs.
+        // I will change the shader to use separate uniforms in the next step if this fails, 
+        // but for now let's try setting the buffer method which is robust.
+        // OR: Modify shader to not use a struct for uniforms.
+        // Given I just wrote the shader, I can re-write it to use `float3 _BrushPos` etc.
+        // But let's try `SetVector` with specific names if Unity supports it (it usually does for properties).
+        
+        svoEditorCompute.SetVector("_BrushPosition", lastHitPoint);
+        svoEditorCompute.SetVector("_BrushBounds", brushBounds);
+        svoEditorCompute.SetFloat("_BrushRadius", brushRadius);
+        svoEditorCompute.SetInt("_BrushMaterialId", selectedMaterialId);
+        svoEditorCompute.SetInt("_BrushShape", (int)brushShape);
+        svoEditorCompute.SetInt("_BrushOp", (int)brushOp);
+
+        // Buffers - Allocate
+        svoEditorCompute.SetBuffer(kernelAlloc, "_NodeBuffer", svoManager.NodeBuffer);
+        svoEditorCompute.SetBuffer(kernelAlloc, "_CounterBuffer", svoManager.CounterBuffer); // Need public accessor
+        svoEditorCompute.SetBuffer(kernelAlloc, "_PayloadBuffer", svoManager.PayloadBuffer);
+        svoEditorCompute.SetBuffer(kernelAlloc, "_BrickBuffer", svoManager.BrickBuffer);
+        
+        // Buffers - Edit
+        svoEditorCompute.SetBuffer(kernelEdit, "_NodeBuffer", svoManager.NodeBuffer);
+        svoEditorCompute.SetBuffer(kernelEdit, "_PayloadBuffer", svoManager.PayloadBuffer);
+        svoEditorCompute.SetBuffer(kernelEdit, "_BrickBuffer", svoManager.BrickBuffer);
+
+        // 4. Dispatch AllocateNodes (8x8x8 threads per group -> 1 brick per thread)
+        // We want 1 thread per brick.
+        // Threads per group = 512 (8*8*8).
+        // If range is e.g. 10x10x10 = 1000 bricks. We need 2 groups.
+        int totalBricksX = rangeX;
+        int totalBricksY = rangeY;
+        int totalBricksZ = rangeZ;
+        
+        // Dispatch (groupsX, groupsY, groupsZ) where TotalThreads = Groups * 8
+        int groupsAllocX = Mathf.CeilToInt(totalBricksX / 8.0f);
+        int groupsAllocY = Mathf.CeilToInt(totalBricksY / 8.0f);
+        int groupsAllocZ = Mathf.CeilToInt(totalBricksZ / 8.0f);
+        
+        svoEditorCompute.Dispatch(kernelAlloc, groupsAllocX, groupsAllocY, groupsAllocZ);
+
+        // 5. Dispatch EditVoxels (4x4x4 threads per group -> 1 brick per GROUP)
+        // GroupID maps to Brick Index.
+        // So we need RangeX * RangeY * RangeZ groups.
+        svoEditorCompute.Dispatch(kernelEdit, rangeX, rangeY, rangeZ);
+
+        Debug.Log($"Applied Edit. Range: {rangeX}x{rangeY}x{rangeZ}");
     }
 
     private Bounds GetBrushAABB(Vector3 center)
