@@ -1,42 +1,29 @@
 #pragma kernel AllocateNodes
 #pragma kernel EditVoxels
 
-// --- Structs ---
-struct SVONode
-{
-    uint topology;
-    uint payloadIndex; 
-};
+struct SVONode { uint topology; uint payloadIndex; };
+struct VoxelPayload { uint brickDataIndex; }; // materialId removed
 
-struct VoxelPayload
-{
-    uint brickDataIndex;
-    uint materialId;
-};
-
-// --- Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer;
-RWStructuredBuffer<uint> _CounterBuffer; // [0]=Nodes, [1]=Payloads, [2]=BrickFloats
+RWStructuredBuffer<uint> _BrickMaterialBuffer; // NEW
+RWStructuredBuffer<uint> _CounterBuffer;
 
 // --- Uniforms ---
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
-// Flattened Brush Uniforms
 float3 _BrushPosition;
 float3 _BrushBounds;
 float _BrushRadius;
 int _BrushMaterialId;
-int _BrushShape; // 0=Sphere, 1=Cube, 2=Plane
-int _BrushOp;    // 0=Add, 1=Subtract, 2=Paint
-float _Smoothness; // 0.0 = Hard, >0.0 = Smooth (e.g. 1.0)
-
+int _BrushShape;
+int _BrushOp;
+float _Smoothness;
 uint _MaxBricks;
 float _GridSize;
-
 static const uint BRICK_SIZE = 4;
-static const float MAX_SDF = 10000.0; // "Empty"
+static const float MAX_SDF = 10000.0;
 
 // --- Helpers ---
 // Polynomial Smooth Min (k = smoothness)
@@ -97,54 +84,36 @@ float GetBrushSDF(float3 p)
 void AllocateNodes(uint3 id : SV_DispatchThreadID)
 {
     int3 brickIdx = _MinBrickIndex + (int3)id;
-
-    if (brickIdx.x > _MaxBrickIndex.x || 
-        brickIdx.y > _MaxBrickIndex.y || 
-        brickIdx.z > _MaxBrickIndex.z)
-        return;
-
+    if (brickIdx.x > _MaxBrickIndex.x || brickIdx.y > _MaxBrickIndex.y || brickIdx.z > _MaxBrickIndex.z) return;
     uint nodeIndex = GetNodeIndex(4, (uint3)brickIdx);
     
-    // Check if node has payload
     if (_NodeBuffer[nodeIndex].payloadIndex == 0)
     {
-        // Only allocate if we are ADDING or PAINTING (Paint on empty? Maybe not, but Add definitely)
-        // If Subtracting from empty, no need to allocate.
         if (_BrushOp == 1) return; // Subtract
-
-        // Calculate if this brick is actually within the brush influence?
-        // Optimization: Check distance of brick center to brush.
+        
         float3 brickOrigin = (float3)brickIdx * (float)BRICK_SIZE;
         float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
-        // Conservative check (radius + brick radius)
-        // Brick Radius ~ 3.5 (sqrt(4^2+4^2+4^2)/2)
-        if (GetBrushSDF(brickCenter) > 3.5) return; 
+        if (GetBrushSDF(brickCenter) > 3.5) return;
 
-        // Allocate
         uint payloadPtr, brickPtr;
-        // Check limits? (Naive: just add)
         InterlockedAdd(_CounterBuffer[1], 1, payloadPtr);
         InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
-        
-        payloadPtr += 1; // 1-based index for safety/convention
+        payloadPtr += 1;
 
-        if (brickPtr + 64 >= _MaxBricks * 64) return; // Limit reached
+        if (brickPtr + 64 >= _MaxBricks * 64) return;
 
-        // Initialize Brick Data (Empty)
+        // Initialize Data
         for (uint i = 0; i < 64; i++)
         {
             _BrickBuffer[brickPtr + i] = MAX_SDF;
+            _BrickMaterialBuffer[brickPtr + i] = 0; // Default Air material
         }
 
-        // Setup Payload
         VoxelPayload pl;
         pl.brickDataIndex = brickPtr;
-        pl.materialId = _BrushMaterialId; // Default to brush material? Or Air?
-        // Usually, new space is Air, but here we allocate it because we are about to fill it.
-        // Let's set it to brush material so it's ready.
+        // removed materialId
+        
         _PayloadBuffer[payloadPtr] = pl;
-
-        // Link Node
         _NodeBuffer[nodeIndex].payloadIndex = payloadPtr;
         _NodeBuffer[nodeIndex].topology = 0;
     }
@@ -153,81 +122,50 @@ void AllocateNodes(uint3 id : SV_DispatchThreadID)
 [numthreads(4, 4, 4)]
 void EditVoxels(uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
 {
-    // Group corresponds to a Brick in the range
     int3 brickIdx = _MinBrickIndex + (int3)groupID;
+    if (brickIdx.x > _MaxBrickIndex.x || brickIdx.y > _MaxBrickIndex.y || brickIdx.z > _MaxBrickIndex.z) return;
     
-    // Safety check just in case dispatch is padded
-    // (Dispatch is usually exact if we calculate groups correctly, but let's be safe)
-    if (brickIdx.x > _MaxBrickIndex.x || 
-        brickIdx.y > _MaxBrickIndex.y || 
-        brickIdx.z > _MaxBrickIndex.z)
-        return;
-
     uint nodeIndex = GetNodeIndex(4, (uint3)brickIdx);
     uint payloadIdx = _NodeBuffer[nodeIndex].payloadIndex;
-
-    // If no payload, it means it was empty and AllocateNodes deemed it unnecessary (e.g. Subtract)
     if (payloadIdx == 0) return;
 
-    // Load Payload
     VoxelPayload pl = _PayloadBuffer[payloadIdx];
     uint brickPtr = pl.brickDataIndex;
-
-    // Voxel Coordinate within Brick
     uint3 voxelLocal = groupThreadID;
     uint voxelIndex = brickPtr + (voxelLocal.z * 16 + voxelLocal.y * 4 + voxelLocal.x);
     
-    // World Position
     float3 brickOrigin = (float3)brickIdx * (float)BRICK_SIZE;
-    float3 voxelPos = brickOrigin + (float3)voxelLocal; // Center? Or Corner?
-    
-    // Calculate SDF
+    float3 voxelPos = brickOrigin + (float3)voxelLocal;
+
     float brushVal = GetBrushSDF(voxelPos);
-    
-    // Artifact Cleanup Bias:
-    // Prevents thin/floating voxels by being aggressive on subtract and conservative on add.
     float bias = 0.2; 
-    if (_BrushOp == 1) brushVal -= bias; // Expand subtract area
-    else if (_BrushOp == 0) brushVal += bias; // Shrink add area
+    if (_BrushOp == 1) brushVal -= bias;
+    else if (_BrushOp == 0) brushVal += bias;
 
     float currentVal = _BrickBuffer[voxelIndex];
     float newVal = currentVal;
-    
-    // Smoothing Factor (e.g. 1.0 = 1 voxel unit)
     float k = max(_Smoothness, 0.001);
 
-    // Operation
     if (_BrushOp == 0) // Add
     {
-        // Smooth Union
         newVal = smin(currentVal, brushVal, k);
-        
-        // Material Update:
-        // Update if the brush contributes significantly (brushVal dominates).
-        // Since smin blends, there's no sharp transition. 
-        // We check if brushVal is the "closer" one (roughly).
+        // If brush is adding significant density, apply material
         if (brushVal < currentVal)
         {
-             pl.materialId = _BrushMaterialId;
-             _PayloadBuffer[payloadIdx] = pl;
+             _BrickMaterialBuffer[voxelIndex] = _BrushMaterialId;
         }
     }
     else if (_BrushOp == 1) // Subtract
     {
-        // Smooth Subtraction: smax(a, -b) -> -smin(-a, b)
         newVal = -smin(-currentVal, brushVal, k);
     }
     else if (_BrushOp == 2) // Paint
     {
-        // Paint only changes material if we are near surface
-        // Check if voxel is "surface" (SDF near 0) and inside brush (brushVal < 0)
         if (currentVal < 1.0 && brushVal < 0.0)
         {
-             pl.materialId = _BrushMaterialId;
-             _PayloadBuffer[payloadIdx] = pl;
+             _BrickMaterialBuffer[voxelIndex] = _BrushMaterialId;
         }
     }
 
-    // Write back
     _BrickBuffer[voxelIndex] = newVal;
 }

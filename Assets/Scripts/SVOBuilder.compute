@@ -1,24 +1,17 @@
 #pragma kernel InitDenseStructure
 #pragma kernel BuildBricks
 
-struct SVONode
-{
-    uint topology;
-    uint payloadIndex; 
-};
- struct VoxelPayload
-{
-    uint brickDataIndex;
-    uint materialId;
-};
+struct SVONode { uint topology; uint payloadIndex; };
+struct VoxelPayload { uint brickDataIndex; }; // materialId removed
 
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer; 
+RWStructuredBuffer<uint> _BrickMaterialBuffer; // NEW
 RWStructuredBuffer<uint> _CounterBuffer; 
 
 uint _GridSize;
- static const uint BRICK_SIZE = 4;
+static const uint BRICK_SIZE = 4;
 
 uint GetNodeIndex(uint level, uint3 gridPos)
 {
@@ -81,30 +74,27 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
 float GetSDF(float3 pos)
 {
     float sizeF = (float)_GridSize;
- float3 center = float3(sizeF * 0.5, sizeF * 0.5, sizeF * 0.5);
- // Sphere: 40% of grid size radius
+    float3 center = float3(sizeF * 0.5, sizeF * 0.5, sizeF * 0.5);
     return length(pos - center) - (sizeF * 0.4);
- }
+}
 
 [numthreads(8, 8, 8)]
 void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
     uint bricksAxis = _GridSize / BRICK_SIZE;
- if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
+    if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
 
     float3 brickOrigin = id * BRICK_SIZE;
- float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
+    float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
     
-    // Check if brick is potentially relevant
-    // Since we want to ensure visibility, we check a large threshold
     float activeThreshold = (float)BRICK_SIZE * 1.5;
- float dist = GetSDF(brickCenter);
+    float dist = GetSDF(brickCenter);
 
-    // Build if inside (negative) or near surface
     if (dist < activeThreshold)
     {
-        uint brickFloatPtr;
- InterlockedAdd(_CounterBuffer[2], 64, brickFloatPtr);
+        uint brickPtr;
+        // Allocate space (same index used for both Float and Material buffers)
+        InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
 
         for (uint z = 0; z < BRICK_SIZE; z++)
         {
@@ -112,31 +102,37 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             {
                 for (uint x = 0; x < BRICK_SIZE; x++)
                 {
-         
-            float3 voxelPos = brickOrigin + float3(x, y, z);
- float sdf = GetSDF(voxelPos);
-                    _BrickBuffer[brickFloatPtr + (z*16 + y*4 + x)] = sdf;
- }
+                    float3 voxelPos = brickOrigin + float3(x, y, z);
+                    float sdf = GetSDF(voxelPos);
+                    uint idx = brickPtr + (z*16 + y*4 + x);
+                    
+                    _BrickBuffer[idx] = sdf;
+                    
+                    // NEW: Set per-voxel material
+                    // Default to 1 (Solid) or procedural logic
+                    _BrickMaterialBuffer[idx] = 1; 
+                }
             }
         }
 
         uint payloadIndex;
- InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
+        InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
         payloadIndex += 1; 
 
         VoxelPayload payload;
-        payload.brickDataIndex = brickFloatPtr;
-        // CHANGED: Use material ID 0 (first in list) instead of 1
-        payload.materialId = 0;
+        payload.brickDataIndex = brickPtr;
+        // No materialId here
+        
         _PayloadBuffer[payloadIndex] = payload;
- uint nodeIndex = GetNodeIndex(4, id);
+        
+        uint nodeIndex = GetNodeIndex(4, id);
         _NodeBuffer[nodeIndex].payloadIndex = payloadIndex;
         _NodeBuffer[nodeIndex].topology = 0;
- }
+    }
     else
     {
         uint nodeIndex = GetNodeIndex(4, id);
- _NodeBuffer[nodeIndex].payloadIndex = 0;
+        _NodeBuffer[nodeIndex].payloadIndex = 0;
         _NodeBuffer[nodeIndex].topology = 0;
     }
 }

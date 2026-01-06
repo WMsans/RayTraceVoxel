@@ -69,6 +69,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         private static readonly int _NodeBufferParams = Shader.PropertyToID("_NodeBuffer");
         private static readonly int _PayloadBufferParams = Shader.PropertyToID("_PayloadBuffer");
         private static readonly int _BrickBufferParams = Shader.PropertyToID("_BrickBuffer");
+        private static readonly int _BrickMaterialBufferParams = Shader.PropertyToID("_BrickMaterialBuffer");
         private static readonly int _RaycastBufferParams = Shader.PropertyToID("_RaycastBuffer");
 
         // Palette / Materials (GPU Data Structures)
@@ -144,6 +145,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             public GraphicsBuffer nodeBuffer;
             public GraphicsBuffer payloadBuffer;
             public GraphicsBuffer brickBuffer;
+            public GraphicsBuffer brickMaterialBuffer;
             public GraphicsBuffer raycastBuffer;
 
             // Palette Data
@@ -210,6 +212,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 data.nodeBuffer = SVOManager.Instance.NodeBuffer;
                 data.payloadBuffer = SVOManager.Instance.PayloadBuffer;
                 data.brickBuffer = SVOManager.Instance.BrickBuffer;
+                data.brickMaterialBuffer = SVOManager.Instance.BrickMaterialBuffer;
                 
                 if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
                 {
@@ -265,6 +268,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                     cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, passData.nodeBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, passData.payloadBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer);
+                    cmd.SetComputeBufferParam(cs, kernel, _BrickMaterialBufferParams, passData.brickMaterialBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _RaycastBufferParams, passData.raycastBuffer);
 
                     // Bind Palette (NEW)
