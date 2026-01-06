@@ -242,6 +242,7 @@ GameObject:
   - component: {fileID: 149564414}
   - component: {fileID: 149564416}
   - component: {fileID: 149564415}
+  - component: {fileID: 149564417}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -309,6 +310,30 @@ Rigidbody:
   m_Interpolate: 0
   m_Constraints: 0
   m_CollisionDetection: 0
+--- !u!114 &149564417
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 149564413}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6a5b85052b207a4fa991a6e2c3847b95, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEditor
+  brushShape: 0
+  brushOp: 1
+  brushRadius: 5
+  brushBounds: {x: 8, y: 8, z: 8}
+  selectedMaterialId: 0
+  svoEditorCompute: {fileID: 7200000, guid: 0a07406e9fe2c25cea26009d5d65c159, type: 3}
+  svoManager: {fileID: 1934085456}
+  mainCamera: {fileID: 330585545}
+  isHitting: 0
+  lastHitPoint: {x: 0, y: 0, z: 0}
+  minBrickId: {x: 0, y: 0, z: 0}
+  maxBrickId: {x: 0, y: 0, z: 0}
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0

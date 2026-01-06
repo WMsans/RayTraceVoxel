@@ -40,6 +40,7 @@ SamplerState sampler_LinearRepeat;
 
 RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
+RWStructuredBuffer<float4> _RaycastBuffer; // Index 0: Center Ray Hit (xyz=pos, w=hit?)
 
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
@@ -231,12 +232,16 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
 [numthreads(8, 8, 1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
-    uint width, height;
-    _Result.GetDimensions(width, height);
- if (id.x >= width || id.y >= height) return;
-
-    float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
- float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
+        uint width, height;
+        _Result.GetDimensions(width, height);
+        if (id.x >= width || id.y >= height) return;
+    
+        if (id.x == width / 2 && id.y == height / 2)
+        {
+            _RaycastBuffer[0] = float4(0, 0, 0, 0);
+        }
+    
+        float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0; float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
     float3 rayDir = mul((float3x3)_CameraToWorld, viewRay.xyz);
     rayDir = normalize(rayDir);
     float3 rayOrigin = _CameraToWorld._m03_m13_m23;
@@ -438,13 +443,18 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 
                 if (surface) {
                     _Result[id.xy] = float4(finalColor, finalAlpha);
- // Calculate Depth for Compositing
+                    // Calculate Depth for Compositing
                     float4 clipPos = mul(_CameraViewProjection, float4(hitWorldPos, 1.0));
- float depth = clipPos.z / clipPos.w;
+                    float depth = clipPos.z / clipPos.w;
                     _ResultDepth[id.xy] = depth;
                     
+                    if (id.x == width / 2 && id.y == height / 2)
+                    {
+                        _RaycastBuffer[0] = float4(hitWorldPos, 1.0);
+                    }
+
                     return;
- }
+                }
             }
             tCurrent = tLeaf.y + EPSILON;
  }

@@ -16,6 +16,8 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
     public Settings settings = new Settings();
     private VoxelRaytracerPass _pass;
     private Material _compositeMaterial;
+    
+    public static GraphicsBuffer RaycastHitBuffer;
 
     public override void Create()
     {
@@ -66,7 +68,8 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
         // SVO Buffers
         private static readonly int _NodeBufferParams = Shader.PropertyToID("_NodeBuffer");
         private static readonly int _PayloadBufferParams = Shader.PropertyToID("_PayloadBuffer");
-        private static readonly int _BrickBufferParams = Shader.PropertyToID("_BrickBuffer"); 
+        private static readonly int _BrickBufferParams = Shader.PropertyToID("_BrickBuffer");
+        private static readonly int _RaycastBufferParams = Shader.PropertyToID("_RaycastBuffer");
 
         // Palette / Materials (GPU Data Structures)
         private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
@@ -102,6 +105,8 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             _albedoHandle?.Release();
             _normalHandle?.Release();
             _maskHandle?.Release();
+            VoxelRaytracerFeature.RaycastHitBuffer?.Release();
+            VoxelRaytracerFeature.RaycastHitBuffer = null;
         }
 
         public void Setup(Material mat)
@@ -139,6 +144,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
             public GraphicsBuffer nodeBuffer;
             public GraphicsBuffer payloadBuffer;
             public GraphicsBuffer brickBuffer;
+            public GraphicsBuffer raycastBuffer;
 
             // Palette Data
             public GraphicsBuffer materialBuffer;
@@ -205,6 +211,12 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 data.payloadBuffer = SVOManager.Instance.PayloadBuffer;
                 data.brickBuffer = SVOManager.Instance.BrickBuffer;
                 
+                if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
+                {
+                     VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16); // float4
+                }
+                data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
+                
                 // Palette Data
                 data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
                 if (_albedoHandle != null) data.albedoArray = renderGraph.ImportTexture(_albedoHandle);
@@ -253,6 +265,7 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                     cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, passData.nodeBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, passData.payloadBuffer);
                     cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer);
+                    cmd.SetComputeBufferParam(cs, kernel, _RaycastBufferParams, passData.raycastBuffer);
 
                     // Bind Palette (NEW)
                     if (passData.materialBuffer != null)
