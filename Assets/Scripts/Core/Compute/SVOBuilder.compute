@@ -1,7 +1,7 @@
 #pragma kernel InitDenseStructure
 #pragma kernel BuildBricks
 
-#include "../../../Resources/Shaders/Includes/VoxelStructures.hlsl"
+#include "./Includes/VoxelStructures.hlsl"
 
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;

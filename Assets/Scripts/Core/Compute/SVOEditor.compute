@@ -3,7 +3,7 @@
 #pragma kernel EditVoxelsSphere
 #pragma kernel EditVoxelsCube
 
-#include "../../../Resources/Shaders/Includes/VoxelStructures.hlsl"
+#include "./Includes/VoxelStructures.hlsl"
 
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;

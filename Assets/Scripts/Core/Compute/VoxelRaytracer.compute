@@ -1,6 +1,6 @@
 #pragma kernel CSMain
 #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
-#include "../../../Resources/Shaders/Includes/VoxelStructures.hlsl"
+#include "./Includes/VoxelStructures.hlsl"
 
 StructuredBuffer<SVONode> _NodeBuffer;
 StructuredBuffer<VoxelPayload> _PayloadBuffer;
