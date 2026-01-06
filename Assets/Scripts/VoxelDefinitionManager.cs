@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using System.Runtime.InteropServices;
+using VoxelEngine.Core.Data;
 
 /// <summary>
 /// Manages the registry of VoxelDefinitions and packs them into GPU-compatible formats

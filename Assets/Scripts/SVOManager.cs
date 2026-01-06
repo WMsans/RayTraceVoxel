@@ -1,7 +1,9 @@
 using UnityEngine;
-using System.Runtime.InteropServices;
+using VoxelEngine.Core.Buffers;
+using VoxelEngine.Core.Generators;
+using VoxelEngine.Core.Interfaces;
 
-public class SVOManager : MonoBehaviour
+public class SVOManager : MonoBehaviour, IVoxelStorage
 {
     public static SVOManager Instance { get; private set; }
 
@@ -15,19 +17,19 @@ public class SVOManager : MonoBehaviour
     public int nodeCount; 
     public int brickCount;
 
-    // GPU Buffers
-    private GraphicsBuffer _nodeBuffer;
-    private GraphicsBuffer _payloadBuffer;
-    private GraphicsBuffer _brickBuffer;         // Stores SDF (floats)
-    private GraphicsBuffer _brickMaterialBuffer; // NEW: Stores Material IDs (uints)
-    private GraphicsBuffer _counterBuffer; 
+    private SVOBufferManager _bufferManager;
 
-    public GraphicsBuffer NodeBuffer => _nodeBuffer;
-    public GraphicsBuffer PayloadBuffer => _payloadBuffer;
-    public GraphicsBuffer BrickBuffer => _brickBuffer;
-    public GraphicsBuffer BrickMaterialBuffer => _brickMaterialBuffer; // Public Accessor
-    public GraphicsBuffer CounterBuffer => _counterBuffer;
-    public bool IsReady => _nodeBuffer != null && _brickBuffer != null;
+    // IVoxelStorage Implementation
+    public GraphicsBuffer NodeBuffer => _bufferManager?.NodeBuffer;
+    public GraphicsBuffer PayloadBuffer => _bufferManager?.PayloadBuffer;
+    public GraphicsBuffer BrickBuffer => _bufferManager?.BrickBuffer;
+    public GraphicsBuffer BrickMaterialBuffer => _bufferManager?.BrickMaterialBuffer;
+    public GraphicsBuffer CounterBuffer => _bufferManager?.CounterBuffer;
+    
+    public int Resolution => resolution;
+    public int MaxNodes => maxNodes;
+    public int MaxBricks => maxBricks;
+    public bool IsReady => _bufferManager != null && _bufferManager.NodeBuffer != null;
 
     private void Awake()
     {
@@ -44,59 +46,27 @@ public class SVOManager : MonoBehaviour
 
     private void InitializeBuffers()
     {
-        _nodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxNodes, Marshal.SizeOf<SVONode>());
-        _payloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxNodes, Marshal.SizeOf<VoxelPayload>());
-        
-        int brickVoxels = SVONode.BRICK_VOXEL_COUNT; // 64
-        
-        // 1. SDF Buffer
-        _brickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxBricks * brickVoxels, sizeof(float));
-        
-        // 2. Material Buffer (NEW)
-        _brickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxBricks * brickVoxels, sizeof(uint));
-        
-        _counterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3, sizeof(uint));
-        _counterBuffer.SetData(new uint[] { 0, 0, 0 }); 
+        _bufferManager = new SVOBufferManager(maxNodes, maxBricks);
     }
 
     private void BuildSVO()
     {
         if (svoCompute == null) return;
-        
-        int kernelInit = svoCompute.FindKernel("InitDenseStructure");
-        svoCompute.SetBuffer(kernelInit, "_NodeBuffer", _nodeBuffer);
-        svoCompute.Dispatch(kernelInit, 74, 1, 1);
-
-        int kernelBuild = svoCompute.FindKernel("BuildBricks");
-        svoCompute.SetBuffer(kernelBuild, "_NodeBuffer", _nodeBuffer);
-        svoCompute.SetBuffer(kernelBuild, "_PayloadBuffer", _payloadBuffer);
-        svoCompute.SetBuffer(kernelBuild, "_BrickBuffer", _brickBuffer);
-        svoCompute.SetBuffer(kernelBuild, "_BrickMaterialBuffer", _brickMaterialBuffer); // Bind New Buffer
-        svoCompute.SetBuffer(kernelBuild, "_CounterBuffer", _counterBuffer);
-        svoCompute.SetInt("_GridSize", resolution); 
-        
-        int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
-        int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 8.0f);
-        
-        svoCompute.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
-        
-        Debug.Log($"SVO Generation Dispatched. Grid: {resolution}");
+        SVOGenerator.Build(svoCompute, _bufferManager, resolution);
     }
 
     private void ReadbackCounters()
     {
+        if (_bufferManager == null) return;
+        
         uint[] counters = new uint[3];
-        _counterBuffer.GetData(counters);
+        _bufferManager.CounterBuffer.GetData(counters);
         nodeCount = 4681; 
         brickCount = (int)counters[2] / 64; 
     }
 
     private void OnDestroy()
     {
-        _nodeBuffer?.Release();
-        _payloadBuffer?.Release();
-        _brickBuffer?.Release();
-        _brickMaterialBuffer?.Release();
-        _counterBuffer?.Release();
+        _bufferManager?.Dispose();
     }
 }

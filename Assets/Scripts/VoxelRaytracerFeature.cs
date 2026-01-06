@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.Rendering.RenderGraphModule;
+using VoxelEngine.Core.Data;
 
 public class VoxelRaytracerFeature : ScriptableRendererFeature
 {
@@ -123,13 +124,6 @@ public class VoxelRaytracerFeature : ScriptableRendererFeature
                 handle?.Release();
                 handle = RTHandles.Alloc(texture);
             }
-        }
-
-        struct VoxelLight
-        {
-            public Vector4 position;
-            public Vector4 color;
-            public Vector4 attenuation;
         }
 
         private class PassData

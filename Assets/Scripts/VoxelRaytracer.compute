@@ -1,13 +1,6 @@
 #pragma kernel CSMain
 
-struct SVONode { uint topology; uint payloadIndex; };
-struct VoxelPayload { uint brickDataIndex; }; // materialId removed
-struct VoxelTypeGPU
-{
-    uint sideAlbedoIndex; uint sideNormalIndex; uint sideMaskIndex;
-    uint topAlbedoIndex; uint topNormalIndex; uint topMaskIndex;
-    float sideMetallic; float topMetallic; uint renderType;
-};
+#include "../Resources/Shaders/Includes/VoxelStructures.hlsl"
 
 StructuredBuffer<SVONode> _NodeBuffer;
 StructuredBuffer<VoxelPayload> _PayloadBuffer;
@@ -43,10 +36,9 @@ float4 _MainLightColor;
 Texture2D<float> _MainLightShadowmapTexture;
 SamplerState sampler_MainLightShadowmapTexture;
 float4x4 _MainLightWorldToShadow[4];
- struct VoxelLight { float4 position; float4 color; float4 attenuation; };
 StructuredBuffer<VoxelLight> _AdditionalLights;
 int _AdditionalLightCount;
- #define BRICK_SIZE 4
+
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
