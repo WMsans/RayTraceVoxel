@@ -30,6 +30,7 @@ float _BrushRadius;
 int _BrushMaterialId;
 int _BrushShape; // 0=Sphere, 1=Cube, 2=Plane
 int _BrushOp;    // 0=Add, 1=Subtract, 2=Paint
+float _Smoothness; // 0.0 = Hard, >0.0 = Smooth (e.g. 1.0)
 
 uint _MaxBricks;
 float _GridSize;
@@ -38,6 +39,14 @@ static const uint BRICK_SIZE = 4;
 static const float MAX_SDF = 10000.0; // "Empty"
 
 // --- Helpers ---
+// Polynomial Smooth Min (k = smoothness)
+float smin(float a, float b, float k)
+{
+    if (k < 0.001) return min(a, b);
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return lerp(b, a, h) - k * h * (1.0 - h);
+}
+
 uint GetNodeIndex(uint level, uint3 gridPos)
 {
     uint offset = 0;
@@ -171,40 +180,35 @@ void EditVoxels(uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThread
     // World Position
     float3 brickOrigin = (float3)brickIdx * (float)BRICK_SIZE;
     float3 voxelPos = brickOrigin + (float3)voxelLocal; // Center? Or Corner?
-    // In Raytracer, we used floor(p) to sample. Voxel centers are at +0.5?
-    // Standard: Voxel (x,y,z) is the volume from x to x+1.
-    // Distance field is usually defined at corners or centers.
-    // Let's assume corners or node centers.
-    // If SDF is sampled at integer coordinates in raytracer "SampleBrick", then we use integer here.
     
     // Calculate SDF
     float brushVal = GetBrushSDF(voxelPos);
     float currentVal = _BrickBuffer[voxelIndex];
     float newVal = currentVal;
+    
+    // Smoothing Factor (e.g. 1.0 = 1 voxel unit)
+    float k = max(_Smoothness, 0.001);
 
     // Operation
     if (_BrushOp == 0) // Add
     {
-        newVal = min(currentVal, brushVal);
+        // Smooth Union
+        newVal = smin(currentVal, brushVal, k);
         
         // Material Update:
-        // If we are adding matter (brushVal < currentVal) and brushVal is inside surface (< 0),
-        // we might want to update material.
-        // Simple Logic: If new value comes from Brush, take Brush Material.
-        if (newVal == brushVal && brushVal < 0.5) // Epsilon
+        // Update if the brush contributes significantly (brushVal dominates).
+        // Since smin blends, there's no sharp transition. 
+        // We check if brushVal is the "closer" one (roughly).
+        if (brushVal < currentVal)
         {
-             // Update Material ID for the whole brick?
-             // Current system: 1 Material per Brick.
-             // This is a limitation. If we paint/add, we convert the whole brick.
              pl.materialId = _BrushMaterialId;
              _PayloadBuffer[payloadIdx] = pl;
         }
     }
     else if (_BrushOp == 1) // Subtract
     {
-        // Subtract: Intersect with inverse of brush
-        // result = max(existing, -brush)
-        newVal = max(currentVal, -brushVal);
+        // Smooth Subtraction: smax(a, -b) -> -smin(-a, b)
+        newVal = -smin(-currentVal, brushVal, k);
     }
     else if (_BrushOp == 2) // Paint
     {

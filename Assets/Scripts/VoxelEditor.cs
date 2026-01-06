@@ -172,6 +172,7 @@ public class VoxelEditor : MonoBehaviour
         svoEditorCompute.SetInt("_BrushMaterialId", selectedMaterialId);
         svoEditorCompute.SetInt("_BrushShape", (int)brushShape);
         svoEditorCompute.SetInt("_BrushOp", (int)brushOp);
+        svoEditorCompute.SetFloat("_Smoothness", 1.0f); // Default smoothness
 
         // Buffers - Allocate
         svoEditorCompute.SetBuffer(kernelAlloc, "_NodeBuffer", svoManager.NodeBuffer);
