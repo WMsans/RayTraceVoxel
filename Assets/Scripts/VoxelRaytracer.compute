@@ -36,12 +36,11 @@ Texture2DArray _AlbedoTextureArray;
 Texture2DArray _NormalTextureArray;
 Texture2DArray _MaskTextureArray;
 
-SamplerState sampler_AlbedoTextureArray;
- // Linear Wrap is standard
-// or use inline samplers like sampler_LinearRepeat
+SamplerState sampler_LinearRepeat;
 
 RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
+RWStructuredBuffer<float4> _RaycastBuffer; // Index 0: Center Ray Hit (xyz=pos, w=hit?)
 
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
@@ -190,15 +189,15 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
  float2 uvY = worldPos.xz * textureScale;
     float2 uvZ = worldPos.xy * textureScale;
  // Albedo
-    float3 albedoX = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideAlbedoIndex), 0).rgb;
-    float3 albedoY = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topAlbedoIndex), 0).rgb;
- float3 albedoZ = _AlbedoTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
+    float3 albedoX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), 0).rgb;
+    float3 albedoY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topAlbedoIndex), 0).rgb;
+ float3 albedoZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
     
     outAlbedo = albedoX * blend.x + albedoY * blend.y + albedoZ * blend.z;
  // Mask (G=AO, B=Smoothness)
-    float4 maskX = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideMaskIndex), 0);
- float4 maskY = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topMaskIndex), 0);
-    float4 maskZ = _MaskTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideMaskIndex), 0);
+    float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), 0);
+ float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topMaskIndex), 0);
+    float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), 0);
     
     float aoX = maskX.g;
  float smoothX = maskX.b;
@@ -207,9 +206,9 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
  outAO = aoX * blend.x + aoY * blend.y + aoZ * blend.z;
  outSmoothness = smoothX * blend.x + smoothY * blend.y + smoothZ * blend.z;
  // Normals
-    float3 nX = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvX, mat.sideNormalIndex), 0));
-    float3 nY = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvY, mat.topNormalIndex), 0));
- float3 nZ = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_AlbedoTextureArray, float3(uvZ, mat.sideNormalIndex), 0));
+    float3 nX = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideNormalIndex), 0));
+    float3 nY = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topNormalIndex), 0));
+ float3 nZ = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideNormalIndex), 0));
     
     // Swizzle to World Space
     // X Plane (Side): T=(0,0,1), B=(0,1,0), N=(1,0,0) -> UV=zy -> u=z, v=y
@@ -233,12 +232,16 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
 [numthreads(8, 8, 1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
-    uint width, height;
-    _Result.GetDimensions(width, height);
- if (id.x >= width || id.y >= height) return;
-
-    float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
- float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
+        uint width, height;
+        _Result.GetDimensions(width, height);
+        if (id.x >= width || id.y >= height) return;
+    
+        if (id.x == width / 2 && id.y == height / 2)
+        {
+            _RaycastBuffer[0] = float4(0, 0, 0, 0);
+        }
+    
+        float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0; float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
     float3 rayDir = mul((float3x3)_CameraToWorld, viewRay.xyz);
     rayDir = normalize(rayDir);
     float3 rayOrigin = _CameraToWorld._m03_m13_m23;
@@ -440,13 +443,18 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                 
                 if (surface) {
                     _Result[id.xy] = float4(finalColor, finalAlpha);
- // Calculate Depth for Compositing
+                    // Calculate Depth for Compositing
                     float4 clipPos = mul(_CameraViewProjection, float4(hitWorldPos, 1.0));
- float depth = clipPos.z / clipPos.w;
+                    float depth = clipPos.z / clipPos.w;
                     _ResultDepth[id.xy] = depth;
                     
+                    if (id.x == width / 2 && id.y == height / 2)
+                    {
+                        _RaycastBuffer[0] = float4(hitWorldPos, 1.0);
+                    }
+
                     return;
- }
+                }
             }
             tCurrent = tLeaf.y + EPSILON;
  }
