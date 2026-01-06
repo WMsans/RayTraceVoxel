@@ -1,10 +1,14 @@
 using UnityEngine;
 
-[CreateAssetMenu(fileName = "SolidVoxel", menuName = "Voxel/Voxel Definitions/Solid Voxel")]
-public class SolidVoxelDefinition : VoxelDefinition
+namespace VoxelEngine.Core.Data
 {
-    public SolidVoxelDefinition()
+    [CreateAssetMenu(fileName = "SolidVoxel", menuName = "Voxel/Voxel Definitions/Solid Voxel")]
+    public class SolidVoxelDefinition : VoxelDefinition
     {
-        renderType = VoxelRenderType.Solid;
+        public SolidVoxelDefinition()
+        {
+            renderType = VoxelRenderType.Solid;
+        }
     }
 }
+
