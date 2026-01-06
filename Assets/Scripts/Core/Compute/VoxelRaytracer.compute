@@ -128,18 +128,32 @@ float SampleShadow(float3 worldPos)
     shadowCoord.xyz /= shadowCoord.w;
     
     if (any(shadowCoord.xyz < 0.0) || any(shadowCoord.xyz > 1.0)) return 1.0;
-    float mapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_MainLightShadowmapTexture, shadowCoord.xy, 0);
-    float bias = 0.002;
-    // FIX (From previous step): Correct Comparison for Unity Reverse Z
-    #if defined(UNITY_REVERSED_Z)
-        if (mapDepth > shadowCoord.z + bias) return 0.2;
-        // Shadowed
-    #else
-        if (mapDepth < shadowCoord.z - bias) return 0.2;
-        // Shadowed
-    #endif
 
-    return 1.0;
+    uint width, height;
+    _MainLightShadowmapTexture.GetDimensions(width, height);
+    float2 texelSize = 1.0 / float2(width, height);
+    
+    float shadowSum = 0.0;
+    float bias = 0.002;
+
+    for (int x = -1; x <= 1; x++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            float2 offset = float2(x, y) * texelSize;
+            float mapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_MainLightShadowmapTexture, shadowCoord.xy + offset, 0);
+            
+            float sampleVal = 1.0;
+            #if defined(UNITY_REVERSED_Z)
+                if (mapDepth > shadowCoord.z + bias) sampleVal = 0.2;
+            #else
+                if (mapDepth < shadowCoord.z - bias) sampleVal = 0.2;
+            #endif
+            shadowSum += sampleVal;
+        }
+    }
+
+    return shadowSum / 9.0;
 }
 
 float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float shadow)
