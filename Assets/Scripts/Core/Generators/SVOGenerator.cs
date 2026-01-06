@@ -11,6 +11,7 @@ namespace VoxelEngine.Core.Generators
             
             int kernelInit = shader.FindKernel("InitDenseStructure");
             shader.SetBuffer(kernelInit, "_NodeBuffer", buffers.NodeBuffer);
+            shader.SetBuffer(kernelInit, "_CounterBuffer", buffers.CounterBuffer);
             shader.Dispatch(kernelInit, 74, 1, 1);
 
             int kernelBuild = shader.FindKernel("BuildBricks");
