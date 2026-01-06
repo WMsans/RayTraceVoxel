@@ -7,11 +7,8 @@ public class SVOManager : MonoBehaviour
 
     [Header("Settings")]
     public ComputeShader svoCompute;
-    public int resolution = 64; // Grid size
+    public int resolution = 64;
     public int maxNodes = 100000;
-    
-    // Bricks: (Resolution / 4)^3 potential bricks. 
-    // We allocate space for a reasonable sparse amount (e.g., 1/4th filled).
     public int maxBricks = 50000; 
 
     [Header("Debug")]
@@ -21,13 +18,14 @@ public class SVOManager : MonoBehaviour
     // GPU Buffers
     private GraphicsBuffer _nodeBuffer;
     private GraphicsBuffer _payloadBuffer;
-    private GraphicsBuffer _brickBuffer;
+    private GraphicsBuffer _brickBuffer;         // Stores SDF (floats)
+    private GraphicsBuffer _brickMaterialBuffer; // NEW: Stores Material IDs (uints)
     private GraphicsBuffer _counterBuffer; 
 
-    // Accessors
     public GraphicsBuffer NodeBuffer => _nodeBuffer;
     public GraphicsBuffer PayloadBuffer => _payloadBuffer;
     public GraphicsBuffer BrickBuffer => _brickBuffer;
+    public GraphicsBuffer BrickMaterialBuffer => _brickMaterialBuffer; // Public Accessor
     public GraphicsBuffer CounterBuffer => _counterBuffer;
     public bool IsReady => _nodeBuffer != null && _brickBuffer != null;
 
@@ -49,11 +47,14 @@ public class SVOManager : MonoBehaviour
         _nodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxNodes, Marshal.SizeOf<SVONode>());
         _payloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxNodes, Marshal.SizeOf<VoxelPayload>());
         
-        // Brick Buffer: Each brick is 64 floats (4x4x4)
-        int brickSizeInFloats = SVONode.BRICK_VOXEL_COUNT;
-        _brickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxBricks * brickSizeInFloats, sizeof(float));
+        int brickVoxels = SVONode.BRICK_VOXEL_COUNT; // 64
         
-        // Counter: [NodeCount, PayloadCount, BrickFloatIndex]
+        // 1. SDF Buffer
+        _brickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxBricks * brickVoxels, sizeof(float));
+        
+        // 2. Material Buffer (NEW)
+        _brickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxBricks * brickVoxels, sizeof(uint));
+        
         _counterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3, sizeof(uint));
         _counterBuffer.SetData(new uint[] { 0, 0, 0 }); 
     }
@@ -62,21 +63,16 @@ public class SVOManager : MonoBehaviour
     {
         if (svoCompute == null) return;
         
-        // 1. Initialize Dense Structure
         int kernelInit = svoCompute.FindKernel("InitDenseStructure");
         svoCompute.SetBuffer(kernelInit, "_NodeBuffer", _nodeBuffer);
-        // Dispatch 4681 threads. 64 per group.
-        // 4681 / 64 = 73.1 -> 74 groups
         svoCompute.Dispatch(kernelInit, 74, 1, 1);
 
-        // 2. Build Bricks
         int kernelBuild = svoCompute.FindKernel("BuildBricks");
-
         svoCompute.SetBuffer(kernelBuild, "_NodeBuffer", _nodeBuffer);
         svoCompute.SetBuffer(kernelBuild, "_PayloadBuffer", _payloadBuffer);
         svoCompute.SetBuffer(kernelBuild, "_BrickBuffer", _brickBuffer);
+        svoCompute.SetBuffer(kernelBuild, "_BrickMaterialBuffer", _brickMaterialBuffer); // Bind New Buffer
         svoCompute.SetBuffer(kernelBuild, "_CounterBuffer", _counterBuffer);
-
         svoCompute.SetInt("_GridSize", resolution); 
         
         int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
@@ -91,12 +87,8 @@ public class SVOManager : MonoBehaviour
     {
         uint[] counters = new uint[3];
         _counterBuffer.GetData(counters);
-        
-        // Since InitDenseStructure doesn't use the atomic counter (it uses fixed indices),
-        // the buffer count remains 0. We manually set the known dense node count here.
         nodeCount = 4681; 
-        
-        brickCount = (int)counters[2] / 64; // Convert float count back to bricks
+        brickCount = (int)counters[2] / 64; 
     }
 
     private void OnDestroy()
@@ -104,6 +96,7 @@ public class SVOManager : MonoBehaviour
         _nodeBuffer?.Release();
         _payloadBuffer?.Release();
         _brickBuffer?.Release();
+        _brickMaterialBuffer?.Release();
         _counterBuffer?.Release();
     }
 }

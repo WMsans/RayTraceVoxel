@@ -179,11 +179,13 @@ public class VoxelEditor : MonoBehaviour
         svoEditorCompute.SetBuffer(kernelAlloc, "_CounterBuffer", svoManager.CounterBuffer); // Need public accessor
         svoEditorCompute.SetBuffer(kernelAlloc, "_PayloadBuffer", svoManager.PayloadBuffer);
         svoEditorCompute.SetBuffer(kernelAlloc, "_BrickBuffer", svoManager.BrickBuffer);
+        svoEditorCompute.SetBuffer(kernelAlloc, "_BrickMaterialBuffer", svoManager.BrickMaterialBuffer);
         
         // Buffers - Edit
         svoEditorCompute.SetBuffer(kernelEdit, "_NodeBuffer", svoManager.NodeBuffer);
         svoEditorCompute.SetBuffer(kernelEdit, "_PayloadBuffer", svoManager.PayloadBuffer);
         svoEditorCompute.SetBuffer(kernelEdit, "_BrickBuffer", svoManager.BrickBuffer);
+        svoEditorCompute.SetBuffer(kernelEdit, "_BrickMaterialBuffer", svoManager.BrickMaterialBuffer);
 
         // 4. Dispatch AllocateNodes (8x8x8 threads per group -> 1 brick per thread)
         // We want 1 thread per brick.

@@ -1,29 +1,18 @@
 #pragma kernel CSMain
 
 struct SVONode { uint topology; uint payloadIndex; };
-struct VoxelPayload { uint brickDataIndex; uint materialId; };
- // --- PALETTE DATA STRUCTURES ---
+struct VoxelPayload { uint brickDataIndex; }; // materialId removed
 struct VoxelTypeGPU
 {
-    uint sideAlbedoIndex; 
-    uint sideNormalIndex;
-    uint sideMaskIndex;
- // R=Metallic(unused), G=AO, B=Smoothness
-    
-    uint topAlbedoIndex;
-    uint topNormalIndex;
-    uint topMaskIndex;
-    
-    float sideMetallic;
- float topMetallic;
-    
-    uint renderType;
+    uint sideAlbedoIndex; uint sideNormalIndex; uint sideMaskIndex;
+    uint topAlbedoIndex; uint topNormalIndex; uint topMaskIndex;
+    float sideMetallic; float topMetallic; uint renderType;
 };
 
-// Buffers
 StructuredBuffer<SVONode> _NodeBuffer;
 StructuredBuffer<VoxelPayload> _PayloadBuffer;
 StructuredBuffer<float> _BrickBuffer;
+StructuredBuffer<uint> _BrickMaterialBuffer; // NEW
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
  // <--- The Property Buffer
 
@@ -170,6 +159,14 @@ float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColo
 float3 UnpackNormal(float4 packed)
 {
     return packed.xyz * 2.0 - 1.0;
+}
+
+ uint GetVoxelMaterial(uint brickPtr, float3 localPos)
+{
+    // Nearest neighbor fetch for material ID
+    uint3 i = clamp((uint3)floor(localPos + 0.5), 0, 3);
+    uint idx = brickPtr + i.z * 16 + i.y * 4 + i.x;
+    return _BrickMaterialBuffer[idx];
  }
 
 void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outSmoothness, out float outAO)
@@ -345,114 +342,67 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         if (hitLeaf)
         {
             SVONode leafNode = _NodeBuffer[nodeIndex];
- float2 tLeaf = IntersectBox(rayOrigin, rayDir, nodePos, nodePos + BRICK_SIZE);
+            float2 tLeaf = IntersectBox(rayOrigin, rayDir, nodePos, nodePos + BRICK_SIZE);
 
             if (leafNode.payloadIndex != 0)
             {
                 VoxelPayload payload = _PayloadBuffer[leafNode.payloadIndex];
- uint brickPtr = payload.brickDataIndex;
+                uint brickPtr = payload.brickDataIndex;
                 
                 float tMarch = tCurrent;
                 bool surface = false;
                 float3 hitWorldPos = float3(0,0,0);
- for (int m = 0; m < MAX_MARCH_STEPS; m++)
+                
+                for (int m = 0; m < MAX_MARCH_STEPS; m++)
                 {
                     float3 p = rayOrigin + rayDir * tMarch;
- // Boundary check
-                    if (p.x < nodePos.x - 0.01 || p.x > nodePos.x + BRICK_SIZE + 0.01 ||
-                        p.y < nodePos.y - 0.01 || p.y > nodePos.y + BRICK_SIZE + 0.01 ||
-                        p.z < nodePos.z 
- - 0.01 || p.z > nodePos.z + BRICK_SIZE + 0.01)
-                    {
-                        break;
- }
+                    if (p.x < nodePos.x - 0.01 || p.x > nodePos.x + BRICK_SIZE + 0.01 || p.y < nodePos.y - 0.01 || p.y > nodePos.y + BRICK_SIZE + 0.01 || p.z < nodePos.z - 0.01 || p.z > nodePos.z + BRICK_SIZE + 0.01) break;
                     
                     float3 localPos = p - nodePos;
- float dist = SampleBrick(brickPtr, localPos);
+                    float dist = SampleBrick(brickPtr, localPos);
                     
                     if (dist < EPSILON)
                     {
                         surface = true;
- hitWorldPos = p;
+                        hitWorldPos = p;
                         
-                        // 1. Calculate Properties
                         float3 worldPos = p;
- float3 geomNormal = CalculateNormal(brickPtr, localPos);
+                        float3 geomNormal = CalculateNormal(brickPtr, localPos);
                         
-                        // --- TRIPLANAR MAPPING ---
-                        float3 albedo;
- float3 normal;
-                        float smoothness;
-                        float ao;
-                        
-                        TriplanarSampling(worldPos, geomNormal, payload.materialId, albedo, normal, smoothness, ao);
+                        // NEW: Fetch Material ID per Voxel
+                        uint matId = GetVoxelMaterial(brickPtr, localPos);
+
+                        float3 albedo, normal; float smoothness, ao;
+                        TriplanarSampling(worldPos, geomNormal, matId, albedo, normal, smoothness, ao);
                         
                         float3 V = normalize(rayOrigin - worldPos);
- // 2. Main Light Calculation
-                        float3 L;
- if (_MainLightPosition.w == 0)
-                            L = normalize(_MainLightPosition.xyz);
- else
-                            L = normalize(_MainLightPosition.xyz - worldPos);
- float shadow = SampleShadow(worldPos);
-                        
-                        // Apply Ambient Occlusion to shadow or ambient
-                        shadow *= ao;
- float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow);
-                        
-                        // Apply Smoothness to specular? LightingPBR uses hardcoded specPower.
- // Ideally pass smoothness to LightingPBR. For now, we just use it implicitly via normal map detail.
- // Future: Update LightingPBR to use smoothness/roughness.
-                        
+                        float3 L = (_MainLightPosition.w == 0) ? normalize(_MainLightPosition.xyz) : normalize(_MainLightPosition.xyz - worldPos);
+                        float shadow = SampleShadow(worldPos) * ao;
+                        float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow);
                         float3 ambient = float3(0.1, 0.1, 0.1) * albedo * ao;
- finalColor = directLight + ambient;
-                        
-                        // 3. Additional Lights
+                        finalColor = directLight + ambient;
+
+                        // Additional Lights
                         for (int i = 0; i < _AdditionalLightCount; i++)
                         {
                             VoxelLight light = _AdditionalLights[i];
- float3 L_add;
-                            float atten = 1.0;
-                            
-                            if (light.position.w == 0) // Directional
-                            {
-                                L_add = normalize(light.position.xyz);
- }
-                            else // Point/Spot
-                            {
-                                float3 toLight = light.position.xyz - worldPos;
- float d = length(toLight);
-                                L_add = normalize(toLight);
-                                
-                                float range = light.attenuation.x;
-                                float dSqr = d * d;
- // Simple Quadratic Falloff
-                                atten = 1.0 / (1.0 + dSqr * light.attenuation.y);
- float window = max(0, 1 - pow(d/range, 4));
-                                atten *= window * window;
- }
-                            
+                            float3 L_add; float atten = 1.0;
+                            if (light.position.w == 0) { L_add = normalize(light.position.xyz); }
+                            else { float3 toLight = light.position.xyz - worldPos; float d = length(toLight); L_add = normalize(toLight); float range = light.attenuation.x; float dSqr = d*d; atten = (1.0/(1.0+dSqr*light.attenuation.y)) * pow(max(0,1-pow(d/range,4)),2); }
                             finalColor += LightingPBR(albedo, normal, V, L_add, light.color.rgb, 1.0) * atten;
- }
+                        }
                         
                         finalAlpha = 1.0;
- break;
+                        break;
                     }
                     tMarch += max(dist, 0.05);
- }
+                }
                 
                 if (surface) {
                     _Result[id.xy] = float4(finalColor, finalAlpha);
-                    // Calculate Depth for Compositing
                     float4 clipPos = mul(_CameraViewProjection, float4(hitWorldPos, 1.0));
-                    float depth = clipPos.z / clipPos.w;
-                    _ResultDepth[id.xy] = depth;
-                    
-                    if (id.x == width / 2 && id.y == height / 2)
-                    {
-                        _RaycastBuffer[0] = float4(hitWorldPos, 1.0);
-                    }
-
+                    _ResultDepth[id.xy] = clipPos.z / clipPos.w;
+                    if (id.x == width / 2 && id.y == height / 2) _RaycastBuffer[0] = float4(hitWorldPos, 1.0);
                     return;
                 }
             }
