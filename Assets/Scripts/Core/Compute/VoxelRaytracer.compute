@@ -239,6 +239,109 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
     outNormal = normalize(triplanarNormal + normal);
 }
 
+float TraceInternalShadow(float3 rayOrigin, float3 rayDir, float maxDist)
+{
+    float gridSz = 64.0; 
+    float3 volMin = float3(0, 0, 0);
+    float3 volMax = float3(gridSz, gridSz, gridSz);
+    
+    float2 tBox = IntersectBox(rayOrigin, rayDir, volMin, volMax);
+    float tCurrent = max(0.0, tBox.x);
+    float tEnd = min(maxDist, tBox.y);
+    
+    if (tCurrent >= tEnd) return 1.0;
+
+    int iter = 0;
+    while (tCurrent < tEnd && iter < MAX_ITERATIONS)
+    {
+        iter++;
+        float3 pos = rayOrigin + rayDir * (tCurrent + EPSILON);
+        
+        uint nodeIndex = 0;
+        float nodeSize = gridSz;
+        float3 nodePos = float3(0,0,0);
+        bool hitLeaf = false;
+        
+        // Stackless Traversal
+        for (int depth = 0; depth < 5; depth++)
+        {
+            float halfSize = nodeSize * 0.5;
+            float3 center = nodePos + halfSize;
+            
+            int octant = 0;
+            if (pos.x >= center.x) octant |= 1;
+            if (pos.y >= center.y) octant |= 2;
+            if (pos.z >= center.z) octant |= 4;
+            
+            SVONode node = _NodeBuffer[nodeIndex];
+            uint childMask = (node.topology >> 24) & 0xFF;
+            
+            if ((childMask & (1 << octant)) != 0)
+            {
+                uint childBase = node.topology & 0xFFFFFF;
+                uint maskBefore = childMask & ((1 << octant) - 1);
+                uint offset = countbits(maskBefore);
+                
+                nodeIndex = childBase + offset;
+                nodeSize = halfSize;
+                nodePos += float3(
+                    (octant & 1) ? halfSize : 0,
+                    (octant & 2) ? halfSize : 0,
+                    (octant & 4) ? halfSize : 0
+                );
+                if (nodeSize <= BRICK_SIZE + EPSILON)
+                {
+                    hitLeaf = true;
+                    break; 
+                }
+            }
+            else
+            {
+                 float3 octantMin = nodePos + float3(
+                    (octant & 1) ? halfSize : 0,
+                    (octant & 2) ? halfSize : 0,
+                    (octant & 4) ? halfSize : 0
+                );
+                float3 octantMax = octantMin + halfSize;
+                float2 tOctant = IntersectBox(rayOrigin, rayDir, octantMin, octantMax);
+                tCurrent = tOctant.y;
+                break;
+            }
+        }
+        
+        if (hitLeaf)
+        {
+            SVONode leafNode = _NodeBuffer[nodeIndex];
+            float2 tLeaf = IntersectBox(rayOrigin, rayDir, nodePos, nodePos + BRICK_SIZE);
+
+            if (leafNode.payloadIndex != 0)
+            {
+                VoxelPayload payload = _PayloadBuffer[leafNode.payloadIndex];
+                uint brickPtr = payload.brickDataIndex;
+                
+                float tMarch = tCurrent;
+                float marchEnd = min(tEnd, tLeaf.y);
+
+                for (int m = 0; m < MAX_MARCH_STEPS; m++)
+                {
+                    if (tMarch >= marchEnd) break;
+
+                    float3 p = rayOrigin + rayDir * tMarch;
+                    float3 localPos = p - nodePos;
+                    float dist = SampleBrick(brickPtr, localPos);
+                    if (dist < EPSILON)
+                    {
+                         return 0.0; // Occluded
+                    }
+                    tMarch += max(dist, 0.05);
+                }
+            }
+            tCurrent = tLeaf.y + EPSILON;
+        }
+    }
+    return 1.0;
+}
+
 [numthreads(8, 8, 1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
@@ -386,7 +489,13 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                         
                         float3 V = normalize(rayOrigin - worldPos);
                         float3 L = (_MainLightPosition.w == 0) ? normalize(_MainLightPosition.xyz) : normalize(_MainLightPosition.xyz - worldPos);
-                        float shadow = SampleShadow(worldPos) * ao;
+                        
+                        // Internal Self-Shadowing
+                        float3 shadowOrigin = worldPos + geomNormal * 0.05;
+                        float lightDist = (_MainLightPosition.w == 0) ? 1000.0 : length(_MainLightPosition.xyz - worldPos);
+                        float internalShadow = TraceInternalShadow(shadowOrigin, L, lightDist);
+                        
+                        float shadow = SampleShadow(worldPos) * internalShadow * ao;
                         float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow);
                         float3 ambient = float3(0.1, 0.1, 0.1) * albedo * ao;
                         finalColor = directLight + ambient;
