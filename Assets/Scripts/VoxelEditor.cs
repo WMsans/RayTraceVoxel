@@ -27,13 +27,9 @@ public class VoxelEditor : MonoBehaviour
     
     // We need a buffer to count how many nodes we found
     private GraphicsBuffer _countBuffer; 
-    private GraphicsBuffer _debugBuffer; // For visualization
     private InputSystem_Actions playerControls;
 
     private const int MAX_AFFECTED_NODES = 1024; // Arbitrary limit for a single brush stroke
-
-    // Visualization
-    private System.Collections.Generic.List<Vector3Int> debugBricks = new System.Collections.Generic.List<Vector3Int>();
 
     private void Awake()
     {
@@ -58,14 +54,12 @@ public class VoxelEditor : MonoBehaviour
         // Append Buffer for results
         _affectedNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured | GraphicsBuffer.Target.Append, MAX_AFFECTED_NODES, sizeof(uint));
         _countBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured | GraphicsBuffer.Target.IndirectArguments, 1, sizeof(uint));
-        _debugBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured | GraphicsBuffer.Target.Append, MAX_AFFECTED_NODES, sizeof(uint));
     }
 
     private void OnDestroy()
     {
         _affectedNodeBuffer?.Release();
         _countBuffer?.Release();
-        _debugBuffer?.Release();
     }
 
     private void Update()
@@ -136,11 +130,9 @@ public class VoxelEditor : MonoBehaviour
         
         // Reset Counter
         _affectedNodeBuffer.SetCounterValue(0);
-        _debugBuffer.SetCounterValue(0);
 
         svoEditorCompute.SetBuffer(kernel, "_NodeBuffer", svoManager.NodeBuffer);
         svoEditorCompute.SetBuffer(kernel, "_AffectedNodeBuffer", _affectedNodeBuffer);
-        svoEditorCompute.SetBuffer(kernel, "_DebugBuffer", _debugBuffer);
         
         svoEditorCompute.SetInts("_MinBrickIndex", new int[] { minBrickId.x, minBrickId.y, minBrickId.z });
         svoEditorCompute.SetInts("_MaxBrickIndex", new int[] { maxBrickId.x, maxBrickId.y, maxBrickId.z });
@@ -161,39 +153,6 @@ public class VoxelEditor : MonoBehaviour
         svoEditorCompute.Dispatch(kernel, groupsX, groupsY, groupsZ);
 
         Debug.Log($"Dispatched IdentifyAffectedBricks. Range: {rangeX}x{rangeY}x{rangeZ}");
-
-        // --- Readback for Debug ---
-        // 1. Get Count
-        GraphicsBuffer.IndirectDrawIndexedArgs[] args = new GraphicsBuffer.IndirectDrawIndexedArgs[1]; // Dummy type, just need 4 bytes
-        // Use CopyCount to get hidden counter value into a buffer we can read
-        // But since we are on CPU, we can just use GetData on a buffer if we copy count to it.
-        // CopyCount requires a buffer.
-        
-        // Let's use the count buffer
-        GraphicsBuffer countBuf = new GraphicsBuffer(GraphicsBuffer.Target.Raw, 1, sizeof(uint));
-        GraphicsBuffer.CopyCount(_debugBuffer, countBuf, 0);
-        
-        uint[] counterArray = new uint[1];
-        countBuf.GetData(counterArray);
-        countBuf.Release();
-        
-        int count = (int)counterArray[0];
-        Debug.Log($"GPU found {count} affected bricks.");
-        
-        if (count > 0)
-        {
-            uint[] debugData = new uint[count];
-            _debugBuffer.GetData(debugData);
-            
-            debugBricks.Clear();
-            foreach (uint val in debugData)
-            {
-                int z = (int)((val >> 16) & 0xFF);
-                int y = (int)((val >> 8) & 0xFF);
-                int x = (int)(val & 0xFF);
-                debugBricks.Add(new Vector3Int(x, y, z));
-            }
-        }
     }
 
     private Bounds GetBrushAABB(Vector3 center)
@@ -220,18 +179,6 @@ public class VoxelEditor : MonoBehaviour
             Gizmos.color = new Color(1, 0, 0, 0.3f);
             Bounds b = GetBrushAABB(lastHitPoint);
             Gizmos.DrawWireCube(b.center, b.size);
-        }
-
-        // Draw Debug Bricks
-        if (debugBricks != null)
-        {
-            Gizmos.color = Color.green;
-            foreach (var brickIdx in debugBricks)
-            {
-                // Brick Size = 4
-                Vector3 center = (Vector3)brickIdx * 4.0f + Vector3.one * 2.0f;
-                Gizmos.DrawWireCube(center, Vector3.one * 4.0f);
-            }
         }
     }
 }

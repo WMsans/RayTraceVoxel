@@ -10,7 +10,6 @@ struct SVONode
 // --- Buffers ---
 StructuredBuffer<SVONode> _NodeBuffer;
 AppendStructuredBuffer<uint> _AffectedNodeBuffer; // Stores Indices of Nodes (Level 4)
-AppendStructuredBuffer<uint> _DebugBuffer; // packed coord: z<<16 | y<<8 | x
 
 // --- Uniforms ---
 int3 _MinBrickIndex;
@@ -69,7 +68,4 @@ void FindAffectedNodes(uint3 id : SV_DispatchThreadID)
     // The consumer (Step C) will read the node and see if payloadIndex == 0.
     
     _AffectedNodeBuffer.Append(nodeIndex);
-
-    uint packedCoord = ((uint)brickIdx.z << 16) | ((uint)brickIdx.y << 8) | (uint)brickIdx.x;
-    _DebugBuffer.Append(packedCoord);
 }
