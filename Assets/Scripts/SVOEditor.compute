@@ -183,6 +183,13 @@ void EditVoxels(uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThread
     
     // Calculate SDF
     float brushVal = GetBrushSDF(voxelPos);
+    
+    // Artifact Cleanup Bias:
+    // Prevents thin/floating voxels by being aggressive on subtract and conservative on add.
+    float bias = 0.2; 
+    if (_BrushOp == 1) brushVal -= bias; // Expand subtract area
+    else if (_BrushOp == 0) brushVal += bias; // Shrink add area
+
     float currentVal = _BrickBuffer[voxelIndex];
     float newVal = currentVal;
     
