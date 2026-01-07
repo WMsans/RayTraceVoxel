@@ -63,7 +63,7 @@ public class VoxelDefinitionManagerEditor : Editor
                 // Side
                 data.sideAlbedoIndex = (uint)GetOrAddTexture(def.blockTextures.Albedo, albedoMap, albedoPixels, res, false);
                 data.sideNormalIndex = (uint)GetOrAddTexture(def.blockTextures.Normal, normalMap, normalPixels, res, true);
-                data.sideMaskIndex = (uint)GetOrAddMask(def.blockTextures.AmbientOcclusion, def.blockTextures.Smoothness, maskMap, maskPixels, res);
+                data.sideMaskIndex = (uint)GetOrAddMask(def.blockTextures.AmbientOcclusion, def.blockTextures.Roughness, maskMap, maskPixels, res);
 
                 // Top
                 if (def.blockTextures.HasSeparateTopTextures())
@@ -71,7 +71,7 @@ public class VoxelDefinitionManagerEditor : Editor
                     data.topMetallic = def.blockTextures.TopMetallic;
                     data.topAlbedoIndex = (uint)GetOrAddTexture(def.blockTextures.TopAlbedo, albedoMap, albedoPixels, res, false);
                     data.topNormalIndex = (uint)GetOrAddTexture(def.blockTextures.TopNormal, normalMap, normalPixels, res, true);
-                    data.topMaskIndex = (uint)GetOrAddMask(def.blockTextures.TopAmbientOcclusion, def.blockTextures.TopSmoothness, maskMap, maskPixels, res);
+                    data.topMaskIndex = (uint)GetOrAddMask(def.blockTextures.TopAmbientOcclusion, def.blockTextures.TopRoughness, maskMap, maskPixels, res);
                 }
                 else
                 {
@@ -128,29 +128,29 @@ public class VoxelDefinitionManagerEditor : Editor
         return newIndex;
     }
 
-    private int GetOrAddMask(Texture2D ao, Texture2D smoothness, Dictionary<(Texture2D, Texture2D), int> map, List<Color[]> list, int res)
+    private int GetOrAddMask(Texture2D ao, Texture2D roughness, Dictionary<(Texture2D, Texture2D), int> map, List<Color[]> list, int res)
     {
-        if (ao == null && smoothness == null) return 0; // Default
-        if (map.TryGetValue((ao, smoothness), out int index)) return index;
+        if (ao == null && roughness == null) return 0; // Default
+        if (map.TryGetValue((ao, roughness), out int index)) return index;
 
         // Composite Mask
         Color[] aoPixels = (ao != null) ? GetResizedPixels(ao, res, false) : null;
-        Color[] smPixels = (smoothness != null) ? GetResizedPixels(smoothness, res, false) : null;
+        Color[] roPixels = (roughness != null) ? GetResizedPixels(roughness, res, false) : null;
         
         Color[] maskResult = new Color[res * res];
         
         for (int i = 0; i < maskResult.Length; i++)
         {
             float aoVal = (aoPixels != null) ? aoPixels[i].g : 1.0f; // Default AO is 1 (White)
-            float smVal = (smPixels != null) ? smPixels[i].r : 0.5f; // Default Smoothness 0.5? Or use alpha channel of source?
+            float roVal = (roPixels != null) ? roPixels[i].r : 0.5f; // Default Roughness 0.5
             
-            // Pack: R(Unused/Metallic), G(AO), B(Unused), A(Smoothness)
-            maskResult[i] = new Color(0, aoVal, 0, smVal);
+            // Pack: R(Unused/Metallic), G(AO), B(Roughness), A(Unused)
+            maskResult[i] = new Color(0, aoVal, roVal, 0);
         }
 
         list.Add(maskResult);
         int newIndex = list.Count - 1;
-        map[(ao, smoothness)] = newIndex;
+        map[(ao, roughness)] = newIndex;
         return newIndex;
     }
 
