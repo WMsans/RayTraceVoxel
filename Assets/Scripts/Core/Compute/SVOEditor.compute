@@ -10,7 +10,6 @@ RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer;
 RWStructuredBuffer<uint> _BrickMaterialBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
-
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
 float3 _BrushPosition;
@@ -23,7 +22,6 @@ uint _MaxBricks;
 float _GridSize;
 static const float MAX_SDF = 10000.0;
 
-// ... [Keep Helper Functions smin, GetSphereSDF, GetCubeSDF unchanged] ...
 float smin(float a, float b, float k)
 {
     if (k < 0.001) return min(a, b);
@@ -50,7 +48,6 @@ void AllocateNodesGeneric(uint3 id, int shape)
     int3 brickIdx = _MinBrickIndex + (int3)id;
     if (brickIdx.x > _MaxBrickIndex.x || brickIdx.y > _MaxBrickIndex.y || brickIdx.z > _MaxBrickIndex.z) return;
     uint nodeIndex = GetNodeIndex(4, (uint3)brickIdx);
-    
     if (_NodeBuffer[nodeIndex].payloadIndex == 0)
     {
         if (_BrushOp == 1) return; // Subtract - don't allocate new air
@@ -106,7 +103,6 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
     uint brickPtr = pl.brickDataIndex;
     uint3 voxelLocal = groupThreadID;
     uint voxelIndex = brickPtr + (voxelLocal.z * 16 + voxelLocal.y * 4 + voxelLocal.x);
-    
     float3 brickOrigin = (float3)brickIdx * (float)BRICK_SIZE;
     float3 voxelPos = brickOrigin + (float3)voxelLocal;
 
@@ -124,15 +120,12 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
 
     // Read current material to check for Air
     uint currentMat = _BrickMaterialBuffer[voxelIndex];
-
     if (_BrushOp == 0) // Add
     {
         newVal = smin(currentVal, brushVal, k);
-        
-        // FIX: Update Material if:
-        // 1. Brush is dominant (closer than current value)
-        // 2. OR Current voxel was Air (Mat 0) and is now becoming part of the surface/crust (< 1.0)
-        if (brushVal < currentVal || (currentMat == 0 && newVal < 1.0))
+        // FIX: Update Material if brush is dominant OR current was Air.
+        // Increased threshold to 2.0 to ensure the "Air Skin" gets the material.
+        if (brushVal < currentVal || (currentMat == 0 && newVal < 2.0))
         {
              _BrickMaterialBuffer[voxelIndex] = _BrushMaterialId;
         }
@@ -140,17 +133,18 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
     else if (_BrushOp == 1) // Subtract
     {
         newVal = -smin(-currentVal, brushVal, k);
-        
-        // Optional: Clear material if it becomes deep Air (> 1.0) to keep buffers clean
-        if (newVal > 1.0)
+        // FIX: Only clear material if it becomes "Deep Air" (> 2.0).
+        // 1.0 was too tight and caused artifacts where the nearest neighbor was > 1.0 but still the closest.
+        if (newVal > 2.0)
         {
             _BrickMaterialBuffer[voxelIndex] = 0;
         }
     }
     else if (_BrushOp == 2) // Paint
     {
-        // Paint only affects the surface (approx < 1.0) and inside
-        if (currentVal < 1.0 && brushVal < 0.0)
+        // FIX: Paint affects surface (current < 2.0) and brush volume (brush < 1.0).
+        // Relaxed brushVal < 0.0 to < 1.0 to ensure we paint the outer skin of the object.
+        if (currentVal < 2.0 && brushVal < 1.0)
         {
              _BrickMaterialBuffer[voxelIndex] = _BrushMaterialId;
         }

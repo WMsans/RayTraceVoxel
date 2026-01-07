@@ -26,10 +26,14 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
 
     uint level = 0;
     uint indexInLevel = id;
-    if (id >= 585) { level = 4; indexInLevel = id - 585; }
-    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
-    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
-    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
+    if (id >= 585) { level = 4; indexInLevel = id - 585;
+    }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73;
+    }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9;
+    }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1;
+    }
     
     if (level < 4)
     {
@@ -51,7 +55,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
 
     float3 brickOrigin = id * BRICK_SIZE;
-    
     // Check center for optimization
     uint centerX = id.x * BRICK_SIZE + BRICK_SIZE / 2;
     uint centerY = id.y * BRICK_SIZE + BRICK_SIZE / 2;
@@ -65,12 +68,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
     // Threshold slightly larger than brick radius to catch surfaces crossing the brick
     float allocationThreshold = (float)BRICK_SIZE * 1.5;
-
     if (distCenter < allocationThreshold)
     {
         uint brickPtr;
         InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
-
         for (uint z = 0; z < BRICK_SIZE; z++)
         {
             for (uint y = 0; y < BRICK_SIZE; y++)
@@ -79,7 +80,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                 {
                     uint3 voxelLocal = uint3(x, y, z);
                     uint3 voxelGlobal = (uint3)brickOrigin + voxelLocal;
-
                     if (voxelGlobal.x < _GridSize && voxelGlobal.y < _GridSize && voxelGlobal.z < _GridSize)
                     {
                         uint sdfIdx = voxelGlobal.x + voxelGlobal.y * _GridSize + voxelGlobal.z * _GridSize * _GridSize;
@@ -89,17 +89,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                         uint destIdx = brickPtr + (z*16 + y*4 + x);
                         _BrickBuffer[destIdx] = sdf;
 
-                        // FIX: Increase threshold from 0.5 to 1.0.
-                        // This ensures voxels slightly "outside" the surface still hold the correct Material ID,
-                        // preventing the raytracer from picking Material 0 during interpolation.
-                        if (sdf < 1.0) 
-                        {
-                            _BrickMaterialBuffer[destIdx] = (uint)matID;
-                        }
-                        else
-                        {
-                            _BrickMaterialBuffer[destIdx] = 0; // Empty/Air
-                        }
+                        _BrickMaterialBuffer[destIdx] = (uint)matID;
                     }
                 }
             }
