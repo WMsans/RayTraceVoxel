@@ -11,21 +11,19 @@ RWStructuredBuffer<float> _BrickBuffer;
 RWStructuredBuffer<uint> _BrickMaterialBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
 
-// --- Uniforms ---
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
 float3 _BrushPosition;
 float3 _BrushBounds;
 float _BrushRadius;
 int _BrushMaterialId;
-// int _BrushShape; // REMOVED: Implicit in kernel
 int _BrushOp;
 float _Smoothness;
 uint _MaxBricks;
 float _GridSize;
 static const float MAX_SDF = 10000.0;
 
-// --- Helpers ---
+// ... [Keep Helper Functions smin, GetSphereSDF, GetCubeSDF unchanged] ...
 float smin(float a, float b, float k)
 {
     if (k < 0.001) return min(a, b);
@@ -33,7 +31,6 @@ float smin(float a, float b, float k)
     return lerp(b, a, h) - k * h * (1.0 - h);
 }
 
-// --- SDF Functions ---
 float GetSphereSDF(float3 p)
 {
     float3 localP = p - _BrushPosition;
@@ -47,17 +44,16 @@ float GetCubeSDF(float3 p)
     return length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0);
 }
 
-// --- ALLOCATE KERNELS ---
-
+// ... [Keep AllocateNodesGeneric, AllocateNodesSphere, AllocateNodesCube unchanged] ...
 void AllocateNodesGeneric(uint3 id, int shape)
 {
     int3 brickIdx = _MinBrickIndex + (int3)id;
     if (brickIdx.x > _MaxBrickIndex.x || brickIdx.y > _MaxBrickIndex.y || brickIdx.z > _MaxBrickIndex.z) return;
-    uint nodeIndex = GetNodeIndex(4, (uint3)brickIdx); // Using Include's function
+    uint nodeIndex = GetNodeIndex(4, (uint3)brickIdx);
     
     if (_NodeBuffer[nodeIndex].payloadIndex == 0)
     {
-        if (_BrushOp == 1) return; // Subtract
+        if (_BrushOp == 1) return; // Subtract - don't allocate new air
         
         float3 brickOrigin = (float3)brickIdx * (float)BRICK_SIZE;
         float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
@@ -74,7 +70,6 @@ void AllocateNodesGeneric(uint3 id, int shape)
         payloadPtr += 1;
 
         if (brickPtr + 64 >= _MaxBricks * 64) return;
-
         for (uint i = 0; i < 64; i++)
         {
             _BrickBuffer[brickPtr + i] = MAX_SDF;
@@ -90,18 +85,13 @@ void AllocateNodesGeneric(uint3 id, int shape)
 }
 
 [numthreads(8, 8, 8)]
-void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
-{
-    AllocateNodesGeneric(id, 0);
-}
+void AllocateNodesSphere(uint3 id : SV_DispatchThreadID) { AllocateNodesGeneric(id, 0); }
 
 [numthreads(8, 8, 8)]
-void AllocateNodesCube(uint3 id : SV_DispatchThreadID)
-{
-    AllocateNodesGeneric(id, 1);
-}
+void AllocateNodesCube(uint3 id : SV_DispatchThreadID) { AllocateNodesGeneric(id, 1); }
 
-// --- EDIT KERNELS ---
+
+// --- EDIT KERNELS (Modified) ---
 
 void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
 {
@@ -124,7 +114,7 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
     if (shape == 0) brushVal = GetSphereSDF(voxelPos);
     else if (shape == 1) brushVal = GetCubeSDF(voxelPos);
 
-    float bias = 0.2; 
+    float bias = 0.2;
     if (_BrushOp == 1) brushVal -= bias;
     else if (_BrushOp == 0) brushVal += bias;
 
@@ -135,6 +125,7 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
     if (_BrushOp == 0) // Add
     {
         newVal = smin(currentVal, brushVal, k);
+        // If the brush is contributing significantly to the shape, take its material
         if (brushVal < currentVal)
         {
              _BrickMaterialBuffer[voxelIndex] = _BrushMaterialId;
@@ -143,9 +134,17 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
     else if (_BrushOp == 1) // Subtract
     {
         newVal = -smin(-currentVal, brushVal, k);
+        
+        // FIX: If the voxel becomes Air (positive distance), clear the material.
+        // This prevents "ghost shells" of material remaining in empty space.
+        if (newVal > 0.5)
+        {
+            _BrickMaterialBuffer[voxelIndex] = 0;
+        }
     }
     else if (_BrushOp == 2) // Paint
     {
+        // Paint only affects the surface (approx < 1.0) and inside
         if (currentVal < 1.0 && brushVal < 0.0)
         {
              _BrickMaterialBuffer[voxelIndex] = _BrushMaterialId;

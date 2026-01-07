@@ -41,7 +41,7 @@ namespace VoxelEngine.Editor
         private List<MaterialMapping> materialMappings = new List<MaterialMapping>();
         private Vector2 scrollPos;
 
-        [MenuItem("Window/Voxel/Mesh To Voxel Converter")]
+        [MenuItem("Window/Mesh To Voxel Converter")]
         public static void ShowWindow()
         {
             GetWindow<MeshToVoxelWindow>("Mesh Voxelizer");

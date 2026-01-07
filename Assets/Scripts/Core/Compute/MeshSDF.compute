@@ -14,15 +14,13 @@ float3 _BoundsMin;
 float3 _BoundsSize;
 
 RWStructuredBuffer<float> _SDFBuffer;
-RWStructuredBuffer<int> _DenseMaterialBuffer; 
+RWStructuredBuffer<int> _DenseMaterialBuffer;
 
 // --- Utility Functions ---
 
 float dot2(float3 v) { return dot(v, v); }
 
 // Improved Distance Function (Signed Distance to Triangle)
-// Returns unsigned distance squared first, logic inside handles sign context usually, 
-// but here we use the specific implementation for exact distance.
 float UD_Triangle(float3 p, float3 a, float3 b, float3 c)
 {
   float3 ba = b - a;
@@ -30,7 +28,6 @@ float UD_Triangle(float3 p, float3 a, float3 b, float3 c)
   float3 cb = c - b; float3 pb = p - b;
   float3 ac = a - c; float3 pc = p - c;
   float3 nor = cross( ba, ac );
-
   return sqrt(
     (sign(dot(cross(ba,nor),pa)) +
      sign(dot(cross(cb,nor),pb)) +
@@ -51,14 +48,13 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         return;
 
     int index = id.x + id.y * _Resolution + id.z * _Resolution * _Resolution;
-
     // Voxel Center in World Space (relative to bound min)
     float3 uvw = (float3(id) + 0.5) / (float)_Resolution;
     float3 voxelPos = _BoundsMin + uvw * _BoundsSize;
 
     float minDist = 3.402823466e+38F; // Float Max
     float signVal = 1.0;
-    int closestMaterialID = 0; // Phase 2: Track winning material (0 = Air/Default)
+    int closestMaterialID = 0;
 
     // Brute Force Search
     for (int i = 0; i < _TriangleCount; i++)
@@ -69,10 +65,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         if (d < minDist)
         {
             minDist = d;
-            
             // Phase 2: Capture the material of the closest triangle
             closestMaterialID = t.materialID;
-
+            
             // Determine Sign (Simple Normal Check)
             float3 normal = normalize(cross(t.v1 - t.v0, t.v2 - t.v0));
             float3 toVoxel = voxelPos - t.v0;
@@ -89,10 +84,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         }
     }
 
-    // Write SDF
-    // SDF < 0 : Inside
-    // SDF > 0 : Outside
-    _SDFBuffer[index] = minDist * signVal;
-    
+    float voxelScale = (float)_Resolution / _BoundsSize.x;
+
+    _SDFBuffer[index] = minDist * signVal * voxelScale;
     _DenseMaterialBuffer[index] = closestMaterialID;
 }
