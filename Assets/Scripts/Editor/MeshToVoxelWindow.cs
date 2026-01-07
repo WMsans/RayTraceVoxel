@@ -21,7 +21,7 @@ namespace VoxelEngine.Editor
         private int gridResolution = 64;
         private string outputFilename = "Assets/Resources/NewVoxelVolume.vxvol";
 
-        [MenuItem("Voxel/Mesh To Voxel Converter")]
+        [MenuItem("Window/Voxel/Mesh To Voxel Converter")]
         public static void ShowWindow()
         {
             GetWindow<MeshToVoxelWindow>("Mesh Voxelizer");
