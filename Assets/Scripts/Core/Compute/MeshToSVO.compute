@@ -7,15 +7,13 @@ RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer; 
 RWStructuredBuffer<uint> _BrickMaterialBuffer;
-RWStructuredBuffer<uint> _CounterBuffer; 
+RWStructuredBuffer<uint> _CounterBuffer;
 
-// --- New Inputs for Phase 3 ---
-StructuredBuffer<float> _DenseSDFBuffer; // The dense SDF from Phase 2
-int _TargetMaterialID;                   // Material ID to assign to solid voxels
-uint _GridSize;                          // Resolution (e.g., 64)
+StructuredBuffer<float> _DenseSDFBuffer;      // The dense SDF from Phase 2
+StructuredBuffer<int> _DenseMaterialBuffer;   // NEW: The dense Material IDs from Phase 2
+uint _GridSize;                               // Resolution (e.g., 64)
 
 // Reuse the InitDenseStructure logic to build the Octree Nodes
-// Note: This logic assumes a depth of 4 (Resolution 64) for the node topology.
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
 {
@@ -26,14 +24,14 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     }
 
     if (id >= 4681) return;
-
+    
     SVONode node;
     node.payloadIndex = 0;
     node.topology = 0;
 
     uint level = 0;
     uint indexInLevel = id;
-
+    
     if (id >= 585) { level = 4; indexInLevel = id - 585; }
     else if (id >= 73) { level = 3; indexInLevel = id - 73; }
     else if (id >= 9) { level = 2; indexInLevel = id - 9; }
@@ -62,23 +60,19 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
 
     float3 brickOrigin = id * BRICK_SIZE;
-    
-    // Check if we should allocate this brick
-    // We sample the center of the brick from the Dense SDF
-    // The Dense SDF is flattened: x + y*w + z*w*h
+
+    // Check if we should allocate this brick (Optimization: Check center SDF)
     uint centerX = id.x * BRICK_SIZE + BRICK_SIZE / 2;
     uint centerY = id.y * BRICK_SIZE + BRICK_SIZE / 2;
     uint centerZ = id.z * BRICK_SIZE + BRICK_SIZE / 2;
-    
-    // Safety clamp
+
     if (centerX >= _GridSize) centerX = _GridSize - 1;
     if (centerY >= _GridSize) centerY = _GridSize - 1;
     if (centerZ >= _GridSize) centerZ = _GridSize - 1;
 
     uint centerIdx = centerX + centerY * _GridSize + centerZ * _GridSize * _GridSize;
     float distCenter = _DenseSDFBuffer[centerIdx];
-    
-    // Threshold to decide if we allocate the brick (surface or inside)
+
     float allocationThreshold = (float)BRICK_SIZE * 1.5;
 
     if (distCenter < allocationThreshold)
@@ -97,23 +91,25 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     uint3 voxelLocal = uint3(x, y, z);
                     uint3 voxelGlobal = (uint3)brickOrigin + voxelLocal;
 
-                    // Calculate index for Dense SDF Buffer
+                    // Calculate index for Dense Buffers
                     uint sdfIdx = voxelGlobal.x + voxelGlobal.y * _GridSize + voxelGlobal.z * _GridSize * _GridSize;
-                    
+
                     // Safety check for array bounds
                     if (voxelGlobal.x < _GridSize && voxelGlobal.y < _GridSize && voxelGlobal.z < _GridSize)
                     {
                         float sdf = _DenseSDFBuffer[sdfIdx];
-                        
-                        // Write to Brick Buffer
+                        // NEW: Read the material ID from the dense buffer generated in Phase 2
+                        int matID = _DenseMaterialBuffer[sdfIdx];
+
+                        // Write to Brick Buffer (Distance)
                         uint destIdx = brickPtr + (z*16 + y*4 + x);
                         _BrickBuffer[destIdx] = sdf;
 
                         // Material Assignment
-                        // If voxel is solid (sdf < 0 or small epsilon), set material
                         if (sdf <= 0.5) 
                         {
-                            _BrickMaterialBuffer[destIdx] = _TargetMaterialID;
+                            // Use the specific material ID from the mesh
+                            _BrickMaterialBuffer[destIdx] = (uint)matID;
                         }
                         else
                         {

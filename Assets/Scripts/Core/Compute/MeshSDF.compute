@@ -4,6 +4,7 @@ struct Triangle {
     float3 v0;
     float3 v1;
     float3 v2;
+    int materialID; 
 };
 
 StructuredBuffer<Triangle> _Triangles;
@@ -13,76 +14,19 @@ float3 _BoundsMin;
 float3 _BoundsSize;
 
 RWStructuredBuffer<float> _SDFBuffer;
+RWStructuredBuffer<int> _DenseMaterialBuffer; 
 
-// Utility functions
+// --- Utility Functions ---
+
 float dot2(float3 v) { return dot(v, v); }
 
-// Returns distance squared and the sign (positive if 'outside' based on pseudo-normal logic)
-// This is a basic implementation. For true 'inside', we rely on the normal of the closest point.
-void GetSquaredDistPointTriangle(float3 p, float3 a, float3 b, float3 c, out float distSq, out float sgn)
-{
-    float3 ba = b - a; float3 pa = p - a;
-    float3 cb = c - b; float3 pb = p - b;
-    float3 ac = a - c; float3 pc = p - c;
-    float3 nor = cross(ba, ac);
-
-    float3 d_vec;
-    
-    // 3 edges check
-    bool inside = (sign(dot(cross(ba, nor), pa)) +
-                   sign(dot(cross(cb, nor), pb)) +
-                   sign(dot(cross(ac, nor), pc)) < 2.0);
-                   
-    if (inside)
-    {
-        // Edge cases
-        float3 d1 = ba * clamp(dot(ba, pa) / dot2(ba), 0.0, 1.0) - pa;
-        float3 d2 = cb * clamp(dot(cb, pb) / dot2(cb), 0.0, 1.0) - pb;
-        float3 d3 = ac * clamp(dot(ac, pc) / dot2(ac), 0.0, 1.0) - pc;
-        
-        float k1 = dot2(d1);
-        float k2 = dot2(d2);
-        float k3 = dot2(d3);
-        
-        if (k1 < k2 && k1 < k3) d_vec = d1;
-        else if (k2 < k3)       d_vec = d2;
-        else                    d_vec = d3;
-        
-        distSq = min(min(k1, k2), k3);
-    }
-    else
-    {
-        // Face case
-        float d = dot(nor, pa);
-        float d2 = d * d / dot2(nor);
-        distSq = d2;
-        d_vec = nor * (d / dot2(nor)); // Projection onto normal
-    }
-    
-    // Sign determination:
-    // If the vector from ClosestPoint to P aligns with Normal, we are "outside" (assuming normals point out)
-    // Closest Point Q = P + d_vec (Wait, d_vec is vector from P to curve? No, usually P - Q or Q - P)
-    // Let's re-verify the edge logic. 
-    
-    // Using standard IQ udTriangle for unsigned, but we need signed.
-    // Let's use a simpler heuristic for sign: dot(p - closestPoint, normal)
-    // We need the normal of the triangle.
-    float3 triNormal = normalize(nor);
-    
-    // But wait, the closest point might be on an edge, where the "normal" is ambiguous or should be the edge normal?
-    // For a basic Voxelizer, using the face normal of the closest triangle is a common approximation, 
-    // though it can fail on sharp corners. Winding number is better but expensive.
-    
-    // Let's re-calculate closest point properly to get the vector.
-    // ... Actually, let's stick to distance first, then simple sign.
-    
-    sgn = sign(dot(p - (p + d_vec), triNormal)); // Placeholder logic
-}
-
-// Improved Distance Function
+// Improved Distance Function (Signed Distance to Triangle)
+// Returns unsigned distance squared first, logic inside handles sign context usually, 
+// but here we use the specific implementation for exact distance.
 float UD_Triangle(float3 p, float3 a, float3 b, float3 c)
 {
-  float3 ba = b - a; float3 pa = p - a;
+  float3 ba = b - a;
+  float3 pa = p - a;
   float3 cb = c - b; float3 pb = p - b;
   float3 ac = a - c; float3 pc = p - c;
   float3 nor = cross( ba, ac );
@@ -107,13 +51,14 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         return;
 
     int index = id.x + id.y * _Resolution + id.z * _Resolution * _Resolution;
-    
+
     // Voxel Center in World Space (relative to bound min)
     float3 uvw = (float3(id) + 0.5) / (float)_Resolution;
     float3 voxelPos = _BoundsMin + uvw * _BoundsSize;
 
     float minDist = 3.402823466e+38F; // Float Max
     float signVal = 1.0;
+    int closestMaterialID = 0; // Phase 2: Track winning material (0 = Air/Default)
 
     // Brute Force Search
     for (int i = 0; i < _TriangleCount; i++)
@@ -125,14 +70,14 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         {
             minDist = d;
             
-            // Determine Sign
-            // Simple approach: Check dot product with triangle normal
+            // Phase 2: Capture the material of the closest triangle
+            closestMaterialID = t.materialID;
+
+            // Determine Sign (Simple Normal Check)
             float3 normal = normalize(cross(t.v1 - t.v0, t.v2 - t.v0));
+            float3 toVoxel = voxelPos - t.v0;
             
-            // Closest point calculation (simplified for sign check)
-            // If we are 'above' the triangle plane, we assume outside.
-            // This is imperfect for non-convex meshes but standard for simple voxelization.
-            float3 toVoxel = voxelPos - t.v0; // Vector from a vertex to voxel
+            // If we are 'behind' the triangle plane, we assume inside
             if (dot(toVoxel, normal) < 0)
             {
                 signVal = -1.0; // Inside
@@ -148,4 +93,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     // SDF < 0 : Inside
     // SDF > 0 : Outside
     _SDFBuffer[index] = minDist * signVal;
+    
+    _DenseMaterialBuffer[index] = closestMaterialID;
 }
