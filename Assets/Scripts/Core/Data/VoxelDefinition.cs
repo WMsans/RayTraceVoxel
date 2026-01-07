@@ -13,7 +13,8 @@ namespace VoxelEngine.Core.Data
         [Header("Side Textures")]
         public Texture2D Albedo;
         public Texture2D Normal;
-        public Texture2D Smoothness;
+        [UnityEngine.Serialization.FormerlySerializedAs("Smoothness")]
+        public Texture2D Roughness;
         [Range(0f, 1f)]
         public float Metallic; // Metallic value for side faces
         public Texture2D AmbientOcclusion;
@@ -22,7 +23,8 @@ namespace VoxelEngine.Core.Data
         [Tooltip("Assign all four top textures to use them. Otherwise, the side textures will be used for the top face.")]
         public Texture2D TopAlbedo;
         public Texture2D TopNormal;
-        public Texture2D TopSmoothness;
+        [UnityEngine.Serialization.FormerlySerializedAs("TopSmoothness")]
+        public Texture2D TopRoughness;
         [Range(0f, 1f)]
         public float TopMetallic; // Metallic value for top faces
         public Texture2D TopAmbientOcclusion;
@@ -31,7 +33,7 @@ namespace VoxelEngine.Core.Data
         /// Determines if dedicated top textures should be used for this block.
         /// </summary>
         /// <returns>True if all top texture fields are assigned, false otherwise.</returns>
-        public bool HasSeparateTopTextures() => TopAlbedo != null && TopNormal != null && TopSmoothness != null && TopAmbientOcclusion != null;
+        public bool HasSeparateTopTextures() => TopAlbedo != null && TopNormal != null && TopRoughness != null && TopAmbientOcclusion != null;
     }
 
 

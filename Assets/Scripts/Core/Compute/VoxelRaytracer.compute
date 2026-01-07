@@ -141,18 +141,22 @@ float SampleShadow(float3 worldPos)
     return 1.0;
 }
 
-float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float shadow)
+float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float shadow, float roughness)
 {
     float3 H = normalize(V + L);
     float NdotL = max(0.0, dot(N, L));
     float NdotH = max(0.0, dot(N, H));
-    // Simple Blinn-Phong Specular
-    float specPower = 32.0;
+    
+    // Blinn-Phong Specular approximated from Roughness
+    float smoothness = 1.0 - roughness;
+    float specPower = exp2(10.0 * smoothness + 1.0);
+    
     float spec = pow(NdotH, specPower);
     float3 diffuse = albedo / PI;
-    float3 specular = float3(0.04, 0.04, 0.04) * spec;
-    // Dielectric F0
-    
+    float3 specular = float3(0.04, 0.04, 0.04) * spec; // Assuming dielectric
+    // Normalize specular term to conserve energy (approximate)
+    specular *= (specPower + 8.0) / (8.0 * PI);
+
     return (diffuse + specular) * lightColor * NdotL * shadow;
 }
 
@@ -169,7 +173,7 @@ float3 UnpackNormal(float4 packed)
     return _BrickMaterialBuffer[idx];
 }
 
-void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outSmoothness, out float outAO)
+void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outAO)
 {
     VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
     float3 blend = abs(normal);
@@ -189,17 +193,17 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
     float3 albedoY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topAlbedoIndex), 0).rgb;
  float3 albedoZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
     outAlbedo = albedoX * blend.x + albedoY * blend.y + albedoZ * blend.z;
-    // Mask (G=AO, B=Smoothness)
+    // Mask (G=AO, B=Roughness)
     float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), 0);
     float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topMaskIndex), 0);
     float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), 0);
     
     float aoX = maskX.g;
-    float smoothX = maskX.b;
-    float aoY = maskY.g; float smoothY = maskY.b;
-    float aoZ = maskZ.g; float smoothZ = maskZ.b;
+    float roughX = maskX.b;
+    float aoY = maskY.g; float roughY = maskY.b;
+    float aoZ = maskZ.g; float roughZ = maskZ.b;
     outAO = aoX * blend.x + aoY * blend.y + aoZ * blend.z;
-    outSmoothness = smoothX * blend.x + smoothY * blend.y + smoothZ * blend.z;
+    outRoughness = roughX * blend.x + roughY * blend.y + roughZ * blend.z;
     // Normals
     float3 nX = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideNormalIndex), 0));
     float3 nY = UnpackNormal(_NormalTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topNormalIndex), 0));
@@ -470,8 +474,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                         float3 geomNormal = CalculateNormal(brickPtr, localPos);
                         // NEW: Fetch Material ID per Voxel
                         uint matId = GetVoxelMaterial(brickPtr, localPos);
-                        float3 albedo, normal; float smoothness, ao;
-                        TriplanarSampling(worldPos, geomNormal, matId, albedo, normal, smoothness, ao);
+                        float3 albedo, normal; float roughness, ao;
+                        TriplanarSampling(worldPos, geomNormal, matId, albedo, normal, roughness, ao);
                         
                         float3 V = normalize(rayOrigin - worldPos);
                         float3 L = (_MainLightPosition.w == 0) ? normalize(_MainLightPosition.xyz) : normalize(_MainLightPosition.xyz - worldPos);
@@ -482,7 +486,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                         float internalShadow = TraceInternalShadow(shadowOrigin, L, lightDist);
                         
                         float shadow = SampleShadow(worldPos) * internalShadow * ao;
-                        float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow);
+                        float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow, roughness);
                         float3 ambient = float3(0.1, 0.1, 0.1) * albedo * ao;
                         finalColor = directLight + ambient;
 
@@ -496,7 +500,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                             else { float3 toLight = light.position.xyz - worldPos;
                             float d = length(toLight); L_add = normalize(toLight); float range = light.attenuation.x; float dSqr = d*d; atten = (1.0/(1.0+dSqr*light.attenuation.y)) * pow(max(0,1-pow(d/range,4)),2);
                             }
-                            finalColor += LightingPBR(albedo, normal, V, L_add, light.color.rgb, 1.0) * atten;
+                            finalColor += LightingPBR(albedo, normal, V, L_add, light.color.rgb, 1.0, roughness) * atten;
                         }
                         
                         finalAlpha = 1.0;
