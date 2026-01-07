@@ -13,16 +13,16 @@ MonoBehaviour:
   m_Name: 3brickwall_02
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Data.SolidVoxelDefinition
   id: 3
-  voxelName: arch_stone_wall_01
+  voxelName: brickwall_02
   renderType: 1
   blockTextures:
-    Albedo: {fileID: 2800000, guid: 33ad0f5c1e313c445a15a15b3ed50e8b, type: 3}
-    Normal: {fileID: 2800000, guid: 577314848c506a4439bda17753980964, type: 3}
-    Roughness: {fileID: 2800000, guid: 058a9fa5cfb9c5748adf67ba9a7c663c, type: 3}
+    Albedo: {fileID: 2800000, guid: e18136e9d910dee44ae9990a5542f449, type: 3}
+    Normal: {fileID: 2800000, guid: 5909bf8e3a9a11649bcde034e9e3ee4a, type: 3}
+    Roughness: {fileID: 2800000, guid: aab05a5bb6728e9449e7c22ee8f92606, type: 3}
     Metallic: 0
     AmbientOcclusion: {fileID: 0}
-    TopAlbedo: {fileID: 2800000, guid: 33ad0f5c1e313c445a15a15b3ed50e8b, type: 3}
-    TopNormal: {fileID: 2800000, guid: 577314848c506a4439bda17753980964, type: 3}
-    TopRoughness: {fileID: 2800000, guid: 058a9fa5cfb9c5748adf67ba9a7c663c, type: 3}
+    TopAlbedo: {fileID: 2800000, guid: e18136e9d910dee44ae9990a5542f449, type: 3}
+    TopNormal: {fileID: 2800000, guid: 5909bf8e3a9a11649bcde034e9e3ee4a, type: 3}
+    TopRoughness: {fileID: 2800000, guid: aab05a5bb6728e9449e7c22ee8f92606, type: 3}
     TopMetallic: 0
     TopAmbientOcclusion: {fileID: 0}
