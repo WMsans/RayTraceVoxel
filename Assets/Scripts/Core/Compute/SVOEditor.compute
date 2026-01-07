@@ -122,11 +122,17 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
     float newVal = currentVal;
     float k = max(_Smoothness, 0.001);
 
+    // Read current material to check for Air
+    uint currentMat = _BrickMaterialBuffer[voxelIndex];
+
     if (_BrushOp == 0) // Add
     {
         newVal = smin(currentVal, brushVal, k);
-        // If the brush is contributing significantly to the shape, take its material
-        if (brushVal < currentVal)
+        
+        // FIX: Update Material if:
+        // 1. Brush is dominant (closer than current value)
+        // 2. OR Current voxel was Air (Mat 0) and is now becoming part of the surface/crust (< 1.0)
+        if (brushVal < currentVal || (currentMat == 0 && newVal < 1.0))
         {
              _BrickMaterialBuffer[voxelIndex] = _BrushMaterialId;
         }
@@ -135,9 +141,8 @@ void EditVoxelsGeneric(uint3 groupID, uint3 groupThreadID, int shape)
     {
         newVal = -smin(-currentVal, brushVal, k);
         
-        // FIX: If the voxel becomes Air (positive distance), clear the material.
-        // This prevents "ghost shells" of material remaining in empty space.
-        if (newVal > 0.5)
+        // Optional: Clear material if it becomes deep Air (> 1.0) to keep buffers clean
+        if (newVal > 1.0)
         {
             _BrickMaterialBuffer[voxelIndex] = 0;
         }
