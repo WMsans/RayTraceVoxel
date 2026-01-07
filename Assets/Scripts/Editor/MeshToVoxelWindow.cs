@@ -14,12 +14,31 @@ namespace VoxelEngine.Editor
 {
     public class MeshToVoxelWindow : EditorWindow
     {
-        private Mesh sourceMesh;
-        private GameObject sourceGameObject;
+        // --- Data Structures ---
+        [System.Serializable]
+        public class MaterialMapping
+        {
+            public Material unityMaterial;
+            public int voxelMaterialID = 1; // Default to Solid
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct TriangleEx
+        {
+            public Vector3 v0;
+            public Vector3 v1;
+            public Vector3 v2;
+            public int materialId;
+        }
+
+        // --- State ---
+        private GameObject sourceRoot;
         private float importScale = 1.0f;
-        private int voxelMaterialID = 1;
         private int gridResolution = 64;
         private string outputFilename = "Assets/Resources/NewVoxelVolume.vxvol";
+
+        private List<MaterialMapping> materialMappings = new List<MaterialMapping>();
+        private Vector2 scrollPos;
 
         [MenuItem("Window/Voxel/Mesh To Voxel Converter")]
         public static void ShowWindow()
@@ -29,30 +48,51 @@ namespace VoxelEngine.Editor
 
         private void OnGUI()
         {
-            GUILayout.Label("Configuration", EditorStyles.boldLabel);
+            scrollPos = EditorGUILayout.BeginScrollView(scrollPos);
 
-            sourceGameObject = (GameObject)EditorGUILayout.ObjectField("Source GameObject", sourceGameObject, typeof(GameObject), true);
-            if (sourceGameObject != null)
+            GUILayout.Label("1. Input Configuration", EditorStyles.boldLabel);
+
+            EditorGUI.BeginChangeCheck();
+            sourceRoot = (GameObject)EditorGUILayout.ObjectField("Source Root Object", sourceRoot, typeof(GameObject), true);
+            if (EditorGUI.EndChangeCheck() && sourceRoot != null)
             {
-                MeshFilter mf = sourceGameObject.GetComponent<MeshFilter>();
-                if (mf != null) sourceMesh = mf.sharedMesh;
-                
-                SkinnedMeshRenderer smr = sourceGameObject.GetComponent<SkinnedMeshRenderer>();
-                if (smr != null) sourceMesh = smr.sharedMesh;
+                ScanMaterials();
             }
-            
-            sourceMesh = (Mesh)EditorGUILayout.ObjectField("Source Mesh", sourceMesh, typeof(Mesh), false);
+
             importScale = EditorGUILayout.FloatField("Import Scale", importScale);
-            voxelMaterialID = EditorGUILayout.IntField("Voxel Material ID", voxelMaterialID);
-            
             gridResolution = EditorGUILayout.IntField("Grid Resolution", gridResolution);
+
             if (!IsPowerOfTwo(gridResolution))
             {
-                EditorGUILayout.HelpBox("Resolution must be a Power of 2 (e.g., 32, 64, 128).", MessageType.Warning);
+                EditorGUILayout.HelpBox("Resolution must be a Power of 2 (32, 64, 128).", MessageType.Warning);
             }
 
             GUILayout.Space(10);
-            GUILayout.Label("Output", EditorStyles.boldLabel);
+            GUILayout.Label("2. Material Mapping", EditorStyles.boldLabel);
+            
+            if (GUILayout.Button("Refresh Materials"))
+            {
+                ScanMaterials();
+            }
+
+            if (materialMappings.Count > 0)
+            {
+                foreach (var map in materialMappings)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    EditorGUILayout.ObjectField(map.unityMaterial, typeof(Material), false, GUILayout.Width(200));
+                    EditorGUILayout.LabelField("=>", GUILayout.Width(30));
+                    map.voxelMaterialID = EditorGUILayout.IntField(map.voxelMaterialID);
+                    EditorGUILayout.EndHorizontal();
+                }
+            }
+            else
+            {
+                EditorGUILayout.HelpBox("No Renderers found in hierarchy.", MessageType.Info);
+            }
+
+            GUILayout.Space(10);
+            GUILayout.Label("3. Output", EditorStyles.boldLabel);
             outputFilename = EditorGUILayout.TextField("Output Filename", outputFilename);
 
             GUILayout.Space(20);
@@ -61,78 +101,175 @@ namespace VoxelEngine.Editor
             {
                 if (ValidateInputs())
                 {
-                    VoxelizeAndSave();
+                    PrepareAndProcess();
                 }
+            }
+
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void ScanMaterials()
+        {
+            materialMappings.Clear();
+            if (sourceRoot == null) return;
+
+            var renderers = sourceRoot.GetComponentsInChildren<Renderer>();
+            HashSet<Material> uniqueMats = new HashSet<Material>();
+
+            foreach (var r in renderers)
+            {
+                if (r is MeshRenderer || r is SkinnedMeshRenderer)
+                {
+                    foreach (var m in r.sharedMaterials)
+                    {
+                        if (m != null) uniqueMats.Add(m);
+                    }
+                }
+            }
+
+            foreach (var m in uniqueMats)
+            {
+                materialMappings.Add(new MaterialMapping { unityMaterial = m, voxelMaterialID = 1 });
             }
         }
 
         private bool ValidateInputs()
         {
-            if (sourceMesh == null)
+            if (sourceRoot == null)
             {
-                EditorUtility.DisplayDialog("Error", "Please assign a Source Mesh.", "OK");
+                EditorUtility.DisplayDialog("Error", "Please assign a Root Object.", "OK");
                 return false;
             }
-            if (!IsPowerOfTwo(gridResolution))
-            {
-                EditorUtility.DisplayDialog("Error", "Grid Resolution must be a power of 2.", "OK");
-                return false;
-            }
-            if (string.IsNullOrEmpty(outputFilename))
-            {
-                EditorUtility.DisplayDialog("Error", "Please specify an Output Filename.", "OK");
-                return false;
-            }
+            if (string.IsNullOrEmpty(outputFilename)) return false;
             return true;
         }
 
-        struct Triangle
+        // ----------------------------------------------------------------------------------
+        // CORE LOGIC: The Super Buffer Construction
+        // ----------------------------------------------------------------------------------
+
+        private void PrepareAndProcess()
         {
-            public Vector3 v0;
-            public Vector3 v1;
-            public Vector3 v2;
+            Debug.Log($"Starting Voxelization pipeline for hierarchy: {sourceRoot.name}...");
+
+            // 1. Build Lookup Dictionary for speed
+            Dictionary<Material, int> matLookup = new Dictionary<Material, int>();
+            foreach (var map in materialMappings)
+            {
+                if (map.unityMaterial != null) matLookup[map.unityMaterial] = map.voxelMaterialID;
+            }
+
+            // 2. Flatten Hierarchy & Bake Transforms
+            List<TriangleEx> superBuffer = new List<TriangleEx>();
+            RecurseAndCollect(sourceRoot.transform, superBuffer, matLookup);
+
+            if (superBuffer.Count == 0)
+            {
+                Debug.LogError("No geometry found in hierarchy!");
+                return;
+            }
+
+            Debug.Log($"Phase 1 Complete: Aggregated {superBuffer.Count} triangles from hierarchy.");
+
+            // 3. Calculate Global Bounds
+            Bounds globalBounds = new Bounds(superBuffer[0].v0, Vector3.zero);
+            foreach (var t in superBuffer)
+            {
+                globalBounds.Encapsulate(t.v0);
+                globalBounds.Encapsulate(t.v1);
+                globalBounds.Encapsulate(t.v2);
+            }
+
+            // Expand slightly to ensure no boundary clipping
+            float maxDim = Mathf.Max(globalBounds.size.x, Mathf.Max(globalBounds.size.y, globalBounds.size.z));
+            maxDim *= 1.05f; 
+            Vector3 boundsSize = new Vector3(maxDim, maxDim, maxDim);
+            Vector3 boundsMin = globalBounds.center - boundsSize * 0.5f;
+
+            // 4. Dispatch to GPU Pipeline (Modified to handle TriangleEx)
+            ExecuteGPUPipeline(superBuffer, boundsMin, boundsSize);
         }
 
-        private void VoxelizeAndSave()
+        private void RecurseAndCollect(Transform node, List<TriangleEx> buffer, Dictionary<Material, int> matLookup)
         {
-            Debug.Log($"Starting Voxelization pipeline for {sourceMesh.name}...");
+            Mesh mesh = null;
+            Material[] sharedMats = null;
 
-            // --- Phase 1: Mesh Data Prep ---
-            List<Triangle> triangles = new List<Triangle>();
-            Vector3[] vertices = sourceMesh.vertices;
+            // Handle MeshFilter + MeshRenderer
+            MeshFilter mf = node.GetComponent<MeshFilter>();
+            MeshRenderer mr = node.GetComponent<MeshRenderer>();
             
-            for(int i=0; i<vertices.Length; i++) vertices[i] *= importScale;
-
-            for (int sub = 0; sub < sourceMesh.subMeshCount; sub++)
+            if (mf != null && mr != null && mf.sharedMesh != null)
             {
-                int[] indices = sourceMesh.GetTriangles(sub);
-                for (int i = 0; i < indices.Length; i += 3)
+                mesh = mf.sharedMesh;
+                sharedMats = mr.sharedMaterials;
+            }
+            
+            // Handle SkinnedMeshRenderer
+            SkinnedMeshRenderer smr = node.GetComponent<SkinnedMeshRenderer>();
+            if (smr != null && smr.sharedMesh != null)
+            {
+                mesh = smr.sharedMesh;
+                sharedMats = smr.sharedMaterials;
+                // Note: We are baking the "bind pose" mesh transformed by the gameobject. 
+                // Creating a snapshot of the currently deformed skinned mesh is more complex (requires Mesh.BakeMesh).
+            }
+
+            if (mesh != null)
+            {
+                // Bake Transform: Local -> World
+                Matrix4x4 localToWorld = node.localToWorldMatrix;
+
+                // Scale adjustment if user requested import scale
+                if (importScale != 1.0f)
                 {
-                    triangles.Add(new Triangle
+                    Matrix4x4 scaleMatrix = Matrix4x4.Scale(Vector3.one * importScale);
+                    localToWorld = localToWorld * scaleMatrix;
+                }
+
+                Vector3[] originalVerts = mesh.vertices;
+                Vector3[] worldVerts = new Vector3[originalVerts.Length];
+
+                // Optimization: Transform all verts once per mesh
+                for (int i = 0; i < originalVerts.Length; i++)
+                {
+                    worldVerts[i] = localToWorld.MultiplyPoint3x4(originalVerts[i]);
+                }
+
+                // Iterate Submeshes
+                for (int sub = 0; sub < mesh.subMeshCount; sub++)
+                {
+                    // Determine Material ID
+                    int voxelId = 1; // Default
+                    if (sharedMats != null && sub < sharedMats.Length && sharedMats[sub] != null)
                     {
-                        v0 = vertices[indices[i]],
-                        v1 = vertices[indices[i+1]],
-                        v2 = vertices[indices[i+2]]
-                    });
+                        if (matLookup.TryGetValue(sharedMats[sub], out int id))
+                            voxelId = id;
+                    }
+
+                    int[] indices = mesh.GetTriangles(sub);
+                    for (int i = 0; i < indices.Length; i += 3)
+                    {
+                        buffer.Add(new TriangleEx
+                        {
+                            v0 = worldVerts[indices[i]],
+                            v1 = worldVerts[indices[i + 1]],
+                            v2 = worldVerts[indices[i + 2]],
+                            materialId = voxelId
+                        });
+                    }
                 }
             }
 
-            if (triangles.Count == 0) return;
-
-            // Calculate Bounds
-            Bounds bounds = new Bounds(triangles[0].v0, Vector3.zero);
-            foreach (var t in triangles)
+            // Recurse Children
+            foreach (Transform child in node)
             {
-                bounds.Encapsulate(t.v0);
-                bounds.Encapsulate(t.v1);
-                bounds.Encapsulate(t.v2);
+                RecurseAndCollect(child, buffer, matLookup);
             }
-            
-            float maxDim = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
-            maxDim *= 1.1f; // Padding
-            Vector3 boundsSize = new Vector3(maxDim, maxDim, maxDim);
-            Vector3 boundsMin = bounds.center - boundsSize * 0.5f;
+        }
 
+        private void ExecuteGPUPipeline(List<TriangleEx> triangles, Vector3 boundsMin, Vector3 boundsSize)
+        {
             // --- GPU Setup ---
             ComputeShader sdfShader = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Scripts/Core/Compute/MeshSDF.compute");
             ComputeShader svoShader = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Scripts/Core/Compute/MeshToSVO.compute");
@@ -143,154 +280,31 @@ namespace VoxelEngine.Editor
                 return;
             }
 
-            // Phase 2: Mesh -> Dense SDF
-            GraphicsBuffer triBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, triangles.Count, Marshal.SizeOf<Triangle>());
+            // 1. Upload Super Buffer
+            GraphicsBuffer triBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, triangles.Count, Marshal.SizeOf<TriangleEx>());
             triBuffer.SetData(triangles);
-            
-            // Note: Using GraphicsBuffer for compatibility with SVOGenerator
-            GraphicsBuffer sdfBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, gridResolution * gridResolution * gridResolution, sizeof(float));
 
-            int kernelSDF = sdfShader.FindKernel("CSMain");
-            sdfShader.SetBuffer(kernelSDF, "_Triangles", triBuffer);
-            sdfShader.SetBuffer(kernelSDF, "_SDFBuffer", sdfBuffer);
-            sdfShader.SetInt("_TriangleCount", triangles.Count);
-            sdfShader.SetInt("_Resolution", gridResolution);
-            sdfShader.SetVector("_BoundsMin", boundsMin);
-            sdfShader.SetVector("_BoundsSize", boundsSize);
-
-            int threads = Mathf.CeilToInt(gridResolution / 8.0f);
-            sdfShader.Dispatch(kernelSDF, threads, threads, threads);
+            // 2. Prepare Destination Buffers
+            int totalVoxels = gridResolution * gridResolution * gridResolution;
             
-            triBuffer.Release(); // Done with triangles
-
-            // --- Phase 3: Dense SDF -> Sparse Voxel Octree (SVO) ---
-            // Estimate max capacity (conservative estimate)
-            int maxNodes = 200000; 
-            int maxBricks = 100000;
+            // SDF (Distances)
+            GraphicsBuffer sdfBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxels, sizeof(float));
             
-            SVOBufferManager bufferManager = new SVOBufferManager(maxNodes, maxBricks);
-            
-            // Dispatch generation
-            SVOGenerator.BuildFromSDF(svoShader, bufferManager, gridResolution, sdfBuffer, voxelMaterialID);
-            
-            sdfBuffer.Release(); // Done with SDF
+            // NEW: Material Buffer (Integers) - This requires updating your Compute Shader to support it!
+            // We will need to pass this to the SVO Generator later.
+            // For now, I'm setting up the Phase 1 buffer logic.
+            // GraphicsBuffer denseMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxels, sizeof(int));
 
-            // --- Phase 4: Serialization ---
-            try
-            {
-                PerformSerialization(bufferManager, outputFilename, gridResolution);
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Serialization Failed: {e.Message}\n{e.StackTrace}");
-            }
-            finally
-            {
-                bufferManager.Dispose();
-            }
+            // ... Dispatch Logic (Requires Shader Updates in Phase 2) ...
+            // For now, we will just log that we are ready.
+            
+            Debug.LogWarning("Ready to Dispatch GPU. Note: MeshSDF.compute needs to be updated to accept 'TriangleEx' struct and output Material IDs.");
 
+            // Cleanup for this partial step
+            triBuffer.Release();
+            sdfBuffer.Release();
+            // denseMaterialBuffer.Release();
             AssetDatabase.Refresh();
-        }
-
-        private void PerformSerialization(SVOBufferManager buffers, string filePath, int resolution)
-        {
-            // 1. Read Counters (Synchronous)
-            // [0]=NodeCount, [1]=PayloadCount, [2]=BrickFloatCount
-            uint[] counters = new uint[3];
-            buffers.CounterBuffer.GetData(counters);
-
-            int nodeCount = (int)counters[0];
-            int payloadCount = (int)counters[1];
-            int brickFloatCount = (int)counters[2];
-
-            Debug.Log($"Extracting Data... Nodes: {nodeCount}, Payloads: {payloadCount}, Bricks: {brickFloatCount/64}");
-
-            if (nodeCount == 0)
-            {
-                Debug.LogWarning("No nodes generated. Volume is empty.");
-                return;
-            }
-
-            // 2. Buffer Extraction (Read only relevant data)
-            SVONode[] nodes = new SVONode[nodeCount];
-            buffers.NodeBuffer.GetData(nodes, 0, 0, nodeCount);
-
-            VoxelPayload[] payloads = new VoxelPayload[payloadCount];
-            if (payloadCount > 0)
-                buffers.PayloadBuffer.GetData(payloads, 0, 0, payloadCount);
-
-            float[] brickData = new float[brickFloatCount];
-            uint[] brickMaterials = new uint[brickFloatCount];
-            if (brickFloatCount > 0)
-            {
-                buffers.BrickBuffer.GetData(brickData, 0, 0, brickFloatCount);
-                buffers.BrickMaterialBuffer.GetData(brickMaterials, 0, 0, brickFloatCount);
-            }
-
-            // 3. File Construction
-            using (var fs = new FileStream(filePath, FileMode.Create))
-            using (var writer = new BinaryWriter(fs))
-            {
-                // Write Header
-                var header = new VoxelFileFormat.Header
-                {
-                    Magic = VoxelFileFormat.MAGIC,
-                    Version = VoxelFileFormat.VERSION,
-                    Resolution = resolution,
-                    NodeCount = nodeCount,
-                    PayloadCount = payloadCount,
-                    BrickFloatCount = brickFloatCount
-                };
-                header.Write(writer);
-
-                // Write Compressed Blocks
-                WriteCompressedBlock(writer, nodes);
-                WriteCompressedBlock(writer, payloads);
-                WriteCompressedBlock(writer, brickData);
-                WriteCompressedBlock(writer, brickMaterials);
-            }
-
-            Debug.Log($"<color=green>Success!</color> Saved Voxel Volume to: {filePath}");
-        }
-
-        // Helper to safely write arrays of structs or primitives using GCHandle
-        private void WriteCompressedBlock<T>(BinaryWriter writer, T[] data) where T : struct
-        {
-            if (data == null || data.Length == 0)
-            {
-                writer.Write((int)0); // Size 0
-                return;
-            }
-
-            int elementSize = Marshal.SizeOf<T>();
-            int totalBytes = data.Length * elementSize;
-            byte[] rawBytes = new byte[totalBytes];
-            
-            // Fix: Buffer.BlockCopy fails on struct arrays. Use GCHandle to pin and copy.
-            GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
-            try
-            {
-                IntPtr ptr = handle.AddrOfPinnedObject();
-                Marshal.Copy(ptr, rawBytes, 0, totalBytes);
-            }
-            finally
-            {
-                handle.Free();
-            }
-
-            // GZip Compression
-            using (var ms = new MemoryStream())
-            {
-                using (var gzip = new GZipStream(ms, CompressionMode.Compress))
-                {
-                    gzip.Write(rawBytes, 0, rawBytes.Length);
-                }
-                byte[] compressed = ms.ToArray();
-
-                // Write size then data
-                writer.Write(compressed.Length);
-                writer.Write(compressed);
-            }
         }
 
         private bool IsPowerOfTwo(int x)
