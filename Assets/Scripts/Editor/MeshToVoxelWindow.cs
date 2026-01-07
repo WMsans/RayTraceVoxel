@@ -9,6 +9,7 @@ using VoxelEngine.Core.Buffers;
 using VoxelEngine.Core.Generators;
 using VoxelEngine.Core.Serialization;
 using VoxelEngine.Core.Data;
+using Unity.Collections;
 
 namespace VoxelEngine.Editor
 {
@@ -270,6 +271,8 @@ namespace VoxelEngine.Editor
 
         private void ExecuteGPUPipeline(List<TriangleEx> triangles, Vector3 boundsMin, Vector3 boundsSize)
         {
+            Debug.Log("Preparing GPU Pipeline...");
+
             // --- GPU Setup ---
             ComputeShader sdfShader = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Scripts/Core/Compute/MeshSDF.compute");
             ComputeShader svoShader = AssetDatabase.LoadAssetAtPath<ComputeShader>("Assets/Scripts/Core/Compute/MeshToSVO.compute");
@@ -280,36 +283,198 @@ namespace VoxelEngine.Editor
                 return;
             }
 
+            // --- Phase 1: SDF & Material Map ---
+            
             // 1. Upload Super Buffer
             GraphicsBuffer triBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, triangles.Count, Marshal.SizeOf<TriangleEx>());
             triBuffer.SetData(triangles);
 
             // 2. Prepare Destination Buffers
             int totalVoxels = gridResolution * gridResolution * gridResolution;
-            
-            // SDF (Distances)
             GraphicsBuffer sdfBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxels, sizeof(float));
-            
-            // NEW: Material Buffer (Integers) - This requires updating your Compute Shader to support it!
-            // We will need to pass this to the SVO Generator later.
-            // For now, I'm setting up the Phase 1 buffer logic.
-            // GraphicsBuffer denseMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxels, sizeof(int));
+            GraphicsBuffer denseMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxels, sizeof(int));
 
-            // ... Dispatch Logic (Requires Shader Updates in Phase 2) ...
-            // For now, we will just log that we are ready.
-            
-            Debug.LogWarning("Ready to Dispatch GPU. Note: MeshSDF.compute needs to be updated to accept 'TriangleEx' struct and output Material IDs.");
+            // 3. Dispatch MeshSDF
+            int sdfKernel = sdfShader.FindKernel("CSMain");
+            sdfShader.SetBuffer(sdfKernel, "_Triangles", triBuffer);
+            sdfShader.SetBuffer(sdfKernel, "_SDFBuffer", sdfBuffer);
+            sdfShader.SetBuffer(sdfKernel, "_DenseMaterialBuffer", denseMaterialBuffer);
+            sdfShader.SetInt("_TriangleCount", triangles.Count);
+            sdfShader.SetInt("_Resolution", gridResolution);
+            sdfShader.SetVector("_BoundsMin", boundsMin);
+            sdfShader.SetVector("_BoundsSize", boundsSize);
 
-            // Cleanup for this partial step
-            triBuffer.Release();
-            sdfBuffer.Release();
-            // denseMaterialBuffer.Release();
-            AssetDatabase.Refresh();
+            int threadGroups = Mathf.CeilToInt(gridResolution / 8.0f);
+            sdfShader.Dispatch(sdfKernel, threadGroups, threadGroups, threadGroups);
+            
+            Debug.Log($"Phase 1 Complete (SDF Generation).");
+
+            // --- Phase 2: SVO Generation ---
+            
+            // 1. Allocate SVO Buffers
+            int maxNodes = 250000;
+            int maxBricks = 100000;
+            
+            GraphicsBuffer nodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxNodes, Marshal.SizeOf<SVONode>());
+            GraphicsBuffer payloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxNodes, Marshal.SizeOf<VoxelPayload>());
+            GraphicsBuffer brickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxBricks * 64, sizeof(float));
+            GraphicsBuffer brickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, maxBricks * 64, sizeof(uint));
+            GraphicsBuffer counterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 4, sizeof(uint)); 
+            // Counters: [0]=Nodes, [1]=Payloads, [2]=BrickFloatIndex, [3]=padding/debug
+
+            counterBuffer.SetData(new uint[] { 0, 0, 0, 0 });
+
+            // 2. Init Dense Structure (Levels 0-3)
+            int initKernel = svoShader.FindKernel("InitDenseStructure");
+            svoShader.SetInt("_GridSize", gridResolution);
+            svoShader.SetBuffer(initKernel, "_NodeBuffer", nodeBuffer);
+            svoShader.SetBuffer(initKernel, "_CounterBuffer", counterBuffer);
+            
+            // Dispatch enough threads for the dense part (4681 nodes for res 64)
+            svoShader.Dispatch(initKernel, Mathf.CeilToInt(4681f / 64f), 1, 1);
+
+            // 3. Build Bricks (Leaf Nodes)
+            int buildKernel = svoShader.FindKernel("BuildBricks");
+            svoShader.SetBuffer(buildKernel, "_NodeBuffer", nodeBuffer);
+            svoShader.SetBuffer(buildKernel, "_PayloadBuffer", payloadBuffer);
+            svoShader.SetBuffer(buildKernel, "_BrickBuffer", brickBuffer);
+            svoShader.SetBuffer(buildKernel, "_BrickMaterialBuffer", brickMaterialBuffer);
+            svoShader.SetBuffer(buildKernel, "_CounterBuffer", counterBuffer);
+            svoShader.SetBuffer(buildKernel, "_DenseSDFBuffer", sdfBuffer);
+            svoShader.SetBuffer(buildKernel, "_DenseMaterialBuffer", denseMaterialBuffer);
+            
+            // Dispatch over Brick Grid
+            int bricksAxis = gridResolution / 4; // 16 for 64
+            int brickGroups = Mathf.CeilToInt(bricksAxis / 8.0f);
+            svoShader.Dispatch(buildKernel, brickGroups, brickGroups, brickGroups);
+
+            Debug.Log($"Phase 2 Complete (SVO Generation). Reading back...");
+
+            // --- Phase 3: Readback & Save (Blocking) ---
+
+            try
+            {
+                // Read Counters
+                uint[] counters = new uint[4];
+                counterBuffer.GetData(counters);
+                
+                int nodeCount = (int)counters[0];
+                int payloadCount = (int)counters[1];
+                int brickFloatCount = (int)counters[2];
+
+                Debug.Log($"Readback Counts -> Nodes: {nodeCount}, Payloads: {payloadCount}, Bricks: {brickFloatCount/64}");
+
+                // Read Data
+                SVONode[] nodes = new SVONode[nodeCount];
+                nodeBuffer.GetData(nodes, 0, 0, nodeCount);
+
+                VoxelPayload[] payloads = new VoxelPayload[payloadCount];
+                if (payloadCount > 0) 
+                    payloadBuffer.GetData(payloads, 0, 0, payloadCount);
+
+                float[] brickData = new float[brickFloatCount];
+                if (brickFloatCount > 0)
+                    brickBuffer.GetData(brickData, 0, 0, brickFloatCount);
+
+                uint[] brickMaterials = new uint[brickFloatCount];
+                if (brickFloatCount > 0)
+                    brickMaterialBuffer.GetData(brickMaterials, 0, 0, brickFloatCount);
+
+                // Save
+                WriteFile(outputFilename, gridResolution, nodeCount, payloadCount, brickFloatCount, nodes, payloads, brickData, brickMaterials);
+                
+                // Alert User
+                EditorUtility.DisplayDialog("Success", $"Voxel Volume saved to {outputFilename}", "OK");
+                AssetDatabase.Refresh();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"Error during readback/save: {e.Message}");
+            }
+            finally
+            {
+                // Cleanup
+                triBuffer.Release();
+                sdfBuffer.Release();
+                denseMaterialBuffer.Release();
+                nodeBuffer.Release();
+                payloadBuffer.Release();
+                brickBuffer.Release();
+                brickMaterialBuffer.Release();
+                counterBuffer.Release();
+            }
         }
 
         private bool IsPowerOfTwo(int x)
         {
             return (x != 0) && ((x & (x - 1)) == 0);
+        }
+
+        // --- Serialization Helpers ---
+
+        private void WriteFile(string filePath, int resolution, int nodeCount, int payloadCount, int brickFloatCount,
+            SVONode[] nodes, VoxelPayload[] payloads, float[] brickData, uint[] brickMaterials)
+        {
+            // Create directory if it doesn't exist
+            string dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            using (var fs = new FileStream(filePath, FileMode.Create))
+            using (var writer = new BinaryWriter(fs))
+            {
+                var header = new VoxelFileFormat.Header
+                {
+                    Magic = VoxelFileFormat.MAGIC,
+                    Version = VoxelFileFormat.VERSION,
+                    Resolution = resolution,
+                    NodeCount = nodeCount,
+                    PayloadCount = payloadCount,
+                    BrickFloatCount = brickFloatCount
+                };
+                header.Write(writer);
+
+                WriteCompressedBlock(writer, nodes);
+                WriteCompressedBlock(writer, payloads);
+                WriteCompressedBlock(writer, brickData);
+                WriteCompressedBlock(writer, brickMaterials);
+            }
+            
+            Debug.Log($"Saved voxel volume to {filePath}. Nodes: {nodeCount}, Payloads: {payloadCount}, Bricks: {brickFloatCount / 64}");
+        }
+
+        private void WriteCompressedBlock<T>(BinaryWriter writer, T[] data) where T : struct
+        {
+            int elementSize = Marshal.SizeOf<T>();
+            int size = data.Length * elementSize;
+            byte[] bytes = new byte[size];
+            
+            // Copy data to byte array
+            GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
+            try
+            {
+                Marshal.Copy(handle.AddrOfPinnedObject(), bytes, 0, size);
+            }
+            finally
+            {
+                handle.Free();
+            }
+
+            // Compress
+            using (var ms = new MemoryStream())
+            {
+                using (var gzip = new GZipStream(ms, CompressionMode.Compress))
+                {
+                    gzip.Write(bytes, 0, bytes.Length);
+                }
+                byte[] compressed = ms.ToArray();
+                
+                // Write size of compressed block for easier reading
+                writer.Write(compressed.Length);
+                writer.Write(compressed);
+            }
         }
     }
 }
