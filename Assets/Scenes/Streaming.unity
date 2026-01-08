@@ -613,7 +613,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.VoxelVolumePool
   prefab: {fileID: 7605555090304409176, guid: def5071789b0b264aad0807b43204eaf, type: 3}
-  poolSize: 100
+  poolSize: 400
   poolContainer: {fileID: 0}
   maxNodesPerVolume: 10000
   maxBricksPerVolume: 5000
@@ -626,10 +626,45 @@ MonoBehaviour:
   m_GameObject: {fileID: 1657003580}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 51680bac36343ce4095b64d977893895, type: 3}
+  m_Script: {fileID: 11500000, guid: 4ce1e990257a21545af7603536218f89, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ChunkLifecycleTester
-  worldSize: 512
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.WorldManager
+  initialWorldSize: 1024
+  maxDepth: 4
+  viewer: {fileID: 475652001}
+  splitFactor: 1.5
+  mergeFactor: 1.8
+--- !u!1 &1881122613
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1881122614}
+  m_Layer: 0
+  m_Name: FPS
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1881122614
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1881122613}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -638,3 +673,4 @@ SceneRoots:
   - {fileID: 267609164}
   - {fileID: 475652001}
   - {fileID: 1657003581}
+  - {fileID: 1881122614}
