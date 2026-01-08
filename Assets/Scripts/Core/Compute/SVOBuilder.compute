@@ -6,56 +6,69 @@
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer; 
-RWStructuredBuffer<uint> _BrickMaterialBuffer; // NEW
+RWStructuredBuffer<uint> _BrickMaterialBuffer; 
 RWStructuredBuffer<uint> _CounterBuffer; 
 
 uint _GridSize;
+// New Globals
+float3 _ChunkWorldOrigin; // The world position of the chunk's (0,0,0) corner
+float _ChunkWorldSize;    // The physical size of the chunk
 
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
 {
-    // FIX: Set the Node Count (4681 for depth 4) so the Serializer knows how many nodes to save.
+    // Set the Node Count (4681 for depth 4) so the Serializer knows how many nodes to save.
     if (id == 0)
     {
         _CounterBuffer[0] = 4681;
     }
 
     if (id >= 4681) return;
- SVONode node;
+    
+    SVONode node;
     node.payloadIndex = 0;
     node.topology = 0;
-
     uint level = 0;
     uint indexInLevel = id;
- if (id >= 585) { level = 4; indexInLevel = id - 585;
- }
-    else if (id >= 73) { level = 3; indexInLevel = id - 73;
- }
-    else if (id >= 9) { level = 2; indexInLevel = id - 9;
- }
-    else if (id >= 1) { level = 1; indexInLevel = id - 1;
- }
+    
+    if (id >= 585) { level = 4; indexInLevel = id - 585; }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
     
     if (level < 4)
     {
         uint nextLevelOffset = 0;
- if (level == 0) nextLevelOffset = 1;
+        if (level == 0) nextLevelOffset = 1;
         if (level == 1) nextLevelOffset = 9;
- if (level == 2) nextLevelOffset = 73;
+        if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
- uint childPtr = nextLevelOffset + (indexInLevel * 8);
+        uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
- }
-    
+    }
     _NodeBuffer[id] = node;
- }
+}
 
-// --- SIMPLIFIED SDF ---
-float GetSDF(float3 pos)
+// --- GLOBAL SDF ---
+float GetGlobalSDF(float3 worldPos)
 {
-    float sizeF = (float)_GridSize;
-    float3 center = float3(sizeF * 0.5, sizeF * 0.5, sizeF * 0.5);
-    return length(pos - center) - (sizeF * 0.4);
+    // 1. Infinite Floor: Scale waves up significantly (frequency * 0.01 instead of 0.1)
+    // Amplitude increased to 40.0 so hills are visible at large scales
+    float floorHeight = sin(worldPos.x * 0.02) * 40.0 + cos(worldPos.z * 0.02) * 40.0;
+    float distFloor = worldPos.y - floorHeight;
+    
+    // 2. Floating Spheres: Increase repetition period and radius
+    float3 p = worldPos;
+    float period = 120.0; // Repeat every 120 units (was 20)
+    float3 cell = floor(p / period);
+    float3 local = (p / period - cell) * period; 
+    float3 center = float3(60, 60, 60); // Center in the middle of the period
+    
+    // Radius increased to 30.0 (Diameter 60.0)
+    // At Size 512 (Voxel Size 8), this will span ~7-8 voxels, looking like a real sphere.
+    float distSpheres = length(local - center) - 30.0;
+    
+    return min(distFloor, distSpheres);
 }
 
 [numthreads(8, 8, 8)]
@@ -64,16 +77,23 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     uint bricksAxis = _GridSize / BRICK_SIZE;
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
 
-    float3 brickOrigin = id * BRICK_SIZE;
-    float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
+    float3 brickOriginLocal = id * BRICK_SIZE;
     
-    float activeThreshold = (float)BRICK_SIZE * 1.5;
-    float dist = GetSDF(brickCenter);
+    // Optimization: Check brick center in world space
+    float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
+    
+    // Convert to World Space
+    // local (0..64) / GridSize (64) = 0..1 * ChunkSize = 0..ChunkSize
+    float scale = _ChunkWorldSize / (float)_GridSize;
+    float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
+    
+    // Estimate bounds (Brick radius in world space is approx scale * 2.0)
+    float worldRadius = 3.0 * scale; 
+    float dist = GetGlobalSDF(brickCenterWorld);
 
-    if (dist < activeThreshold)
+    if (dist < worldRadius)
     {
         uint brickPtr;
-        // Allocate space (same index used for both Float and Material buffers)
         InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
 
         for (uint z = 0; z < BRICK_SIZE; z++)
@@ -82,14 +102,14 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             {
                 for (uint x = 0; x < BRICK_SIZE; x++)
                 {
-                    float3 voxelPos = brickOrigin + float3(x, y, z);
-                    float sdf = GetSDF(voxelPos);
+                    float3 voxelPosLocal = brickOriginLocal + float3(x, y, z);
+                    float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
+                    
+                    float sdf = GetGlobalSDF(voxelPosWorld);
                     uint idx = brickPtr + (z*16 + y*4 + x);
                     
                     _BrickBuffer[idx] = sdf;
-                    
-                    // NEW: Set per-voxel material
-                    // Default to 1 (Solid) or procedural logic
+                    // Material ID 1 = Solid
                     _BrickMaterialBuffer[idx] = 1; 
                 }
             }
@@ -101,8 +121,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
         VoxelPayload payload;
         payload.brickDataIndex = brickPtr;
-        // No materialId here
-        
         _PayloadBuffer[payloadIndex] = payload;
         
         uint nodeIndex = GetNodeIndex(4, id);

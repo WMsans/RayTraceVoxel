@@ -6,25 +6,32 @@ namespace VoxelEngine.Core.Generators
     public static class SVOGenerator
     {
         /// <summary>
-        /// Builds the SVO using a procedural shape (Sphere) defined in the shader.
+        /// Builds the SVO using procedural logic with global positioning.
         /// </summary>
-        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution)
+        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize)
         {
             if (shader == null || buffers == null) return;
             
+            // 1. Init Structure
             int kernelInit = shader.FindKernel("InitDenseStructure");
             shader.SetBuffer(kernelInit, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelInit, "_CounterBuffer", buffers.CounterBuffer);
             shader.Dispatch(kernelInit, 74, 1, 1);
 
+            // 2. Build Bricks
             int kernelBuild = shader.FindKernel("BuildBricks");
             shader.SetBuffer(kernelBuild, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
             shader.SetBuffer(kernelBuild, "_BrickBuffer", buffers.BrickBuffer);
             shader.SetBuffer(kernelBuild, "_BrickMaterialBuffer", buffers.BrickMaterialBuffer);
             shader.SetBuffer(kernelBuild, "_CounterBuffer", buffers.CounterBuffer);
+            
             shader.SetInt("_GridSize", resolution); 
             
+            // Pass Global Offset
+            shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
+            shader.SetFloat("_ChunkWorldSize", chunkSize);
+
             int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
             int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 8.0f);
             
@@ -41,7 +48,7 @@ namespace VoxelEngine.Core.Generators
         /// <param name="resolution">Grid resolution.</param>
         /// <param name="sdfBuffer">Buffer containing the dense SDF floats.</param>
         /// <param name="materialId">The material ID to assign to solid voxels.</param>
-        public static void BuildFromSDF(ComputeShader shader, SVOBufferManager buffers, int resolution, GraphicsBuffer sdfBuffer, int materialId)
+        public static void BuildFromSDF(ComputeShader shader, SVOBufferManager buffers, int resolution, GraphicsBuffer sdfBuffer, int materialId, Vector3 chunkOrigin, float chunkSize)
         {
             if (shader == null || buffers == null || sdfBuffer == null)
             {
@@ -68,6 +75,9 @@ namespace VoxelEngine.Core.Generators
             shader.SetBuffer(kernelBuild, "_DenseSDFBuffer", sdfBuffer);
             shader.SetInt("_TargetMaterialID", materialId);
             shader.SetInt("_GridSize", resolution);
+
+            shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
+            shader.SetFloat("_ChunkWorldSize", chunkSize);
 
             // Calculate Thread Groups (Bricks per axis / 8)
             int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);

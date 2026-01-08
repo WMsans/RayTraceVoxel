@@ -43,15 +43,11 @@ namespace VoxelEngine.Core.Streaming
             Parent = parent;
         }
 
-        /// <summary>
-        /// Splits this node into 8 children.
-        /// </summary>
         public void Subdivide()
         {
-            if (!IsLeaf) return; // Already subdivided
-
+            if (!IsLeaf) return;
             Children = new WorldOctreeNode[8];
-            float quarterSize = Size * 0.25f; // Distance from center to child center
+            float quarterSize = Size * 0.25f;
             float childSize = Size * 0.5f;
 
             for (int i = 0; i < 8; i++)
@@ -61,63 +57,51 @@ namespace VoxelEngine.Core.Streaming
             }
         }
 
-        /// <summary>
-        /// Removes all children, effectively making this node a leaf again.
-        /// </summary>
         public void Merge()
         {
             if (IsLeaf) return;
-
-            // Recursively clean up children
             foreach (var child in Children)
             {
-                child.Merge(); // Ensure children merge their own descendants first
-                child.DisableVolume(); // Destroy volume if it exists
+                child.Merge(); 
+                child.DisableVolume();
             }
-
             Children = null;
         }
 
-        // --- Volume Management ---
+        // --- Volume Management (UPDATED) ---
 
-        /// <summary>
-        /// Instantiates (or pools) a VoxelVolume for this node.
-        /// </summary>
-        /// <param name="prefab">The VoxelVolume prefab to spawn.</param>
-        /// <param name="container">Transform parent for organization.</param>
-        public void EnableVolume(VoxelVolume prefab, Transform container)
+        public void EnableVolume(Transform container)
         {
-            if (ActiveVolume != null) return; // Already active
+            if (ActiveVolume != null) return; 
 
-            // Instantiate
-            ActiveVolume = Object.Instantiate(prefab, container);
-            
-            // 1. Translation: Position the volume.
-            // VoxelVolumes typically pivot at (0,0,0) (min corner) in their local space.
-            // The Node is defined by Center. We calculate the Min Corner.
+            if (VoxelVolumePool.Instance == null)
+            {
+                Debug.LogError("WorldOctreeNode: Pool not found!");
+                return;
+            }
+
+            // Calculate Min Corner for the Volume origin
             Vector3 minCorner = Center - (Vector3.one * Size * 0.5f);
-            ActiveVolume.transform.position = minCorner;
-
-            // 2. Scale: Match the physical Size of the Node.
-            // Assuming the VoxelVolume has a 'Resolution' (e.g., 64).
-            // Default size is 64 units. We need to scale it to 'Size'.
-            float scaleFactor = Size / ActiveVolume.Resolution;
-            ActiveVolume.transform.localScale = Vector3.one * scaleFactor;
-
-            ActiveVolume.name = $"Volume_D{Depth}_{Center}";
             
-            // Note: If you have specific initialization logic (like setting data), do it here.
+            // Request from Pool
+            ActiveVolume = VoxelVolumePool.Instance.GetVolume(minCorner, Size);
+            
+            if (ActiveVolume != null)
+            {
+                ActiveVolume.name = $"Volume_D{Depth}_{Center}";
+            }
         }
 
-        /// <summary>
-        /// Destroys (or returns to pool) the active VoxelVolume.
-        /// </summary>
         public void DisableVolume()
         {
             if (ActiveVolume == null) return;
 
-            // In a real streaming scenario, use an ObjectPool here.
-            Object.Destroy(ActiveVolume.gameObject);
+            // Return to Pool
+            if (VoxelVolumePool.Instance != null)
+            {
+                VoxelVolumePool.Instance.ReturnVolume(ActiveVolume);
+            }
+            
             ActiveVolume = null;
         }
     }

@@ -33,7 +33,16 @@ namespace VoxelEngine.Core.Buffers
             BrickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _maxBricks * brickVoxels, sizeof(uint));
             
             CounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3, sizeof(uint));
-            CounterBuffer.SetData(new uint[] { 0, 0, 0 });
+            ResetCounters();
+        }
+
+        public void ResetCounters()
+        {
+            if (CounterBuffer != null)
+            {
+                // [0] = Node Count, [1] = Payload Count, [2] = Brick Float Index
+                CounterBuffer.SetData(new uint[] { 0, 0, 0 });
+            }
         }
 
         public void Dispose()

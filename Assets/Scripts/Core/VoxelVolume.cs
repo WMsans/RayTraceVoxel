@@ -13,12 +13,10 @@ namespace VoxelEngine.Core
         [Header("Settings")]
         public ComputeShader svoCompute;
         public int resolution = 64;
-        public int maxNodes = 100000;
-        public int maxBricks = 50000; 
-
-        [Header("Debug")]
-        public int nodeCount; 
-        public int brickCount;
+        
+        // Settings injected by Pool
+        private int _maxNodes;
+        private int _maxBricks;
 
         private SVOBufferManager _bufferManager;
 
@@ -30,23 +28,57 @@ namespace VoxelEngine.Core
         public GraphicsBuffer CounterBuffer => _bufferManager?.CounterBuffer;
         
         public int Resolution => resolution;
-        public int MaxNodes => maxNodes;
-        public int MaxBricks => maxBricks;
+        public int MaxNodes => _maxNodes;
+        public int MaxBricks => _maxBricks;
         public bool IsReady => _bufferManager != null && _bufferManager.NodeBuffer != null;
 
-        public void Save(string filePath, Action<bool> onComplete = null)
+        // --- Pooling Lifecycle ---
+
+        /// <summary>
+        /// Called ONCE by the pool at startup to allocate GPU memory.
+        /// </summary>
+        public void InitializeForPool(int nodes, int bricks)
         {
-            VoxelDataSerializer.Save(this, filePath, onComplete);
+            _maxNodes = nodes;
+            _maxBricks = bricks;
+            _bufferManager = new SVOBufferManager(_maxNodes, _maxBricks);
         }
 
-        public void Load(string filePath)
+        /// <summary>
+        /// Called when the volume is taken from the pool to represent a chunk.
+        /// </summary>
+        public void OnPullFromPool(Vector3 worldOrigin, float size)
         {
-            VoxelDataSerializer.Load(this, filePath);
+            // Reset state
+            _bufferManager.ResetCounters();
+            
+            // Register for rendering
+            this.gameObject.SetActive(true);
+            
+            // Generate Data
+            Generate(worldOrigin, size);
+        }
+
+        /// <summary>
+        /// Called when returned to the pool.
+        /// </summary>
+        public void OnReturnToPool()
+        {
+            this.gameObject.SetActive(false);
+            // We don't release buffers here; we keep them for the next user.
+        }
+
+        private void Generate(Vector3 worldOrigin, float scale)
+        {
+            if (svoCompute == null) return;
+            // Pass the World Origin so the SDF knows where this chunk is in the universe
+            SVOGenerator.Build(svoCompute, _bufferManager, resolution, worldOrigin, scale);
         }
 
         private void OnEnable()
         {
-            VoxelVolumeRegistry.Register(this);
+            // Only register if we have valid buffers (prevents error on prefab)
+            if (IsReady) VoxelVolumeRegistry.Register(this);
         }
 
         private void OnDisable()
@@ -54,57 +86,13 @@ namespace VoxelEngine.Core
             VoxelVolumeRegistry.Unregister(this);
         }
 
-        private void Start()
-        {
-            InitializeBuffers();
-            BuildSVO();
-        }
-
-        private void Update()
-        {
-            UpdateCounters();
-        }
-
-        private void InitializeBuffers()
-        {
-            _bufferManager = new SVOBufferManager(maxNodes, maxBricks);
-        }
-
-        private void BuildSVO()
-        {
-            if (svoCompute == null) return;
-            SVOGenerator.Build(svoCompute, _bufferManager, resolution);
-        }
-
-        private void UpdateCounters()
-        {
-            if (_bufferManager == null || _bufferManager.CounterBuffer == null) return;
-
-            AsyncGPUReadback.Request(_bufferManager.CounterBuffer, (request) =>
-            {
-                if (request.hasError) return;
-                
-                // Counters: [0]=AllocatedNodes (Atomic), [1]=AllocatedPayloads, [2]=AllocatedBricksPtr
-                using (var data = request.GetData<uint>())
-                {
-                    if (data.Length >= 3)
-                    {
-                        // Note: nodeCount logic from original script was hardcoded 4681, 
-                        // but usually you want the actual atomic count or the SVO structure size.
-                        // For now, I will read the atomic counters.
-                        // If the original logic was specific, we can adapt. 
-                        // [2] is the pointer in floats. Divide by 64 to get bricks.
-                        
-                        brickCount = (int)data[2] / 64;
-                        // nodeCount = (int)data[0]; // If we were counting nodes atomically
-                    }
-                }
-            });
-        }
-
         private void OnDestroy()
         {
             _bufferManager?.Dispose();
         }
+        
+        // --- Persistence wrappers ---
+        public void Save(string filePath, Action<bool> onComplete = null) => VoxelDataSerializer.Save(this, filePath, onComplete);
+        public void Load(string filePath) => VoxelDataSerializer.Load(this, filePath);
     }
 }

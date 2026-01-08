@@ -2,36 +2,40 @@ using UnityEngine;
 
 namespace VoxelEngine.Core.Streaming
 {
+    // Require the pool to be present
+    [RequireComponent(typeof(VoxelVolumePool))]
     public class WorldManager : MonoBehaviour
     {
         [Header("Configuration")]
-        public VoxelVolume volumePrefab;
         public int initialWorldSize = 1024;
-        public int maxDepth = 3;
         
         private WorldOctreeNode _rootNode;
+        private VoxelVolumePool _pool;
 
         private void Start()
         {
+            _pool = GetComponent<VoxelVolumePool>();
+            
             // Initialize Root Node at (0,0,0)
             _rootNode = new WorldOctreeNode(Vector3.zero, initialWorldSize, 0, null);
 
-            // Test: Subdivide root to verify structure
+            // Test logic:
+            // 1. Subdivide root
             _rootNode.Subdivide();
             
-            // Test: Enable volumes for the children (Depth 1)
+            // 2. Enable volumes for children (using Pool)
             foreach (var child in _rootNode.Children)
             {
-                child.EnableVolume(volumePrefab, this.transform);
+                child.EnableVolume(this.transform);
                 
-                // Recursive test: Subdivide one child further
+                // Recursive Split Test
                 if (child.Center.x > 0 && child.Center.y > 0 && child.Center.z > 0)
                 {
-                    child.DisableVolume(); // Disable parent volume before splitting
+                    child.DisableVolume();
                     child.Subdivide();
                     foreach (var grandChild in child.Children)
                     {
-                        grandChild.EnableVolume(volumePrefab, this.transform);
+                        grandChild.EnableVolume(this.transform);
                     }
                 }
             }
@@ -41,7 +45,7 @@ namespace VoxelEngine.Core.Streaming
         {
             if (_rootNode != null)
             {
-                _rootNode.Merge(); // Cleans up all volumes
+                _rootNode.Merge();
                 _rootNode.DisableVolume();
             }
         }
