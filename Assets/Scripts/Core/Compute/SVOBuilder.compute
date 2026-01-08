@@ -88,7 +88,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
     
     // Estimate bounds (Brick radius in world space is approx scale * 2.0)
-    float worldRadius = 3.0 * scale; 
+    float worldRadius = 3.0 * scale;
     float dist = GetGlobalSDF(brickCenterWorld);
 
     if (dist < worldRadius)
@@ -108,9 +108,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float sdf = GetGlobalSDF(voxelPosWorld);
                     uint idx = brickPtr + (z*16 + y*4 + x);
                     
-                    _BrickBuffer[idx] = sdf;
+                    // Convert World Space Distance to Node/Voxel Space Distance
+                    // Raytracer expects 1.0 = 1 Voxel Width.
+                    _BrickBuffer[idx] = sdf / scale; 
+                    
                     // Material ID 1 = Solid
-                    _BrickMaterialBuffer[idx] = 1; 
+                    _BrickMaterialBuffer[idx] = 1;
                 }
             }
         }
