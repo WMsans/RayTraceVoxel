@@ -26,7 +26,14 @@ Texture2DArray _NormalTextureArray;
 
 Texture2DArray _MaskTextureArray;
 
-SamplerState sampler_LinearRepeat;
+// --- FIX 1: Explicitly Define Linear Sampler ---
+// Ensures smooth texture filtering (fixes pixelation/shimmering on Albedo)
+SamplerState sampler_LinearRepeat
+{
+    Filter = MIN_MAG_MIP_LINEAR;
+    AddressU = Wrap;
+    AddressV = Wrap;
+};
 
 RWTexture2D<float4> _Result;
 
@@ -164,36 +171,52 @@ return 3;
 
 }
 
+// --- FIX 2: Updated Shadow Sampling with PCF and Bias ---
 float SampleShadow(float3 worldPos)
-
 {
+    uint cascadeIdx = 0;
+    if (_ShadowCascadeCount > 1)
+    {
+        cascadeIdx = GetCascadeIndex(worldPos);
+    }
 
-uint cascadeIdx = 0;
+    float4 shadowCoord = mul(_MainLightWorldToShadow[cascadeIdx], float4(worldPos, 1.0));
+    if (shadowCoord.w <= 0.0) return 1.0;
+    shadowCoord.xyz /= shadowCoord.w;
 
-if (_ShadowCascadeCount > 1)
+    if (any(shadowCoord.xyz < 0.0) || any(shadowCoord.xyz > 1.0)) return 1.0;
 
-{
+    // FIX: Increased bias to prevent acne rings
+    float bias = 0.005;
 
-cascadeIdx = GetCascadeIndex(worldPos);
+    // FIX: PCF (Percentage Closer Filtering) 2x2
+    // Reduces "swimming" and softens cascade rings
+    float shadowTerm = 0.0;
+    // Estimate texel size (1/2048 is a safe guess for standard shadow maps)
+    float2 texelSize = float2(0.00048, 0.00048);
 
-}
+    for (int y = -1; y <= 0; y++)
+    {
+        for (int x = -1; x <= 0; x++)
+        {
+            float2 offset = float2(x, y) * texelSize;
+            float mapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_MainLightShadowmapTexture, shadowCoord.xy + offset, 0);
 
-float4 shadowCoord = mul(_MainLightWorldToShadow[cascadeIdx], float4(worldPos, 1.0));
-if (shadowCoord.w <= 0.0) return 1.0;
-shadowCoord.xyz /= shadowCoord.w;
+            #if defined(UNITY_REVERSED_Z)
+                // Reversed Z: 1 is Near, 0 is Far.
+                // If mapDepth (Occluder) > shadowCoord.z + bias (Pixel), Occluder is closer to camera/light -> Pixel is in Shadow.
+                if (mapDepth > shadowCoord.z + bias) shadowTerm += 0.2; // Shadow
+                else shadowTerm += 1.0; // Lit
+            #else
+                // Forward Z: 0 is Near, 1 is Far.
+                // If mapDepth < pixelZ, occluder is closer -> Shadow.
+                if (mapDepth < shadowCoord.z - bias) shadowTerm += 0.2; // Shadow
+                else shadowTerm += 1.0; // Lit
+            #endif
+        }
+    }
 
-if (any(shadowCoord.xyz < 0.0) || any(shadowCoord.xyz > 1.0)) return 1.0;
-float bias = 0.002;
-float mapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_MainLightShadowmapTexture, shadowCoord.xy, 0);
-#if defined(UNITY_REVERSED_Z)
-    if (mapDepth > shadowCoord.z + bias) return 0.2;
-#else
-    if (mapDepth < shadowCoord.z - bias) return 0.2;
-#endif
-
-return 1.0;
-
-
+    return shadowTerm * 0.25; // Average of 4 samples
 }
 
 float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float shadow, float roughness)
