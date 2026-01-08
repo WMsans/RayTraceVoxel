@@ -1,28 +1,21 @@
 using UnityEngine;
-
 using UnityEngine.Rendering;
-
 using UnityEngine.Rendering.Universal;
-
 using UnityEngine.Rendering.RenderGraphModule;
-
 using VoxelEngine.Core;
-
 using VoxelEngine.Core.Data;
-
 using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Rendering
-
 {
     public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         [System.Serializable]
         public class Settings
         {
-        public ComputeShader raytraceShader;
-        public Shader compositeShader;
-        public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
+            public ComputeShader raytraceShader;
+            public Shader compositeShader;
+            public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
         }
         public Settings settings = new Settings();
         private VoxelRaytracerPass _pass;
@@ -199,26 +192,33 @@ namespace VoxelEngine.Core.Rendering
                 CheckTextureHandle(ref _normalHandle, VoxelDefinitionManager.Instance.normalTextureArray);
                 CheckTextureHandle(ref _maskHandle, VoxelDefinitionManager.Instance.maskTextureArray);
 
-                // --- 2. CLEAR PASS (New) ---
-                // We must clear the new textures using a Raster Pass because Compute Pass cannot do it.
-                using (var builder = renderGraph.AddRasterRenderPass<PassData>("Clear Voxel Targets", out var data))
+                // --- 2. CLEAR PASSES ---
+                
+                // Pass 2a: Clear Color (Clears the main result texture)
+                using (var builder = renderGraph.AddRasterRenderPass<PassData>("Clear Voxel Color", out var data))
                 {
-                    // Reuse PassData just to hold texture references
                     data.targetColor = tempResult;
-                    data.targetDepth = tempResultDepth;
-
-                    // Bind as Render Targets
                     builder.SetRenderAttachment(data.targetColor, 0, AccessFlags.Write);
-                    builder.SetRenderAttachmentDepth(data.targetDepth, AccessFlags.Write);
+                    builder.SetRenderFunc((PassData passData, RasterGraphContext ctx) =>
+                    {
+                        ctx.cmd.ClearRenderTarget(RTClearFlags.Color, Color.clear, 1, 0);
+                    });
+                }
 
+                // Pass 2b: Clear Depth (Clears the R32_SFloat custom depth texture)
+                // We bind this as a Color Attachment because it is an R32 Float texture, not a hardware Depth Buffer.
+                using (var builder = renderGraph.AddRasterRenderPass<PassData>("Clear Voxel Depth", out var data))
+                {
+                    data.targetDepth = tempResultDepth;
+                    builder.SetRenderAttachment(data.targetDepth, 0, AccessFlags.Write);
+                    
                     builder.SetRenderFunc((PassData passData, RasterGraphContext ctx) =>
                     {
                         // Handle Reversed-Z (Far is 0.0, Near is 1.0)
                         bool reversedZ = SystemInfo.usesReversedZBuffer;
                         float clearDepth = reversedZ ? 0.0f : 1.0f;
-
-                        // Clear Color and Depth
-                        ctx.cmd.ClearRenderTarget(true, true, Color.clear, clearDepth);
+                        // Clear the R channel (floats) to the Far Plane value
+                        ctx.cmd.ClearRenderTarget(RTClearFlags.Color, new Color(clearDepth, 0, 0, 0), 1, 0);
                     });
                 }
 
