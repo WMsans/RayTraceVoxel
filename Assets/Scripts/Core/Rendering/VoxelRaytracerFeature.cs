@@ -1,22 +1,29 @@
 using UnityEngine;
+
 using UnityEngine.Rendering;
+
 using UnityEngine.Rendering.Universal;
+
 using UnityEngine.Rendering.RenderGraphModule;
+
 using VoxelEngine.Core;
+
 using VoxelEngine.Core.Data;
 
+using System.Collections.Generic;
+
 namespace VoxelEngine.Core.Rendering
+
 {
     public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         [System.Serializable]
         public class Settings
         {
-            public ComputeShader raytraceShader;
-            public Shader compositeShader; 
-            public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
+        public ComputeShader raytraceShader;
+        public Shader compositeShader;
+        public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
         }
-
         public Settings settings = new Settings();
         private VoxelRaytracerPass _pass;
         private Material _compositeMaterial;
@@ -36,11 +43,7 @@ namespace VoxelEngine.Core.Rendering
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
             if (settings.raytraceShader == null) return;
-            
-            // Check Registry instead of Singleton
             if (VoxelVolumeRegistry.Volumes.Count == 0) return;
-            
-            // Ensure VoxelDefinitionManager is ready
             if (VoxelDefinitionManager.Instance == null || VoxelDefinitionManager.Instance.VoxelMaterialBuffer == null) return;
 
             _pass.Setup(_compositeMaterial);
@@ -70,28 +73,27 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
             private static readonly int _GridSizeParams = Shader.PropertyToID("_GridSize"); 
             
-            // SVO Buffers
             private static readonly int _NodeBufferParams = Shader.PropertyToID("_NodeBuffer");
             private static readonly int _PayloadBufferParams = Shader.PropertyToID("_PayloadBuffer");
             private static readonly int _BrickBufferParams = Shader.PropertyToID("_BrickBuffer");
             private static readonly int _BrickMaterialBufferParams = Shader.PropertyToID("_BrickMaterialBuffer");
             private static readonly int _RaycastBufferParams = Shader.PropertyToID("_RaycastBuffer");
 
-            // Palette / Materials
             private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
             private static readonly int _AlbedoTextureArrayParams = Shader.PropertyToID("_AlbedoTextureArray");
             private static readonly int _NormalTextureArrayParams = Shader.PropertyToID("_NormalTextureArray");
             private static readonly int _MaskTextureArrayParams = Shader.PropertyToID("_MaskTextureArray");
 
-            // Lighting
             private static readonly int _MainLightPositionParams = Shader.PropertyToID("_MainLightPosition");
             private static readonly int _MainLightColorParams = Shader.PropertyToID("_MainLightColor");
             private static readonly int _MainLightShadowmapTextureParams = Shader.PropertyToID("_MainLightShadowmapTexture");
             private static readonly int _AdditionalLightsParams = Shader.PropertyToID("_AdditionalLights");
             private static readonly int _AdditionalLightCountParams = Shader.PropertyToID("_AdditionalLightCount");
-            
-            // --- Cascade Shadow Params ---
             private static readonly int _ShadowCascadeCountParams = Shader.PropertyToID("_ShadowCascadeCount");
+
+            // NEW: Chunk Transforms
+            private static readonly int _ChunkWorldOriginParams = Shader.PropertyToID("_ChunkWorldOrigin");
+            private static readonly int _ChunkWorldSizeParams = Shader.PropertyToID("_ChunkWorldSize");
 
             private GraphicsBuffer _lightBuffer;
             private VoxelLight[] _lightDataArray = new VoxelLight[64];
@@ -137,49 +139,37 @@ namespace VoxelEngine.Core.Rendering
                 public ComputeShader computeShader;
                 public int kernel;
                 
-                // Textures & Buffers
                 public TextureHandle sourceDepth;
                 public TextureHandle targetColor; 
                 public TextureHandle targetDepth;
                 
-                public GraphicsBuffer nodeBuffer;
-                public GraphicsBuffer payloadBuffer;
-                public GraphicsBuffer brickBuffer;
-                public GraphicsBuffer brickMaterialBuffer;
+                // We don't bind single buffers here anymore, we iterate
+                public List<VoxelVolume> volumes; 
                 public GraphicsBuffer raycastBuffer;
 
-                // Palette Data
                 public GraphicsBuffer materialBuffer;
                 public TextureHandle albedoArray;
                 public TextureHandle normalArray;
                 public TextureHandle maskArray;
 
-                // Camera & Grid
                 public Matrix4x4 cameraToWorld;
                 public Matrix4x4 cameraInverseProjection;
                 public Matrix4x4 cameraViewProjection;
                 public Vector4 zBufferParams;
                 public int width;
                 public int height;
-                public float gridSize;
                 
-                // Lighting
                 public Vector4 mainLightPosition;
                 public Vector4 mainLightColor;
                 public TextureHandle shadowMap;
                 public GraphicsBuffer additionalLightsBuffer;
                 public int additionalLightsCount;
-                
-                // NEW: Cascades
                 public int shadowCascadeCount;
-                // REMOVED: Manual split sphere vectors and matrix arrays
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
                 if (VoxelVolumeRegistry.Volumes.Count == 0) return;
-                var activeVolume = VoxelVolumeRegistry.Volumes[0];
-                if (!activeVolume.IsReady) return;
 
                 var resourceData = frameData.Get<UniversalResourceData>();
                 var cameraData = frameData.Get<UniversalCameraData>();
@@ -188,6 +178,7 @@ namespace VoxelEngine.Core.Rendering
                 var shadowData = frameData.Get<UniversalShadowData>(); 
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
+                // --- 1. Create Resources ---
                 TextureDesc desc = new TextureDesc(cameraDesc.width, cameraDesc.height);
                 desc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat;
                 desc.depthBufferBits = DepthBits.None;
@@ -208,19 +199,40 @@ namespace VoxelEngine.Core.Rendering
                 CheckTextureHandle(ref _normalHandle, VoxelDefinitionManager.Instance.normalTextureArray);
                 CheckTextureHandle(ref _maskHandle, VoxelDefinitionManager.Instance.maskTextureArray);
 
+                // --- 2. CLEAR PASS (New) ---
+                // We must clear the new textures using a Raster Pass because Compute Pass cannot do it.
+                using (var builder = renderGraph.AddRasterRenderPass<PassData>("Clear Voxel Targets", out var data))
+                {
+                    // Reuse PassData just to hold texture references
+                    data.targetColor = tempResult;
+                    data.targetDepth = tempResultDepth;
+
+                    // Bind as Render Targets
+                    builder.SetRenderAttachment(data.targetColor, 0, AccessFlags.Write);
+                    builder.SetRenderAttachmentDepth(data.targetDepth, AccessFlags.Write);
+
+                    builder.SetRenderFunc((PassData passData, RasterGraphContext ctx) =>
+                    {
+                        // Handle Reversed-Z (Far is 0.0, Near is 1.0)
+                        bool reversedZ = SystemInfo.usesReversedZBuffer;
+                        float clearDepth = reversedZ ? 0.0f : 1.0f;
+
+                        // Clear Color and Depth
+                        ctx.cmd.ClearRenderTarget(true, true, Color.clear, clearDepth);
+                    });
+                }
+
+                // --- 3. COMPUTE PASS ---
                 using (var builder = renderGraph.AddComputePass("Voxel Raytracer Pass", out PassData data))
                 {
                     data.computeShader = _shader;
                     data.kernel = _shader.FindKernel("CSMain");
                     
-                    data.nodeBuffer = activeVolume.NodeBuffer;
-                    data.payloadBuffer = activeVolume.PayloadBuffer;
-                    data.brickBuffer = activeVolume.BrickBuffer;
-                    data.brickMaterialBuffer = activeVolume.BrickMaterialBuffer;
-                    
+                    data.volumes = new List<VoxelVolume>(VoxelVolumeRegistry.Volumes);
+
                     if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
                     {
-                         VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16); 
+                        VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16); 
                     }
                     data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
                     
@@ -237,7 +249,6 @@ namespace VoxelEngine.Core.Rendering
                     var view = cameraData.camera.worldToCameraMatrix;
                     data.cameraViewProjection = proj * view;
                     data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
-                    data.gridSize = (float)activeVolume.Resolution;
 
                     data.sourceDepth = resourceData.cameraDepthTexture;
                     data.targetColor = tempResult;
@@ -248,11 +259,7 @@ namespace VoxelEngine.Core.Rendering
                     data.shadowMap = resourceData.mainShadowsTexture;
                     data.additionalLightsBuffer = _lightBuffer;
                     data.additionalLightsCount = addCount;
-
-                    // --- Capture Cascade Data ---
                     data.shadowCascadeCount = shadowData.mainLightShadowCascadesCount;
-                    // REMOVED: Fetching split spheres and matrices here. 
-                    // We let the shader pick up the Globals set by URP during frame execution.
 
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
@@ -269,11 +276,7 @@ namespace VoxelEngine.Core.Rendering
                         var kernel = passData.kernel;
                         var cmd = ctx.cmd;
 
-                        // ... (Existing Buffer Sets) ...
-                        cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, passData.nodeBuffer);
-                        cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, passData.payloadBuffer);
-                        cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, passData.brickBuffer);
-                        cmd.SetComputeBufferParam(cs, kernel, _BrickMaterialBufferParams, passData.brickMaterialBuffer);
+                        // 2. Global Uniforms
                         cmd.SetComputeBufferParam(cs, kernel, _RaycastBufferParams, passData.raycastBuffer);
 
                         if (passData.materialBuffer != null)
@@ -289,7 +292,6 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, passData.cameraInverseProjection);
                         cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, passData.cameraViewProjection);
                         cmd.SetComputeVectorParam(cs, _ZBufferParamsID, passData.zBufferParams);
-                        cmd.SetComputeFloatParam(cs, _GridSizeParams, passData.gridSize);
                         
                         cmd.SetComputeTextureParam(cs, kernel, _CameraDepthTextureParams, passData.sourceDepth);
                         cmd.SetComputeTextureParam(cs, kernel, _ResultParams, passData.targetColor);
@@ -299,18 +301,33 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeVectorParam(cs, _MainLightColorParams, passData.mainLightColor);
                         if (passData.shadowMap.IsValid()) cmd.SetComputeTextureParam(cs, kernel, _MainLightShadowmapTextureParams, passData.shadowMap);
                         
-                        // REMOVED: Manual Matrix Array setting. This allows the shader to read the Global State directly.
-
                         cmd.SetComputeBufferParam(cs, kernel, _AdditionalLightsParams, passData.additionalLightsBuffer);
                         cmd.SetComputeIntParam(cs, _AdditionalLightCountParams, passData.additionalLightsCount);
-
-                        // --- Send Cascade Data ---
                         cmd.SetComputeIntParam(cs, _ShadowCascadeCountParams, passData.shadowCascadeCount);
-                        // REMOVED: Manual Split Sphere settings.
 
+                        // 3. Loop and Render Each Volume
                         int groupsX = Mathf.CeilToInt(passData.width / 8.0f);
                         int groupsY = Mathf.CeilToInt(passData.height / 8.0f);
-                        cmd.DispatchCompute(cs, kernel, groupsX, groupsY, 1);
+
+                        foreach (var vol in passData.volumes)
+                        {
+                            if (!vol.IsReady || !vol.gameObject.activeInHierarchy) continue;
+
+                            cmd.SetComputeBufferParam(cs, kernel, _NodeBufferParams, vol.NodeBuffer);
+                            cmd.SetComputeBufferParam(cs, kernel, _PayloadBufferParams, vol.PayloadBuffer);
+                            cmd.SetComputeBufferParam(cs, kernel, _BrickBufferParams, vol.BrickBuffer);
+                            cmd.SetComputeBufferParam(cs, kernel, _BrickMaterialBufferParams, vol.BrickMaterialBuffer);
+
+                            cmd.SetComputeFloatParam(cs, _GridSizeParams, (float)vol.Resolution);
+                            
+                            Vector3 origin = vol.transform.position;
+                            float size = vol.Resolution * vol.transform.localScale.x;
+
+                            cmd.SetComputeVectorParam(cs, _ChunkWorldOriginParams, origin);
+                            cmd.SetComputeFloatParam(cs, _ChunkWorldSizeParams, size);
+                            
+                            cmd.DispatchCompute(cs, kernel, groupsX, groupsY, 1);
+                        }
                     });
                 }
 
@@ -336,7 +353,6 @@ namespace VoxelEngine.Core.Rendering
                     });
                 }
             }
-            // ... (Rest of class) ...
 
             private void SetupLights(UniversalRenderingData renderingData, UniversalLightData lightData, out Vector4 mainPos, out Vector4 mainCol, out int addCount)
             {
