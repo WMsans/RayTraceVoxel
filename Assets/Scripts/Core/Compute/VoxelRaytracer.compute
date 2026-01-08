@@ -424,25 +424,35 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                         TriplanarSampling(worldPos, geomNormal, matId, albedo, normal, roughness, ao);
                         
                         float3 V = normalize(rayOriginWorld - worldPos);
-                        float3 L = (_MainLightPosition.w == 0) ? normalize(_MainLightPosition.xyz) : normalize(_MainLightPosition.xyz - worldPos);
-                        
-                        // --- FIX START: Internal Shadow Trace ---
-                        // 1. Transform Shadow Ray Origin to Node Space
-                        // Apply bias in World Space first (standard visual bias) or Node Space. 
-                        // Here we use geomNormal (local gradient) for bias.
-                        float3 shadowBiasNode = geomNormal * 0.1; // Bias in Node Units
-                        float3 shadowOriginNode = (worldPos - _ChunkWorldOrigin) / scale + shadowBiasNode;
-                        
-                        // 2. Transform Light Distance to Node Space
-                        float lightDistNode = (_MainLightPosition.w == 0) ? 
-                            10000.0 : length(_MainLightPosition.xyz - worldPos) / scale;
-                        
-                        // 3. Trace
-                        float internalShadow = TraceInternalShadow(shadowOriginNode, L, lightDistNode);
-                        // --- FIX END ---
+                        float3 L = (_MainLightPosition.w == 0) ?
+                            normalize(_MainLightPosition.xyz) : normalize(_MainLightPosition.xyz - worldPos);
+                                                
+                        // Calculate NdotL early to optimize and fix terminator artifacts
+                        float NdotL_Shadow = dot(geomNormal, L);
+                        float internalShadow = 1.0;
+
+                        // Only trace shadows if the surface faces the light
+                        if (NdotL_Shadow > 0.0)
+                        {
+                            // 1. Transform Shadow Ray Origin to Node Space
+                            // Increased bias from 0.1 to 0.3 to prevent self-shadowing at grazing angles (Shadow Terminator fix)
+                            float3 shadowBiasNode = geomNormal * 0.3;
+                            
+                            // Bias in Node Units
+                            float3 shadowOriginNode = (worldPos - _ChunkWorldOrigin) / scale + shadowBiasNode;
+                            
+                            // 2. Transform Light Distance to Node Space
+                            float lightDistNode = (_MainLightPosition.w == 0) ?
+                                10000.0 : length(_MainLightPosition.xyz - worldPos) / scale;
+                            
+                            // 3. Trace
+                            internalShadow = TraceInternalShadow(shadowOriginNode, L, lightDistNode);
+                        }
+                        // Else: internalShadow remains 1.0. 
+                        // Note: Since NdotL is <= 0, the direct light will be 0 anyway, ensuring a smooth transition 
+                        // controlled by the LightingPBR NdotL falloff rather than a hard shadow cut.
 
                         float shadow = SampleShadow(worldPos) * internalShadow * ao;
-                        
                         float3 directLight = LightingPBR(albedo, normal, V, L, _MainLightColor.rgb, shadow, roughness);
                         float3 ambient = float3(0.1, 0.1, 0.1) * albedo * ao;
                         finalColor = directLight + ambient;
