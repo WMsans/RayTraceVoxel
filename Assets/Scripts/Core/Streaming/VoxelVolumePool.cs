@@ -44,7 +44,12 @@ namespace VoxelEngine.Core.Streaming
 
         private void Awake()
         {
-            if (Instance != null) { Destroy(this); return; }
+            // Singleton: Handle duplicates safely
+            if (Instance != null && Instance != this)
+            {
+                Destroy(this); 
+                return; 
+            }
             Instance = this;
             
             InitializeGlobalBuffers();
@@ -138,12 +143,6 @@ namespace VoxelEngine.Core.Streaming
                 float size = vol.Resolution * vol.transform.localScale.x;
                 Vector3 extents = Vector3.one * size * 0.5f;
 
-                def.boundsMin = center - extents; // Actually Volume origin is typically bottom-left in some systems, but here centered?
-                // Looking at SVOBuilder, _ChunkWorldOrigin is used.
-                // In SVOBuilder: _ChunkWorldOrigin is the (0,0,0) corner.
-                // So bounds are Origin to Origin + Size.
-                
-                // Let's rely on VoxelVolume to tell us its Bounds.
                 def.boundsMin = vol.WorldBounds.min;
                 def.boundsMax = vol.WorldBounds.max;
                 
@@ -162,6 +161,9 @@ namespace VoxelEngine.Core.Streaming
 
         private void OnDestroy()
         {
+            // Clear singleton if this instance is the owner
+            if (Instance == this) Instance = null;
+
             GlobalNodeBuffer?.Release();
             GlobalPayloadBuffer?.Release();
             GlobalBrickBuffer?.Release();

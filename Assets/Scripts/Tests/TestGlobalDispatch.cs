@@ -35,14 +35,12 @@ public class TestGlobalDispatch : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        // Visualize the GPU Raycast result
-        // The VoxelRaytracerFeature writes the hit position of the center pixel to this buffer.
-        if (VoxelRaytracerFeature.RaycastHitBuffer != null)
+        if (VoxelRaytracerFeature.RaycastHitBuffer != null && VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
         {
             VoxelRaytracerFeature.RaycastHitBuffer.GetData(_raycastData);
-            Vector3 hitPos = new Vector3(_raycastData[0].x, _raycastData[0].y, _raycastData[0].z);
             
-            if (_raycastData[0].w > 0.0f) // w is usually 1.0 if hit, 0 if miss
+            Vector3 hitPos = new Vector3(_raycastData[0].x, _raycastData[0].y, _raycastData[0].z);
+            if (_raycastData[0].w > 0.0f)
             {
                 Gizmos.color = Color.red;
                 Gizmos.DrawWireSphere(hitPos, 0.5f);

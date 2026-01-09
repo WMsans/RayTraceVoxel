@@ -58,8 +58,6 @@ namespace VoxelEngine.Core.Rendering
             // Shader Property IDs
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
             private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
-            
-            // Camera
             private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
             private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
             private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
@@ -100,8 +98,16 @@ namespace VoxelEngine.Core.Rendering
 
             public void Dispose()
             {
-                _albedoHandle?.Release(); _normalHandle?.Release(); _maskHandle?.Release();
-                VoxelRaytracerFeature.RaycastHitBuffer?.Release();
+                _albedoHandle?.Release(); 
+                _normalHandle?.Release(); 
+                _maskHandle?.Release();
+                
+                // FIX: Release and Nullify the static buffer
+                if (VoxelRaytracerFeature.RaycastHitBuffer != null)
+                {
+                    VoxelRaytracerFeature.RaycastHitBuffer.Release();
+                    VoxelRaytracerFeature.RaycastHitBuffer = null;
+                }
             }
 
             private void CheckTextureHandle(ref RTHandle handle, Texture texture)
@@ -110,29 +116,19 @@ namespace VoxelEngine.Core.Rendering
                 if (handle == null || handle.rt != texture) { handle?.Release(); handle = RTHandles.Alloc(texture); }
             }
 
-            // Data passed to the RenderGraph execution
             private class PassData
             {
                 public ComputeShader computeShader;
                 public int kernel;
-                
-                // Targets
                 public TextureHandle targetColor;
                 public TextureHandle targetDepth;
                 public TextureHandle sourceDepth;
-                
-                // Camera Data
                 public Matrix4x4 cameraToWorld;
                 public Matrix4x4 cameraInverseProjection;
                 public Vector4 zBufferParams;
-                public int width; 
-                public int height;
-
-                // Lighting
+                public int width; public int height;
                 public Vector4 mainLightPosition;
                 public Vector4 mainLightColor;
-
-                // Voxel Data
                 public GraphicsBuffer nodeBuffer;
                 public GraphicsBuffer payloadBuffer;
                 public GraphicsBuffer brickBuffer;
@@ -141,8 +137,6 @@ namespace VoxelEngine.Core.Rendering
                 public int chunkCount;
                 public GraphicsBuffer materialBuffer;
                 public GraphicsBuffer raycastBuffer;
-
-                // Material Textures
                 public TextureHandle albedoArray;
                 public TextureHandle normalArray;
                 public TextureHandle maskArray;
@@ -150,7 +144,6 @@ namespace VoxelEngine.Core.Rendering
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
-                // Ensure the system is ready
                 if (VoxelVolumePool.Instance == null) return;
                 if (VoxelVolumePool.Instance.ActiveChunkCount == 0) return;
 
@@ -159,7 +152,6 @@ namespace VoxelEngine.Core.Rendering
                 var lightData = frameData.Get<UniversalLightData>();
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
-                // 1. Create Temporary Render Targets for Voxel Result
                 TextureDesc colorDesc = new TextureDesc(cameraDesc.width, cameraDesc.height);
                 colorDesc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat;
                 colorDesc.enableRandomWrite = true;
@@ -172,14 +164,12 @@ namespace VoxelEngine.Core.Rendering
                 depthDesc.name = "VoxelRaytraceDepth";
                 TextureHandle tempResultDepth = renderGraph.CreateTexture(depthDesc);
 
-                // 2. Prepare Resources
                 CheckTextureHandle(ref _albedoHandle, VoxelDefinitionManager.Instance.albedoTextureArray);
                 CheckTextureHandle(ref _normalHandle, VoxelDefinitionManager.Instance.normalTextureArray);
                 CheckTextureHandle(ref _maskHandle, VoxelDefinitionManager.Instance.maskTextureArray);
 
                 SetupLights(lightData, out var mainPos, out var mainCol);
 
-                // 3. Add Compute Pass
                 using (var builder = renderGraph.AddComputePass("Voxel Raytracer Single-Dispatch", out PassData data))
                 {
                     data.computeShader = _shader;
@@ -189,7 +179,6 @@ namespace VoxelEngine.Core.Rendering
                          VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16);
                     data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
 
-                    // Fetch Pool Data
                     var pool = VoxelVolumePool.Instance;
                     data.nodeBuffer = pool.GlobalNodeBuffer;
                     data.payloadBuffer = pool.GlobalPayloadBuffer;
@@ -203,23 +192,16 @@ namespace VoxelEngine.Core.Rendering
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
 
-                    // Camera Setup
-                    data.width = cameraDesc.width;
-                    data.height = cameraDesc.height;
+                    data.width = cameraDesc.width; data.height = cameraDesc.height;
                     data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                     data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
                     data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
                     data.sourceDepth = resourceData.cameraDepthTexture;
-
-                    // Outputs
                     data.targetColor = tempResult;
                     data.targetDepth = tempResultDepth;
-
-                    // Light Setup
                     data.mainLightPosition = mainPos;
                     data.mainLightColor = mainCol;
 
-                    // Declare dependencies
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
@@ -233,24 +215,20 @@ namespace VoxelEngine.Core.Rendering
                         var ker = pd.kernel;
                         var cmd = ctx.cmd;
 
-                        // Bind Global Monolithic Buffers
                         cmd.SetComputeBufferParam(cs, ker, _GlobalNodeBufferParams, pd.nodeBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalPayloadBufferParams, pd.payloadBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickBufferParams, pd.brickBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickMaterialBufferParams, pd.brickMaterialBuffer);
                         
-                        // Bind TLAS (Chunk Map)
                         cmd.SetComputeBufferParam(cs, ker, _ChunkBufferParams, pd.chunkBuffer);
                         cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount);
 
-                        // Bind Other Globals
                         cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
                         if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, _VoxelMaterialBufferParams, pd.materialBuffer);
                         if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _AlbedoTextureArrayParams, pd.albedoArray);
                         if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _NormalTextureArrayParams, pd.normalArray);
                         if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _MaskTextureArrayParams, pd.maskArray);
 
-                        // Bind Camera & Targets
                         cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, pd.cameraToWorld);
                         cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, pd.cameraInverseProjection);
                         cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams);
@@ -258,18 +236,15 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor);
                         cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth);
                         
-                        // Bind Lights
                         cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition);
                         cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor);
 
-                        // DISPATCH: Full Screen (Single Dispatch)
                         int groupsX = Mathf.CeilToInt(pd.width / 8.0f);
                         int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
                         cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);
                     });
                 }
 
-                // 4. Composite Pass (Blit over Scene)
                 using (var builder = renderGraph.AddRasterRenderPass<BlitPassData>("Composite Voxels", out var blitData))
                 {
                     blitData.source = tempResult;
