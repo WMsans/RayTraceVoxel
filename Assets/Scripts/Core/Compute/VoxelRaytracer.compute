@@ -8,7 +8,6 @@ StructuredBuffer<SVONode> _GlobalNodeBuffer;
 StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
 StructuredBuffer<float> _GlobalBrickBuffer;
 StructuredBuffer<uint> _GlobalBrickMaterialBuffer;
-
 // --- TLAS (Chunk Map) ---
 StructuredBuffer<ChunkDef> _ChunkBuffer;
 int _ChunkCount;
@@ -16,12 +15,10 @@ int _ChunkCount;
 // --- Rendering Resources ---
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
 Texture2D<float> _CameraDepthTexture; SamplerState sampler_CameraDepthTexture;
-
 Texture2DArray _AlbedoTextureArray;
 Texture2DArray _NormalTextureArray;
 Texture2DArray _MaskTextureArray;
 SamplerState sampler_LinearRepeat { Filter = MIN_MAG_MIP_LINEAR; AddressU = Wrap; AddressV = Wrap; };
-
 RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
 RWStructuredBuffer<float4> _RaycastBuffer;
@@ -35,8 +32,7 @@ float4 _ZBufferParams;
 float4 _MainLightPosition;
 float4 _MainLightColor;
 // x = PixelSpreadAngle (tan(FOV/2)*2/H)
-float4 _RaytraceParams; 
-
+float4 _RaytraceParams;
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
@@ -61,7 +57,6 @@ float3 GetBoxNormal(float3 hitPos, float3 boxMin, float3 boxSize)
     float3 p = hitPos - center;
     float3 d = abs(p) / (boxSize * 0.5);
     float maxAxis = max(max(d.x, d.y), d.z);
-    
     // Return sign of dominant axis
     if (d.x >= maxAxis - 1e-4) return float3(sign(p.x), 0, 0);
     if (d.y >= maxAxis - 1e-4) return float3(0, sign(p.y), 0);
@@ -110,28 +105,40 @@ float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColo
     return albedo * lightColor * NdotL; 
 }
 
-void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outAO)
+void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outAO, float lod)
 {
-    if (matId == 0) { outAlbedo=1; outNormal=normal; outRoughness=0.5; outAO=1; return; }
+    if (matId == 0) { outAlbedo=1;
+    outNormal=normal; outRoughness=0.5; outAO=1; return; }
     
     VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
     // Simple triplanar weights
     float3 weights = abs(normal);
     weights /= (weights.x + weights.y + weights.z);
-
     // Sample Textures
     float2 uvX = worldPos.zy;
     float2 uvY = worldPos.xz;
     float2 uvZ = worldPos.xy;
     
-    float3 colX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), 0).rgb;
-    float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topAlbedoIndex), 0).rgb;
-    float3 colZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
-    
+    // Albedo
+    float3 colX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), lod).rgb;
+    float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topAlbedoIndex), lod).rgb;
+    float3 colZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), lod).rgb;
     outAlbedo = colX * weights.x + colY * weights.y + colZ * weights.z;
+
+    // Mask (G=AO, A=Smoothness/Roughness inverse?) 
+    // Assuming standard packing: G=Occlusion, A=Smoothness. Roughness = 1-Smoothness.
+    float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), lod);
+    float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topMaskIndex), lod);
+    float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), lod);
+    float4 mask = maskX * weights.x + maskY * weights.y + maskZ * weights.z;
+    
+    outAO = mask.g;
+    outRoughness = 1.0 - mask.a;
+
+    // Normals (Optional improvement)
+    // For now, pass through geometry normal, as combining triplanar normals correctly is more expensive
+    // and might look odd on large LOD blocks without tangent basis.
     outNormal = normal; 
-    outRoughness = 0.5;
-    outAO = 1.0;
 }
 
 // --- CORE SVO TRAVERSAL (Local Space) ---
@@ -143,7 +150,6 @@ struct HitInfo {
     bool isLOD;      // New flag
     float3 lodColor; // Data for LOD
 };
-
 HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxDist, float tStart)
 {
     float tCurrent = tStart;
@@ -186,14 +192,12 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                 uint childBase = node.topology & 0xFFFFFF;
                 uint maskBefore = childMask & ((1 << octant) - 1);
                 uint childNodeIndex = childBase + countbits(maskBefore);
-                
                 // Calculate Child Position/Size early for checks
                 float3 childPos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
                 float childSize = halfSize;
 
                 // --- PHASE 3: CONE TRACING (LOD) ---
                 float rayRadius = tCurrent * pixelSpread;
-                
                 // Stop if node is too small for the pixel (LOD Hit)
                 if (nodeSize < rayRadius && depth > 1) 
                 { 
@@ -206,6 +210,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                         hitLeaf = true;
                         result.isLOD = true;
                         result.lodColor = packedCol.rgb;
+                        result.matId = childNode.lodMaterial; // Extract Material
                         
                         // Set state to the CHILD so we intersect the correct box below
                         nodeIndex = childNodeIndex;
@@ -219,10 +224,10 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                         // FIX: We must advance tCurrent past this empty node to avoid infinite loop!
                         float2 tChild = IntersectBox(rayOriginNode, rayDir, childPos, childPos + childSize);
                         tCurrent = tChild.y + EPSILON;
-                        
                         // Break inner loop to restart traversal at new tCurrent
-                        hitLeaf = false; // Ensure we don't process as hit
-                        break; 
+                        hitLeaf = false;
+                        // Ensure we don't process as hit
+                        break;
                     }
                 }
 
@@ -232,12 +237,14 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                 nodePos = childPos;
                 
                 // If we reached bottom level (Level 4, size 4), it's a real leaf
-                if (nodeSize <= BRICK_SIZE + EPSILON) { hitLeaf = true; break; }
+                if (nodeSize <= BRICK_SIZE + EPSILON) { hitLeaf = true;
+                break; }
             }
             else
             {
                  // Empty octant - Skip
-                 float3 octantMin = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+                 float3 octantMin = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 
+                 0);
                  float2 tOctant = IntersectBox(rayOriginNode, rayDir, octantMin, octantMin + halfSize);
                  tCurrent = tOctant.y;
                  break;
@@ -259,7 +266,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     result.pos = rayOriginNode + rayDir * (tHit + EPSILON);
                     
                     // FIX: Use Box Normal for 3D look (fixes "Paper Thin" look)
-                    result.normal = GetBoxNormal(result.pos, nodePos, nodeSize); 
+                    result.normal = GetBoxNormal(result.pos, nodePos, nodeSize);
                     return result;
                 }
             }
@@ -308,7 +315,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
     float3 rayDir = normalize(mul((float3x3)_CameraToWorld, viewRay.xyz));
     float3 rayOrigin = _CameraToWorld._m03_m13_m23;
-    
     // 2. Depth Culling
     float depthVal = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (id.xy+0.5)/float2(width,height), 0);
     float linearDepth = 1.0 / (_ZBufferParams.z * depthVal + _ZBufferParams.w);
@@ -326,7 +332,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         ChunkDef chunk = _ChunkBuffer[i];
         // Intersect Chunk Bounds (World Space)
         float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
-        
         // If ray hits chunk and the hit is closer than our current best...
         if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > 0)
         {
@@ -338,7 +343,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             float scale = size / 64.0; 
             float3 chunkOrigin = chunk.boundsMin;
             float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
-            
             // STAGE B: Voxel Traversal
             HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEnd/scale, tStart/scale);
             if (info.hit)
@@ -368,14 +372,20 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // Check for LOD Hit
         if (bestHit.isLOD)
         {
-            albedo = bestHit.lodColor;
-            normal = bestHit.normal; // Calculated based on view or stored
-            roughness = 1.0; // Rough distant appearance
-            ao = 1.0;
+            // Calculate approximate mip level based on ray cone footprint
+            // Footprint ~ dist * pixelSpread
+            float dist = length(bestHit.pos - rayOrigin);
+            float spotSize = dist * _RaytraceParams.x; 
+            float mip = max(0.0, log2(spotSize * 16.0)); // *16 arbitrary scale for texture density
+
+            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, ao, mip);
+            
+            // Fallback to lodColor if no material (optional, if material 0 returns white)
+            // But TriplanarSampling handles matId==0 by returning basic values.
         }
         else
         {
-            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, ao);
+            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, ao, 0);
         }
         
         float3 V = normalize(rayOrigin - bestHit.pos);
@@ -383,7 +393,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness);
         
         _Result[id.xy] = float4(color * ao, 1.0);
-        
         // Write Depth 
         float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
         _ResultDepth[id.xy] = clipPos.z / clipPos.w;

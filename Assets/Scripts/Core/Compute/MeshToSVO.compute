@@ -24,14 +24,17 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     node.payloadIndex = 0;
     node.topology = 0;
     node.lodColor = 0;
-    node.padding = 0;
-
+    node.lodMaterial = 0; // Updated
     uint level = 0;
     uint indexInLevel = id;
-    if (id >= 585) { level = 4; indexInLevel = id - 585; }
-    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
-    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
-    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
+    if (id >= 585) { level = 4;
+    indexInLevel = id - 585; }
+    else if (id >= 73) { level = 3;
+    indexInLevel = id - 73; }
+    else if (id >= 9) { level = 2;
+    indexInLevel = id - 9; }
+    else if (id >= 1) { level = 1;
+    indexInLevel = id - 1; }
     
     if (level < 4)
     {
@@ -69,9 +72,9 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     {
         uint brickPtr;
         InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
-
         float4 accumulatedColor = 0; // Accumulator
         float voxelCount = 0;
+        uint detectedMaterial = 0;
 
         for (uint z = 0; z < BRICK_SIZE; z++)
         {
@@ -79,9 +82,9 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             {
                 for (uint x = 0; x < BRICK_SIZE; x++)
                 {
+            
                     uint3 voxelLocal = uint3(x, y, z);
                     uint3 voxelGlobal = (uint3)brickOrigin + voxelLocal;
-                    
                     if (voxelGlobal.x < _GridSize && voxelGlobal.y < _GridSize && voxelGlobal.z < _GridSize)
                     {
                         uint sdfIdx = voxelGlobal.x + voxelGlobal.y * _GridSize + voxelGlobal.z * _GridSize * _GridSize;
@@ -95,10 +98,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                         // Accumulate Color for solid voxels
                         if (sdf < 0)
                         {
-                            // Simple default color for now as MeshToSVO doesn't have color buffer yet
-                            float3 col = float3(0.8, 0.8, 0.8); 
+                            // Simple default color for now as MeshToSVO doesn't have 
+                            color buffer yet
+                            float3 col = float3(0.8, 0.8, 0.8);
                             accumulatedColor += float4(col, 1.0);
                             voxelCount += 1.0;
+                            detectedMaterial = (uint)matID; // Capture material
                         }
                     }
                 }
@@ -116,6 +121,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         uint nodeIndex = GetNodeIndex(4, id);
         _NodeBuffer[nodeIndex].payloadIndex = payloadIndex;
         _NodeBuffer[nodeIndex].topology = 0;
+        _NodeBuffer[nodeIndex].lodMaterial = detectedMaterial; // Store LOD material
         
         if (voxelCount > 0)
             _NodeBuffer[nodeIndex].lodColor = PackColor(accumulatedColor / voxelCount);
@@ -128,5 +134,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         _NodeBuffer[nodeIndex].payloadIndex = 0;
         _NodeBuffer[nodeIndex].topology = 0;
         _NodeBuffer[nodeIndex].lodColor = 0;
+        _NodeBuffer[nodeIndex].lodMaterial = 0;
     }
 }

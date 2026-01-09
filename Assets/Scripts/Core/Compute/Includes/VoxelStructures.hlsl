@@ -9,11 +9,10 @@
 struct SVONode 
 { 
     uint topology; 
-    uint payloadIndex; 
+    uint payloadIndex;
     uint lodColor; // New field
-    uint padding;  // Alignment
+    uint lodMaterial; // Renamed from padding
 };
-
 struct VoxelPayload 
 { 
     uint brickDataIndex; 
@@ -34,14 +33,12 @@ struct VoxelTypeGPU
     
     uint renderType;
 };
-
 struct VoxelLight 
 { 
     float4 position; 
     float4 color; 
     float4 attenuation; 
 };
-
 struct ChunkDef
 {
     float3 boundsMin;
@@ -52,7 +49,6 @@ struct ChunkDef
     uint brickOffset;
     float3 padding; 
 };
-
 // Helper Functions
 uint GetNodeIndex(uint level, uint3 gridPos)
 {
@@ -67,7 +63,6 @@ uint GetNodeIndex(uint level, uint3 gridPos)
     else if (level == 1) p = p >> 3;
     else if (level == 2) p = p >> 2;
     else if (level == 3) p = p >> 1;
-    
     uint m = 0;
     for (int i = 0; i < 4; i++) 
     {
