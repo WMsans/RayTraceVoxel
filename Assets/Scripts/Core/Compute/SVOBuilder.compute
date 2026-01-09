@@ -10,24 +10,27 @@ RWStructuredBuffer<uint> _BrickMaterialBuffer;
 RWStructuredBuffer<uint> _CounterBuffer; 
 
 uint _GridSize;
-// New Globals
-float3 _ChunkWorldOrigin; // The world position of the chunk's (0,0,0) corner
-float _ChunkWorldSize;    // The physical size of the chunk
+float3 _ChunkWorldOrigin; 
+float _ChunkWorldSize;
+
+// --- Global Offsets ---
+uint _NodeOffset;
+uint _PayloadOffset;
+uint _BrickOffset;
 
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
 {
-    // Set the Node Count (4681 for depth 4) so the Serializer knows how many nodes to save.
-    if (id == 0)
-    {
-        _CounterBuffer[0] = 4681;
-    }
+    // Initialize Local Counter
+    if (id == 0) _CounterBuffer[0] = 4681;
 
     if (id >= 4681) return;
     
     SVONode node;
     node.payloadIndex = 0;
     node.topology = 0;
+
+    // ... [Standard SVO Logic unchanged] ...
     uint level = 0;
     uint indexInLevel = id;
     
@@ -43,29 +46,26 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
         if (level == 1) nextLevelOffset = 9;
         if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
+        
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
-    _NodeBuffer[id] = node;
+    
+    // Write to GLOBAL buffer
+    _NodeBuffer[_NodeOffset + id] = node;
 }
 
 // --- GLOBAL SDF ---
 float GetGlobalSDF(float3 worldPos)
 {
-    // 1. Infinite Floor: Scale waves up significantly (frequency * 0.01 instead of 0.1)
-    // Amplitude increased to 40.0 so hills are visible at large scales
     float floorHeight = sin(worldPos.x * 0.02) * 40.0 + cos(worldPos.z * 0.02) * 40.0;
     float distFloor = worldPos.y - floorHeight;
     
-    // 2. Floating Spheres: Increase repetition period and radius
     float3 p = worldPos;
-    float period = 120.0; // Repeat every 120 units (was 20)
+    float period = 120.0; 
     float3 cell = floor(p / period);
     float3 local = (p / period - cell) * period; 
-    float3 center = float3(60, 60, 60); // Center in the middle of the period
-    
-    // Radius increased to 30.0 (Diameter 60.0)
-    // At Size 512 (Voxel Size 8), this will span ~7-8 voxels, looking like a real sphere.
+    float3 center = float3(60, 60, 60);
     float distSpheres = length(local - center) - 30.0;
     
     return min(distFloor, distSpheres);
@@ -78,23 +78,22 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
 
     float3 brickOriginLocal = id * BRICK_SIZE;
-    
-    // Optimization: Check brick center in world space
     float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
-    
-    // Convert to World Space
-    // local (0..64) / GridSize (64) = 0..1 * ChunkSize = 0..ChunkSize
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
-    
-    // Estimate bounds (Brick radius in world space is approx scale * 2.0)
     float worldRadius = 3.0 * scale;
+
     float dist = GetGlobalSDF(brickCenterWorld);
 
     if (dist < worldRadius)
     {
         uint brickPtr;
         InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
+
+        // BrickPtr is local to this chunk (0..25000*64).
+        // To write to buffer, add _BrickOffset.
+        // To store in Payload, we can store Local Index (and add Offset in raytracer) OR store Global Index.
+        // Let's store LOCAL index in Payload to match existing struct logic, Raytracer will use BrickOffset + payload.brickDataIndex.
 
         for (uint z = 0; z < BRICK_SIZE; z++)
         {
@@ -106,13 +105,9 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
                     float sdf = GetGlobalSDF(voxelPosWorld);
-                    uint idx = brickPtr + (z*16 + y*4 + x);
                     
-                    // Convert World Space Distance to Node/Voxel Space Distance
-                    // Raytracer expects 1.0 = 1 Voxel Width.
+                    uint idx = _BrickOffset + brickPtr + (z*16 + y*4 + x);
                     _BrickBuffer[idx] = sdf / scale; 
-                    
-                    // Material ID 1 = Solid
                     _BrickMaterialBuffer[idx] = 1;
                 }
             }
@@ -123,17 +118,18 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         payloadIndex += 1; 
 
         VoxelPayload payload;
-        payload.brickDataIndex = brickPtr;
-        _PayloadBuffer[payloadIndex] = payload;
+        payload.brickDataIndex = brickPtr; // Store Local Pointer
+        
+        _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
         
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[nodeIndex].payloadIndex = payloadIndex;
-        _NodeBuffer[nodeIndex].topology = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = payloadIndex; // Store Local Payload Index
+        _NodeBuffer[_NodeOffset + nodeIndex].topology = 0;
     }
     else
     {
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[nodeIndex].payloadIndex = 0;
-        _NodeBuffer[nodeIndex].topology = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].topology = 0;
     }
 }

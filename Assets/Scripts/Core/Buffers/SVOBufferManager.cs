@@ -4,34 +4,42 @@ using VoxelEngine.Core.Data;
 
 namespace VoxelEngine.Core.Buffers
 {
-    public class SVOBufferManager : System.IDisposable
+    /// <summary>
+    /// Now acts as a lightweight handle/view into the Monolithic Global Buffers.
+    /// Owned and managed by VoxelVolumePool.
+    /// </summary>
+    public class SVOBufferManager
     {
+        // References to Global Buffers
         public GraphicsBuffer NodeBuffer { get; private set; }
         public GraphicsBuffer PayloadBuffer { get; private set; }
         public GraphicsBuffer BrickBuffer { get; private set; }
         public GraphicsBuffer BrickMaterialBuffer { get; private set; }
+        
+        // Local Counter Buffer (Still per-chunk for generation safety)
         public GraphicsBuffer CounterBuffer { get; private set; }
 
-        private int _maxNodes;
-        private int _maxBricks;
+        // Offsets into Global Buffers
+        public int NodeOffset { get; private set; }
+        public int PayloadOffset { get; private set; }
+        public int BrickOffset { get; private set; }
 
-        public SVOBufferManager(int maxNodes, int maxBricks)
+        public SVOBufferManager(
+            GraphicsBuffer nodes, int nodeOffset,
+            GraphicsBuffer payloads, int payloadOffset,
+            GraphicsBuffer bricks, GraphicsBuffer materials, int brickOffset)
         {
-            _maxNodes = maxNodes;
-            _maxBricks = maxBricks;
-            Initialize();
-        }
+            NodeBuffer = nodes;
+            NodeOffset = nodeOffset;
+            
+            PayloadBuffer = payloads;
+            PayloadOffset = payloadOffset;
+            
+            BrickBuffer = bricks;
+            BrickMaterialBuffer = materials;
+            BrickOffset = brickOffset;
 
-        private void Initialize()
-        {
-            NodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _maxNodes, Marshal.SizeOf<SVONode>());
-            PayloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _maxNodes, Marshal.SizeOf<VoxelPayload>());
-            
-            int brickVoxels = SVONode.BRICK_VOXEL_COUNT; // 64
-            
-            BrickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _maxBricks * brickVoxels, sizeof(float));
-            BrickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _maxBricks * brickVoxels, sizeof(uint));
-            
+            // Allocate a small local counter for generation logic
             CounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3, sizeof(uint));
             ResetCounters();
         }
@@ -47,10 +55,7 @@ namespace VoxelEngine.Core.Buffers
 
         public void Dispose()
         {
-            NodeBuffer?.Release();
-            PayloadBuffer?.Release();
-            BrickBuffer?.Release();
-            BrickMaterialBuffer?.Release();
+            // We DO NOT release the global buffers here.
             CounterBuffer?.Release();
         }
     }

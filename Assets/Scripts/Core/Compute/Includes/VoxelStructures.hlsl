@@ -20,7 +20,7 @@ struct VoxelPayload
 struct VoxelTypeGPU
 {
     uint sideAlbedoIndex; 
-    uint sideNormalIndex; 
+    uint sideNormalIndex;
     uint sideMaskIndex;
     
     uint topAlbedoIndex; 
@@ -38,6 +38,19 @@ struct VoxelLight
     float4 position; 
     float4 color; 
     float4 attenuation; 
+};
+
+// --- NEW: TLAS Chunk Definition ---
+struct ChunkDef
+{
+    float3 boundsMin;
+    uint nodeOffset;
+    
+    float3 boundsMax;
+    uint payloadOffset;
+    
+    uint brickOffset;
+    float3 padding; // Align to 16 bytes/stride
 };
 
 // Helper Functions
