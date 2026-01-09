@@ -16,6 +16,7 @@ int _ChunkCount;
 // --- Rendering Resources ---
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
 Texture2D<float> _CameraDepthTexture; SamplerState sampler_CameraDepthTexture;
+
 Texture2DArray _AlbedoTextureArray;
 Texture2DArray _NormalTextureArray;
 Texture2DArray _MaskTextureArray;
@@ -28,10 +29,13 @@ RWStructuredBuffer<float4> _RaycastBuffer;
 // --- Camera & Lighting ---
 float4x4 _CameraToWorld;
 float4x4 _CameraInverseProjection;
-float4x4 _CameraViewProjection; // <--- ADDED THIS LINE
+float4x4 _CameraViewProjection;
+
 float4 _ZBufferParams;
 float4 _MainLightPosition;
 float4 _MainLightColor;
+// x = PixelSpreadAngle (tan(FOV/2)*2/H)
+float4 _RaytraceParams; 
 
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
@@ -48,6 +52,20 @@ float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMa
     float tNear = max(max(t1.x, t1.y), t1.z);
     float tFar = min(min(t2.x, t2.y), t2.z);
     return float2(tNear, tFar);
+}
+
+// Helper to get normal of a box surface
+float3 GetBoxNormal(float3 hitPos, float3 boxMin, float3 boxSize)
+{
+    float3 center = boxMin + boxSize * 0.5;
+    float3 p = hitPos - center;
+    float3 d = abs(p) / (boxSize * 0.5);
+    float maxAxis = max(max(d.x, d.y), d.z);
+    
+    // Return sign of dominant axis
+    if (d.x >= maxAxis - 1e-4) return float3(sign(p.x), 0, 0);
+    if (d.y >= maxAxis - 1e-4) return float3(0, sign(p.y), 0);
+    return float3(0, 0, sign(p.z));
 }
 
 // Brick Sampling with Global Offset
@@ -97,12 +115,11 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
     if (matId == 0) { outAlbedo=1; outNormal=normal; outRoughness=0.5; outAO=1; return; }
     
     VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
-    
     // Simple triplanar weights
     float3 weights = abs(normal);
     weights /= (weights.x + weights.y + weights.z);
-    
-    // Sample Textures (Simplified for brevity, assuming Albedo array exists)
+
+    // Sample Textures
     float2 uvX = worldPos.zy;
     float2 uvY = worldPos.xz;
     float2 uvZ = worldPos.xy;
@@ -112,7 +129,7 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
     float3 colZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), 0).rgb;
     
     outAlbedo = colX * weights.x + colY * weights.y + colZ * weights.z;
-    outNormal = normal; // Placeholder for normal map blend
+    outNormal = normal; 
     outRoughness = 0.5;
     outAO = 1.0;
 }
@@ -126,14 +143,17 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
     float tEnd = maxDist;
     int iter = 0;
     
-    float gridSz = 64.0; // Assumption: All chunks are 64^3
-    HitInfo result; result.hit = false; result.pos = 0; result.normal = 0; result.matId = 0;
+    float gridSz = 64.0; 
+    float pixelSpread = _RaytraceParams.x; // Retrieve Spread Factor
+
+    HitInfo result; result.hit = false; result.pos = 0; result.normal = 0;
+    result.matId = 0;
     
     while (tCurrent < tEnd && iter < MAX_ITERATIONS)
     {
         iter++;
         float3 pos = rayOriginNode + rayDir * (tCurrent + EPSILON);
-        
+
         // --- SVO Descent ---
         uint nodeIndex = 0;
         float nodeSize = gridSz;
@@ -148,7 +168,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
             if (pos.x >= center.x) octant |= 1;
             if (pos.y >= center.y) octant |= 2;
             if (pos.z >= center.z) octant |= 4;
-            
+
             // Access Global Node Buffer via Chunk Offset
             SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
             uint childMask = (node.topology >> 24) & 0xFF;
@@ -157,10 +177,21 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
             {
                 uint childBase = node.topology & 0xFFFFFF;
                 uint maskBefore = childMask & ((1 << octant) - 1);
+                
+                // Update to Child
                 nodeIndex = childBase + countbits(maskBefore);
                 nodeSize = halfSize;
                 nodePos += float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
-                
+
+                // --- PHASE 3: CONE TRACING / RAY SIZE CHECK ---
+                // If node is smaller than the ray cone, stop descending.
+                float rayRadius = tCurrent * pixelSpread;
+                if (nodeSize < rayRadius && depth > 1) 
+                { 
+                    hitLeaf = true; 
+                    break; // Treat as Leaf (LOD Block)
+                }
+
                 if (nodeSize <= BRICK_SIZE + EPSILON) { hitLeaf = true; break; }
             }
             else
@@ -169,34 +200,32 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                  float3 octantMin = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
                  float2 tOctant = IntersectBox(rayOriginNode, rayDir, octantMin, octantMin + halfSize);
                  tCurrent = tOctant.y;
-                 break; 
+                 break;
             }
         }
         
-        // --- Leaf (Brick) Processing ---
+        // --- Leaf (Brick or LOD) Processing ---
         if (hitLeaf)
         {
             SVONode leafNode = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
-            float2 tLeaf = IntersectBox(rayOriginNode, rayDir, nodePos, nodePos + BRICK_SIZE);
+            float2 tLeaf = IntersectBox(rayOriginNode, rayDir, nodePos, nodePos + nodeSize); // Use current NodeSize (might be > BrickSize)
 
             if (leafNode.payloadIndex != 0)
             {
+                // STANDARD: Hit a Brick with data
                 VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + leafNode.payloadIndex];
                 uint brickPtr = payload.brickDataIndex;
                 
                 float tMarch = tCurrent;
                 float marchEnd = min(tEnd, tLeaf.y);
                 
-                // Raymarch inside brick
                 for (int m = 0; m < MAX_MARCH_STEPS; m++)
                 {
                     if (tMarch >= marchEnd) break;
                     float3 p = rayOriginNode + rayDir * tMarch;
                     float3 localPos = p - nodePos;
-                    
                     // Access Global Brick Buffer via Chunk Offset
                     float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
-                    
                     if (dist < EPSILON)
                     {
                         result.hit = true;
@@ -205,8 +234,29 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                         result.matId = GetVoxelMaterial(chunk.brickOffset, brickPtr, localPos);
                         return result;
                     }
-                    tMarch += max(dist, 0.05); // Min step
+                    tMarch += max(dist, 0.05); 
                 }
+            }
+            else
+            {
+                // LOD HIT: Stopped early (no payload)
+                // We treat this whole node as a solid block.
+                
+                // If we are strictly inside the box already, tLeaf.x might be negative, use tCurrent.
+                // float tHit = max(tCurrent, tLeaf.x);
+                
+                // // Ensure we haven't overshot maxDist
+                // if (tHit < tEnd)
+                // {
+                //     result.hit = true;
+                //     result.pos = rayOriginNode + rayDir * (tHit + EPSILON);
+                //     result.normal = GetBoxNormal(result.pos, nodePos, nodeSize);
+                    
+                //     // Fallback Material for LOD blocks (since parents don't store material)
+                //     // In a full implementation, you'd store averaged material in parent nodes.
+                //     result.matId = 1; 
+                //     return result;
+                // }
             }
             tCurrent = tLeaf.y + EPSILON;
         }
@@ -245,7 +295,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     for (int i = 0; i < _ChunkCount; i++)
     {
         ChunkDef chunk = _ChunkBuffer[i];
-        
         // Intersect Chunk Bounds (World Space)
         float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
         
@@ -253,18 +302,16 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > 0)
         {
             float tStart = max(0.0, tBox.x);
-            float tEnd = min(closestT, tBox.y); // Don't trace beyond closest found or depth buffer
+            float tEnd = min(closestT, tBox.y); 
             
             // Transform Ray to Chunk Local Node Space
-            float size = chunk.boundsMax.x - chunk.boundsMin.x; // Assuming cubic chunks
-            float scale = size / 64.0; // 64 is GridSize
+            float size = chunk.boundsMax.x - chunk.boundsMin.x;
+            float scale = size / 64.0; 
             float3 chunkOrigin = chunk.boundsMin;
-            
             float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
             
             // STAGE B: Voxel Traversal
             HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEnd/scale, tStart/scale);
-            
             if (info.hit)
             {
                 // Convert hit back to World Space
@@ -286,17 +333,17 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     // 3. Shading & Output
     if (anyHit)
     {
-        float3 albedo, normal; float roughness, ao;
+        float3 albedo, normal;
+        float roughness, ao;
         TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, ao);
         
         float3 V = normalize(rayOrigin - bestHit.pos);
         float3 L = normalize(_MainLightPosition.xyz);
-        
         float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness);
         
         _Result[id.xy] = float4(color * ao, 1.0);
         
-        // Write Depth (Now uses _CameraViewProjection correctly)
+        // Write Depth 
         float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
         _ResultDepth[id.xy] = clipPos.z / clipPos.w;
         

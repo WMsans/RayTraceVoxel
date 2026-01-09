@@ -22,7 +22,6 @@ namespace VoxelEngine.Core.Rendering
         private VoxelRaytracerPass _pass;
         private Material _compositeMaterial;
         
-        // Shared Buffer for debug picking
         public static GraphicsBuffer RaycastHitBuffer;
 
         public override void Create()
@@ -55,7 +54,6 @@ namespace VoxelEngine.Core.Rendering
             private ComputeShader _shader;
             private Material _compositeMaterial;
 
-            // Shader Property IDs
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
             private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
             private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
@@ -64,17 +62,16 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _VoxelDepthTextureParams = Shader.PropertyToID("_VoxelDepthTexture");
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
 
-            // Global Monolithic Buffers
+            // --- NEW: Raytrace Params for Cone Tracing ---
+            private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
+
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
             private static readonly int _GlobalBrickBufferParams = Shader.PropertyToID("_GlobalBrickBuffer");
             private static readonly int _GlobalBrickMaterialBufferParams = Shader.PropertyToID("_GlobalBrickMaterialBuffer");
-            
-            // TLAS (Chunk Map)
             private static readonly int _ChunkBufferParams = Shader.PropertyToID("_ChunkBuffer");
             private static readonly int _ChunkCountParams = Shader.PropertyToID("_ChunkCount");
 
-            // Materials & Lights
             private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
             private static readonly int _AlbedoTextureArrayParams = Shader.PropertyToID("_AlbedoTextureArray");
             private static readonly int _NormalTextureArrayParams = Shader.PropertyToID("_NormalTextureArray");
@@ -102,7 +99,6 @@ namespace VoxelEngine.Core.Rendering
                 _normalHandle?.Release(); 
                 _maskHandle?.Release();
                 
-                // FIX: Release and Nullify the static buffer
                 if (VoxelRaytracerFeature.RaycastHitBuffer != null)
                 {
                     VoxelRaytracerFeature.RaycastHitBuffer.Release();
@@ -129,6 +125,7 @@ namespace VoxelEngine.Core.Rendering
                 public int width; public int height;
                 public Vector4 mainLightPosition;
                 public Vector4 mainLightColor;
+                public Vector4 raytraceParams; // --- NEW ---
                 public GraphicsBuffer nodeBuffer;
                 public GraphicsBuffer payloadBuffer;
                 public GraphicsBuffer brickBuffer;
@@ -170,6 +167,12 @@ namespace VoxelEngine.Core.Rendering
 
                 SetupLights(lightData, out var mainPos, out var mainCol);
 
+                // --- NEW: Calculate Pixel Spread for Cone Tracing ---
+                float fov = cameraData.camera.fieldOfView;
+                float height = cameraDesc.height;
+                // SpreadFactor = tan(FOV/2) * 2 / Height
+                float pixelSpread = Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * 2.0f / height;
+
                 using (var builder = renderGraph.AddComputePass("Voxel Raytracer Single-Dispatch", out PassData data))
                 {
                     data.computeShader = _shader;
@@ -201,6 +204,7 @@ namespace VoxelEngine.Core.Rendering
                     data.targetDepth = tempResultDepth;
                     data.mainLightPosition = mainPos;
                     data.mainLightColor = mainCol;
+                    data.raytraceParams = new Vector4(pixelSpread, 0, 0, 0); // Packed
 
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
@@ -238,6 +242,9 @@ namespace VoxelEngine.Core.Rendering
                         
                         cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition);
                         cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor);
+                        
+                        // --- NEW: Pass Spread Factor ---
+                        cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams);
 
                         int groupsX = Mathf.CeilToInt(pd.width / 8.0f);
                         int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
