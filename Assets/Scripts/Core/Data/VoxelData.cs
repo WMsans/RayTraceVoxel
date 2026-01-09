@@ -8,6 +8,8 @@ namespace VoxelEngine.Core.Data
     {
         public uint topology; 
         public uint payloadIndex;
+        public uint lodColor;
+        public uint padding;
         
         public const int BRICK_SIZE = 4;
         public const int BRICK_VOXEL_COUNT = 64;
