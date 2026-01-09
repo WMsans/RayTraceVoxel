@@ -5,9 +5,6 @@ namespace VoxelEngine.Core.Generators
 {
     public static class SVOGenerator
     {
-        /// <summary>
-        /// Builds the SVO using procedural logic with global positioning.
-        /// </summary>
         public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize)
         {
             if (shader == null || buffers == null) return;
@@ -16,7 +13,9 @@ namespace VoxelEngine.Core.Generators
             int kernelInit = shader.FindKernel("InitDenseStructure");
             shader.SetBuffer(kernelInit, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelInit, "_CounterBuffer", buffers.CounterBuffer);
-            shader.Dispatch(kernelInit, 74, 1, 1);
+            shader.SetInt("_NodeOffset", buffers.NodeOffset);
+            
+            shader.Dispatch(kernelInit, 74, 1, 1); // 4681/64 = 73.something -> 74 groups
 
             // 2. Build Bricks
             int kernelBuild = shader.FindKernel("BuildBricks");
@@ -26,9 +25,11 @@ namespace VoxelEngine.Core.Generators
             shader.SetBuffer(kernelBuild, "_BrickMaterialBuffer", buffers.BrickMaterialBuffer);
             shader.SetBuffer(kernelBuild, "_CounterBuffer", buffers.CounterBuffer);
             
+            shader.SetInt("_NodeOffset", buffers.NodeOffset);
+            shader.SetInt("_PayloadOffset", buffers.PayloadOffset);
+            shader.SetInt("_BrickOffset", buffers.BrickOffset);
+
             shader.SetInt("_GridSize", resolution); 
-            
-            // Pass Global Offset
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
             shader.SetFloat("_ChunkWorldSize", chunkSize);
 
@@ -36,56 +37,31 @@ namespace VoxelEngine.Core.Generators
             int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 8.0f);
             
             shader.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
-            
-            Debug.Log($"SVO Generation Dispatched (Procedural). Grid: {resolution}");
+
+            // 3. Propagate LOD (Mipmapping) - Bottom Up
+            int kernelProp = shader.FindKernel("PropagateLOD");
+            shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);
+            shader.SetInt("_NodeOffset", buffers.NodeOffset); // Global Offset
+
+            // Level 3 (Parents of Leaves) -> Index 73, Count 512
+            DispatchLOD(shader, kernelProp, 73, 512);
+
+            // Level 2 -> Index 9, Count 64
+            DispatchLOD(shader, kernelProp, 9, 64);
+
+            // Level 1 -> Index 1, Count 8
+            DispatchLOD(shader, kernelProp, 1, 8);
+
+            // Level 0 -> Index 0, Count 1
+            DispatchLOD(shader, kernelProp, 0, 1);
         }
 
-        /// <summary>
-        /// Builds the SVO using a Dense SDF buffer (Phase 3).
-        /// </summary>
-        /// <param name="shader">The MeshToSVO.compute shader.</param>
-        /// <param name="buffers">The SVO Buffers to populate.</param>
-        /// <param name="resolution">Grid resolution.</param>
-        /// <param name="sdfBuffer">Buffer containing the dense SDF floats.</param>
-        /// <param name="materialId">The material ID to assign to solid voxels.</param>
-        public static void BuildFromSDF(ComputeShader shader, SVOBufferManager buffers, int resolution, GraphicsBuffer sdfBuffer, int materialId, Vector3 chunkOrigin, float chunkSize)
+        private static void DispatchLOD(ComputeShader shader, int kernel, int offset, int count)
         {
-            if (shader == null || buffers == null || sdfBuffer == null)
-            {
-                Debug.LogError("SVOGenerator: Missing resources for BuildFromSDF.");
-                return;
-            }
-
-            // 1. Initialize Node Structure
-            int kernelInit = shader.FindKernel("InitDenseStructure");
-            shader.SetBuffer(kernelInit, "_NodeBuffer", buffers.NodeBuffer);
-            shader.SetBuffer(kernelInit, "_CounterBuffer", buffers.CounterBuffer);
-            // Dispatch enough threads for the node hierarchy (same as procedural)
-            shader.Dispatch(kernelInit, 74, 1, 1);
-
-            // 2. Build Bricks from SDF Data
-            int kernelBuild = shader.FindKernel("BuildBricks");
-            shader.SetBuffer(kernelBuild, "_NodeBuffer", buffers.NodeBuffer);
-            shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
-            shader.SetBuffer(kernelBuild, "_BrickBuffer", buffers.BrickBuffer);
-            shader.SetBuffer(kernelBuild, "_BrickMaterialBuffer", buffers.BrickMaterialBuffer);
-            shader.SetBuffer(kernelBuild, "_CounterBuffer", buffers.CounterBuffer);
-            
-            // New Inputs
-            shader.SetBuffer(kernelBuild, "_DenseSDFBuffer", sdfBuffer);
-            shader.SetInt("_TargetMaterialID", materialId);
-            shader.SetInt("_GridSize", resolution);
-
-            shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
-            shader.SetFloat("_ChunkWorldSize", chunkSize);
-
-            // Calculate Thread Groups (Bricks per axis / 8)
-            int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
-            int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 8.0f);
-
-            shader.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
-
-            Debug.Log($"SVO Generation Dispatched (From SDF). Grid: {resolution}, MatID: {materialId}");
+            shader.SetInt("_TargetLevelOffset", offset);
+            shader.SetInt("_TargetLevelCount", count);
+            int groups = Mathf.CeilToInt(count / 64.0f);
+            shader.Dispatch(kernel, groups, 1, 1);
         }
     }
 }
