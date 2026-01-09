@@ -155,7 +155,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
 
     HitInfo result; 
     result.hit = false; result.pos = 0; result.normal = 0; result.matId = 0;
-    result.isLOD = false; result.lodColor = 0; // Init
+    result.isLOD = false; result.lodColor = 0;
     
     while (tCurrent < tEnd && iter < MAX_ITERATIONS)
     {
@@ -167,7 +167,6 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
         float3 nodePos = float3(0,0,0);
         bool hitLeaf = false;
         
-        // Loop depth 0 to 5
         for (int depth = 0; depth < 5; depth++)
         {
             float halfSize = nodeSize * 0.5;
@@ -182,51 +181,60 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
             
             if ((childMask & (1 << octant)) != 0)
             {
-                // Has Child
                 uint childBase = node.topology & 0xFFFFFF;
                 uint maskBefore = childMask & ((1 << octant) - 1);
                 uint childNodeIndex = childBase + countbits(maskBefore);
                 
-                // --- PHASE 3: CONE TRACING / RAY SIZE CHECK ---
+                // Calculate Child Position/Size early for checks
+                float3 childPos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+                float childSize = halfSize;
+
+                // --- PHASE 3: CONE TRACING (LOD) ---
                 float rayRadius = tCurrent * pixelSpread;
+                
+                // Stop if node is too small for the pixel (LOD Hit)
                 if (nodeSize < rayRadius && depth > 1) 
                 { 
-                    // STOP TRAVERSAL: Fetch LOD Data
                     SVONode childNode = _GlobalNodeBuffer[chunk.nodeOffset + childNodeIndex];
                     float4 packedCol = UnpackColor(childNode.lodColor);
                     
-                    if (packedCol.a > 0.0) // Only hit if it has content
-                    {
+                    if (packedCol.a > 0.0) 
+                    { 
+                        // HIT: Valid LOD Block
                         hitLeaf = true;
                         result.isLOD = true;
                         result.lodColor = packedCol.rgb;
-                        // For normal, we can approximate or use ray direction inverse
-                        result.normal = -rayDir; 
+                        
+                        // Set state to the CHILD so we intersect the correct box below
+                        nodeIndex = childNodeIndex;
+                        nodeSize = childSize;
+                        nodePos = childPos;
+                        break; 
                     }
-                    // Else: It's empty air effectively, so we continue or break? 
-                    // If we treat it as LOD block, we stop.
-                    // But if lodColor is empty, it means the entire subtree is empty.
-                    // So we should SKIP this block (advance tCurrent). 
-                    // However, 'childMask' says there IS something there.
-                    // Let's assume valid childMask implies valid content.
-                    
-                    // We need to set nodeIndex/Pos to the child so the Leaf Processing block handles the intersection
-                    nodeIndex = childNodeIndex;
-                    nodeSize = halfSize;
-                    nodePos += float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
-                    break; 
+                    else
+                    {
+                        // MISS: Empty LOD Block
+                        // FIX: We must advance tCurrent past this empty node to avoid infinite loop!
+                        float2 tChild = IntersectBox(rayOriginNode, rayDir, childPos, childPos + childSize);
+                        tCurrent = tChild.y + EPSILON;
+                        
+                        // Break inner loop to restart traversal at new tCurrent
+                        hitLeaf = false; // Ensure we don't process as hit
+                        break; 
+                    }
                 }
 
-                // Normal Descent
+                // Standard Descent
                 nodeIndex = childNodeIndex;
-                nodeSize = halfSize;
-                nodePos += float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+                nodeSize = childSize;
+                nodePos = childPos;
                 
+                // If we reached bottom level (Level 4, size 4), it's a real leaf
                 if (nodeSize <= BRICK_SIZE + EPSILON) { hitLeaf = true; break; }
             }
             else
             {
-                 // Empty octant
+                 // Empty octant - Skip
                  float3 octantMin = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
                  float2 tOctant = IntersectBox(rayOriginNode, rayDir, octantMin, octantMin + halfSize);
                  tCurrent = tOctant.y;
@@ -239,21 +247,23 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
             SVONode leafNode = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
             float2 tLeaf = IntersectBox(rayOriginNode, rayDir, nodePos, nodePos + nodeSize);
             
-            // Check for LOD Hit first
             if (result.isLOD)
             {
+                // LOD HIT PROCESSING
                 float tHit = max(tCurrent, tLeaf.x);
                 if (tHit < tEnd)
                 {
                     result.hit = true;
                     result.pos = rayOriginNode + rayDir * (tHit + EPSILON);
-                    // result.normal set above
+                    
+                    // FIX: Use Box Normal for 3D look (fixes "Paper Thin" look)
+                    result.normal = GetBoxNormal(result.pos, nodePos, nodeSize); 
                     return result;
                 }
             }
             else if (leafNode.payloadIndex != 0)
             {
-                // STANDARD BRICK TRAVERSAL
+                // BRICK HIT PROCESSING (High Detail)
                 VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + leafNode.payloadIndex];
                 uint brickPtr = payload.brickDataIndex;
                 
@@ -276,6 +286,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     tMarch += max(dist, 0.05);
                 }
             }
+            // If we missed the brick iso-surface or it was LOD, exit node
             tCurrent = tLeaf.y + EPSILON;
         }
     }

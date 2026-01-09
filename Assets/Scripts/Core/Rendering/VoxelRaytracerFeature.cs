@@ -171,8 +171,8 @@ namespace VoxelEngine.Core.Rendering
                 float fov = cameraData.camera.fieldOfView;
                 float height = cameraDesc.height;
                 // SpreadFactor = tan(FOV/2) * 2 / Height
-                float pixelSpread = Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * 2.0f / height;
-
+                float pixelSpread = (Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * 2.0f / height) * 50.0f;
+                
                 using (var builder = renderGraph.AddComputePass("Voxel Raytracer Single-Dispatch", out PassData data))
                 {
                     data.computeShader = _shader;
