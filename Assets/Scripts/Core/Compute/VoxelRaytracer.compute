@@ -39,6 +39,10 @@ float4 _RaytraceParams;
 
 // --- Utility Functions ---
 
+float remap(float value, float min1, float max1, float min2, float max2) {
+    return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
+}
+
 float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax)
 {
     float3 tMin = (boxMin - rayOrigin) / rayDir;
@@ -85,7 +89,7 @@ float SampleBrick(uint brickOffset, uint brickPtr, float3 localPos)
 
 float3 CalculateNormal(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    float d = 0.05;
+    float d = 0.5;
     float dx = SampleBrick(brickOffset, brickPtr, localPos + float3(d,0,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(d,0,0));
     float dy = SampleBrick(brickOffset, brickPtr, localPos + float3(0,d,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,d,0));
     float dz = SampleBrick(brickOffset, brickPtr, localPos + float3(0,0,d)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,0,d));
@@ -381,11 +385,40 @@ float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColo
     // 5. Combine (Ambient + Direct)
     // Note: albedo / PI is the standard Lambertian diffuse
     float3 direct = (kD * albedo / PI + specular) * lightColor * NdotL;
-    
-    // Simple Ambient Approximation (since we don't have a Skybox/Probe sampler here yet)
-    float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;
 
-    return ambient + direct;
+    float3 skyColor = float3(0.15, 0.2, 0.3); 
+    float3 groundColor = float3(0.05, 0.05, 0.05);
+    
+    // Mix based on Up/Down normal orientation
+    float hemiMix = remap(N.y, -1.0, 1.0, 0.0, 1.0);
+    float3 ambientLight = lerp(groundColor, skyColor, hemiMix);
+    
+    // Apply AO from your voxel data here
+    float3 ambient = ambientLight * albedo * ao;
+
+    // --- 2. Procedural Environment Reflection (Fake IBL) ---
+    // PBR needs to reflect "something". If you don't have a cubemap, fake it.
+    float3 R = reflect(-V, N);
+    
+    // Fake Sky Reflection: Gradient based on reflection vector Y
+    float horizon = smoothstep(-0.1, 0.1, R.y);
+    float3 envColor = lerp(groundColor, skyColor * 2.0, horizon); 
+    
+    // Add a fake "Sun" hotspot in the reflection
+    float sunSpec = pow(max(dot(R, normalize(float3(0.5, 1, 0.5))), 0.0), 64.0);
+    envColor += float3(1, 0.9, 0.8) * sunSpec;
+    
+    // Fresnel (kS) acts as the mask for how much environment we see
+    // Roughness blurs the reflection (simply dim it for cheap approximation)
+    float3 indirectSpecular = envColor * kS * (1.0 - roughness);
+
+    float rimVal = 1.0 - max(dot(V, N), 0.0);
+    rimVal = smoothstep(0.6, 1.0, rimVal); // Sharpen the rim
+    
+    // Tint rim with sky color or white
+    float3 rim = rimVal * float3(0.2, 0.3, 0.4) * ao;
+    
+    return ambient + direct + indirectSpecular + rim;
 }
 
 // --- MAIN KERNEL ---
