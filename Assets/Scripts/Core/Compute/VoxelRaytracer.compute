@@ -105,39 +105,44 @@ float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColo
     return albedo * lightColor * NdotL; 
 }
 
-void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outAO, float lod)
+void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outMetallic, out float outAO, float lod)
 {
-    if (matId == 0) { outAlbedo=1;
-    outNormal=normal; outRoughness=0.5; outAO=1; return; }
+    if (matId == 0) { 
+        outAlbedo = 1; outNormal = normal; outRoughness = 0.5; outMetallic = 0; outAO = 1; 
+        return; 
+    }
     
     VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
+    
     // Simple triplanar weights
     float3 weights = abs(normal);
     weights /= (weights.x + weights.y + weights.z);
+
     // Sample Textures
     float2 uvX = worldPos.zy;
     float2 uvY = worldPos.xz;
     float2 uvZ = worldPos.xy;
-    
+
     // Albedo
     float3 colX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), lod).rgb;
     float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topAlbedoIndex), lod).rgb;
     float3 colZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), lod).rgb;
     outAlbedo = colX * weights.x + colY * weights.y + colZ * weights.z;
 
-    // Mask (G=AO, A=Smoothness/Roughness inverse?) 
-    // Assuming standard packing: G=Occlusion, A=Smoothness. Roughness = 1-Smoothness.
+    // Mask (G=AO, A=Smoothness) 
     float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), lod);
     float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topMaskIndex), lod);
     float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), lod);
     float4 mask = maskX * weights.x + maskY * weights.y + maskZ * weights.z;
     
     outAO = mask.g;
-    outRoughness = 1.0 - mask.a;
+    outRoughness = mask.b; // Smoothness to Roughness
 
-    // Normals (Optional improvement)
-    // For now, pass through geometry normal, as combining triplanar normals correctly is more expensive
-    // and might look odd on large LOD blocks without tangent basis.
+    // Metallic (Blended from Voxel Definitions)
+    // weights.y corresponds to the Top face
+    outMetallic = lerp(mat.sideMetallic, mat.topMetallic, weights.y);
+
+    // Normals (Pass through geometry normal for now)
     outNormal = normal; 
 }
 
@@ -302,6 +307,87 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
     return result;
 }
 
+// --- PBR Functions ---
+
+float DistributionGGX(float3 N, float3 H, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+
+    float nom = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / max(denom, 0.0000001);
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+
+    float nom = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return nom / max(denom, 0.0000001);
+}
+
+float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+
+float3 FresnelSchlick(float cosTheta, float3 F0)
+{
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Main PBR Lighting Calculation
+float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic, float ao) 
+{
+    float3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0);
+    
+    // 1. Calculate F0 (Surface reflection at zero incidence)
+    // 0.04 is standard for dielectrics, use Albedo for metals
+    float3 F0 = float3(0.04, 0.04, 0.04); 
+    F0 = lerp(F0, albedo, metallic);
+
+    // 2. Calculate BRDF Terms
+    float NDF = DistributionGGX(N, H, roughness);   
+    float G = GeometrySmith(N, V, L, roughness);      
+    float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+       
+    // 3. Calculate Specular (Cook-Torrance)
+    float3 numerator = NDF * G * F; 
+    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001; // +0.0001 to prevent divide by zero
+    float3 specular = numerator / denominator;
+    
+    // 4. Calculate Diffuse
+    // kS is the ratio of light that gets reflected (Fresnel)
+    float3 kS = F;
+    // kD is the remaining light that gets refracted (Diffuse)
+    float3 kD = float3(1.0, 1.0, 1.0) - kS;
+    // Metallic surfaces have no diffuse reflection
+    kD *= 1.0 - metallic;	  
+
+    // 5. Combine (Ambient + Direct)
+    // Note: albedo / PI is the standard Lambertian diffuse
+    float3 direct = (kD * albedo / PI + specular) * lightColor * NdotL;
+    
+    // Simple Ambient Approximation (since we don't have a Skybox/Probe sampler here yet)
+    float3 ambient = float3(0.03, 0.03, 0.03) * albedo * ao;
+
+    return ambient + direct;
+}
+
 // --- MAIN KERNEL ---
 
 [numthreads(8, 8, 1)]
@@ -367,32 +453,30 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     if (anyHit)
     {
         float3 albedo, normal;
-        float roughness, ao;
+        float roughness, ao, metallic;
 
         // Check for LOD Hit
         if (bestHit.isLOD)
         {
-            // Calculate approximate mip level based on ray cone footprint
-            // Footprint ~ dist * pixelSpread
             float dist = length(bestHit.pos - rayOrigin);
             float spotSize = dist * _RaytraceParams.x; 
-            float mip = max(0.0, log2(spotSize * 16.0)); // *16 arbitrary scale for texture density
+            float mip = max(0.0, log2(spotSize * 16.0));
 
-            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, ao, mip);
-            
-            // Fallback to lodColor if no material (optional, if material 0 returns white)
-            // But TriplanarSampling handles matId==0 by returning basic values.
+            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, metallic, ao, mip);
         }
         else
         {
-            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, ao, 0);
+            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, metallic, ao, 0);
         }
         
         float3 V = normalize(rayOrigin - bestHit.pos);
         float3 L = normalize(_MainLightPosition.xyz);
-        float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness);
         
-        _Result[id.xy] = float4(color * ao, 1.0);
+        // Final PBR Call
+        float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness, metallic, ao);
+        
+        _Result[id.xy] = float4(color, 1.0); // AO is now applied inside LightingPBR
+        
         // Write Depth 
         float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
         _ResultDepth[id.xy] = clipPos.z / clipPos.w;

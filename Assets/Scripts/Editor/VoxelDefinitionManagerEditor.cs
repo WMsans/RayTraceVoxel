@@ -145,7 +145,7 @@ public class VoxelDefinitionManagerEditor : Editor
             float roVal = (roPixels != null) ? roPixels[i].r : 0.5f; // Default Roughness 0.5
             
             // Pack: R(Unused/Metallic), G(AO), B(Roughness), A(Unused)
-            maskResult[i] = new Color(0, aoVal, roVal, 0);
+            maskResult[i] = new Color(0, aoVal, roVal, 1);
         }
 
         list.Add(maskResult);
