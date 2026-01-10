@@ -20,7 +20,11 @@ namespace VoxelEngine.Core.Rendering
             [Header("LOD Settings")]
             [Tooltip("Multiplies the pixel size estimate. Higher values (10-100) force LODs to appear closer.")]
             [Range(1.0f, 200.0f)] 
-            public float lodBias = 1.0f; 
+            public float lodBias = 1.0f;
+
+            [Header("Culling")]
+            [Tooltip("If true, chunks beyond the Camera's Far Clip Plane will be hidden. Disable this to see distant voxel terrain.")]
+            public bool useCameraFarPlane = false; 
         }
 
         public Settings settings = new Settings();
@@ -61,6 +65,7 @@ namespace VoxelEngine.Core.Rendering
             private ComputeShader _shader;
             private Material _compositeMaterial;
 
+            // Shader IDs...
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
             private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
             private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
@@ -145,10 +150,38 @@ namespace VoxelEngine.Core.Rendering
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
                 if (VoxelVolumePool.Instance == null) return;
-                if (VoxelVolumePool.Instance.ActiveChunkCount == 0) return;
 
-                var resourceData = frameData.Get<UniversalResourceData>();
+                // --- IMPROVED CULLING LOGIC ---
                 var cameraData = frameData.Get<UniversalCameraData>();
+                
+                // 1. Get all 6 planes: [0]Left, [1]Right, [2]Down, [3]Up, [4]Near, [5]Far
+                Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
+                
+                Plane[] cullingPlanes;
+
+                if (_settings.useCameraFarPlane)
+                {
+                    cullingPlanes = allPlanes;
+                }
+                else
+                {
+                    // 2. Create array of 5 planes, EXCLUDING the Far Plane (Index 5)
+                    // This creates an infinite frustum cone.
+                    cullingPlanes = new Plane[5];
+                    for (int i = 0; i < 5; i++)
+                    {
+                        cullingPlanes[i] = allPlanes[i];
+                    }
+                }
+
+                // 3. Update the pool with these infinite planes
+                VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes);
+
+                // 4. Abort if nothing is visible
+                if (VoxelVolumePool.Instance.VisibleChunkCount == 0) return;
+
+                // --- Standard Setup Continues ---
+                var resourceData = frameData.Get<UniversalResourceData>();
                 var lightData = frameData.Get<UniversalLightData>();
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
@@ -170,19 +203,16 @@ namespace VoxelEngine.Core.Rendering
 
                 SetupLights(lightData, out var mainPos, out var mainCol);
 
-                // --- CALCULATION UPDATED ---
                 float fov = cameraData.camera.fieldOfView;
                 float height = cameraDesc.height;
                 float rawPixelSpread = Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * 2.0f / height;
-                
-                // Apply the Bias here!
                 float finalSpread = rawPixelSpread * _settings.lodBias;
 
                 using (var builder = renderGraph.AddComputePass("Voxel Raytracer Single-Dispatch", out PassData data))
                 {
                     data.computeShader = _shader;
                     data.kernel = _shader.FindKernel("CSMain");
-
+                    
                     if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
                          VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16);
                     data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
@@ -193,7 +223,9 @@ namespace VoxelEngine.Core.Rendering
                     data.brickBuffer = pool.GlobalBrickBuffer;
                     data.brickMaterialBuffer = pool.GlobalBrickMaterialBuffer;
                     data.chunkBuffer = pool.ChunkBuffer;
-                    data.chunkCount = pool.ActiveChunkCount;
+                    
+                    // Pass the Culled Count
+                    data.chunkCount = pool.VisibleChunkCount;
 
                     data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
                     if (_albedoHandle != null) data.albedoArray = renderGraph.ImportTexture(_albedoHandle);
@@ -209,8 +241,6 @@ namespace VoxelEngine.Core.Rendering
                     data.targetDepth = tempResultDepth;
                     data.mainLightPosition = mainPos;
                     data.mainLightColor = mainCol;
-                    
-                    // Pass Final Spread
                     data.raytraceParams = new Vector4(finalSpread, 0, 0, 0); 
 
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
@@ -231,8 +261,9 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickBufferParams, pd.brickBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickMaterialBufferParams, pd.brickMaterialBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _ChunkBufferParams, pd.chunkBuffer);
-                        cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount);
+                        cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount); // Culled count
                         cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
+                        
                         if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, _VoxelMaterialBufferParams, pd.materialBuffer);
                         if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _AlbedoTextureArrayParams, pd.albedoArray);
                         if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _NormalTextureArrayParams, pd.normalArray);

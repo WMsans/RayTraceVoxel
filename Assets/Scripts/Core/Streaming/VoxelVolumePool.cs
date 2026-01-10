@@ -27,31 +27,26 @@ namespace VoxelEngine.Core.Streaming
 
         [Header("Global Memory Settings")]
         public int maxNodesPerVolume = 50000; 
-        public int maxBricksPerVolume = 25000; // x64 voxels
+        public int maxBricksPerVolume = 25000; 
 
-        // --- Monolithic Global Buffers ---
         public GraphicsBuffer GlobalNodeBuffer { get; private set; }
         public GraphicsBuffer GlobalPayloadBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickMaterialBuffer { get; private set; }
         
-        // --- TLAS (Chunk Map) ---
         public GraphicsBuffer ChunkBuffer { get; private set; }
         private ChunkDef[] _chunkData;
 
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
+        
+        // This is what we pass to the GPU now
+        public int VisibleChunkCount { get; private set; }
 
         private void Awake()
         {
-            // Singleton: Handle duplicates safely
-            if (Instance != null && Instance != this)
-            {
-                Destroy(this); 
-                return; 
-            }
+            if (Instance != null && Instance != this) { Destroy(this); return; }
             Instance = this;
-            
             InitializeGlobalBuffers();
             InitializePool();
         }
@@ -59,18 +54,17 @@ namespace VoxelEngine.Core.Streaming
         private void InitializeGlobalBuffers()
         {
             int totalNodes = poolSize * maxNodesPerVolume;
-            int totalBricks = poolSize * maxBricksPerVolume; // Bricks (not voxels)
+            int totalBricks = poolSize * maxBricksPerVolume; 
             int totalBrickVoxels = totalBricks * 64;
 
             Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes, {totalBricks/1000}k Bricks.");
 
             GlobalNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<SVONode>());
-            GlobalPayloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<VoxelPayload>()); // 1:1 worst case
+            GlobalPayloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<VoxelPayload>());
             
             GlobalBrickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(float));
             GlobalBrickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
 
-            // TLAS Buffer
             _chunkData = new ChunkDef[poolSize];
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
         }
@@ -84,14 +78,10 @@ namespace VoxelEngine.Core.Streaming
             {
                 VoxelVolume vol = Instantiate(prefab, poolContainer);
                 vol.gameObject.name = $"Volume_Pool_{i}";
-                
-                // Assign Slice of Global Memory
                 int nodeOffset = i * maxNodesPerVolume;
                 int payloadOffset = i * maxNodesPerVolume;
-                int brickOffset = i * maxBricksPerVolume * 64; // *64 for raw index
-
+                int brickOffset = i * maxBricksPerVolume * 64;
                 vol.AssignMemorySlice(this, nodeOffset, payloadOffset, brickOffset, maxNodesPerVolume, maxBricksPerVolume);
-                
                 vol.gameObject.SetActive(false);
                 _pool.Enqueue(vol);
             }
@@ -100,16 +90,15 @@ namespace VoxelEngine.Core.Streaming
         public VoxelVolume GetVolume(Vector3 position, float size)
         {
             if (_pool.Count == 0) return null;
-
             VoxelVolume vol = _pool.Dequeue();
             vol.transform.position = position;
             float scale = size / vol.Resolution; 
             vol.transform.localScale = Vector3.one * scale;
-
             vol.OnPullFromPool(position, size);
             _activeVolumes.Add(vol);
             
-            UpdateChunkBuffer();
+            // Initial update (will be overwritten by per-frame culling)
+            UpdateChunkBuffer(null);
             return vol;
         }
 
@@ -121,49 +110,59 @@ namespace VoxelEngine.Core.Streaming
                 vol.OnReturnToPool();
                 vol.transform.SetParent(poolContainer); 
                 _pool.Enqueue(vol);
-                UpdateChunkBuffer();
+                UpdateChunkBuffer(null);
             }
         }
 
-        public void UpdateChunkBuffer()
+        public void UpdateVisibility(Plane[] cullingPlanes)
         {
-            // Rebuild the TLAS data
-            // We clear it first (conceptually) by setting scale 0 or something, but essentially we just rewrite valid ones
-            // Actually, the shader loops 0..Count. 
-            // We need to pack the active ones at the start or pass a count.
-            
-            // To simplify, we will just write ALL active volumes to the array and update the count uniform later.
+            UpdateChunkBuffer(cullingPlanes);
+        }
+
+        private void UpdateChunkBuffer(Plane[] cullingPlanes)
+        {
+            int writeIndex = 0;
             
             for (int i = 0; i < _activeVolumes.Count; i++)
             {
                 var vol = _activeVolumes[i];
-                ChunkDef def = new ChunkDef();
-                
-                Vector3 center = vol.transform.position;
-                float size = vol.Resolution * vol.transform.localScale.x;
-                Vector3 extents = Vector3.one * size * 0.5f;
 
+                // --- Frustum Culling ---
+                if (cullingPlanes != null)
+                {
+                    // Check if AABB is within frustum
+                    // If we passed 5 planes, the Far plane is ignored, preventing pop-in
+                    if (!GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds))
+                    {
+                        continue; 
+                    }
+                }
+
+                ChunkDef def = new ChunkDef();
                 def.boundsMin = vol.WorldBounds.min;
                 def.boundsMax = vol.WorldBounds.max;
-                
                 def.nodeOffset = (uint)vol.BufferManager.NodeOffset;
                 def.payloadOffset = (uint)vol.BufferManager.PayloadOffset;
                 def.brickOffset = (uint)vol.BufferManager.BrickOffset;
                 
-                _chunkData[i] = def;
+                _chunkData[writeIndex] = def;
+                writeIndex++;
             }
+
+            VisibleChunkCount = writeIndex;
             
-            ChunkBuffer.SetData(_chunkData);
+            if (poolSize > 0)
+            {
+                // Upload only the visible data to the GPU (or all if buffer is fixed size, but we only iterate up to VisibleChunkCount in shader)
+                ChunkBuffer.SetData(_chunkData);
+            }
         }
 
-        // Accessor for the Raytracer
         public int ActiveChunkCount => _activeVolumes.Count;
 
         private void OnDestroy()
         {
-            // Clear singleton if this instance is the owner
             if (Instance == this) Instance = null;
-
             GlobalNodeBuffer?.Release();
             GlobalPayloadBuffer?.Release();
             GlobalBrickBuffer?.Release();

@@ -18,6 +18,7 @@ MonoBehaviour:
     compositeShader: {fileID: 4800000, guid: 2991eb697ecd14c98a06d3f35413a176, type: 3}
     injectionPoint: 400
     lodBias: 1
+    useCameraFarPlane: 0
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
