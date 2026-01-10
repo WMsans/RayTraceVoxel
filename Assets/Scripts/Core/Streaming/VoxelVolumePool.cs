@@ -55,7 +55,7 @@ namespace VoxelEngine.Core.Streaming
         {
             int totalNodes = poolSize * maxNodesPerVolume;
             int totalBricks = poolSize * maxBricksPerVolume; 
-            int totalBrickVoxels = totalBricks * 216; // 6x6x6 padded bricks
+            int totalBrickVoxels = totalBricks * 64;
 
             Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes, {totalBricks/1000}k Bricks.");
 
@@ -80,7 +80,7 @@ namespace VoxelEngine.Core.Streaming
                 vol.gameObject.name = $"Volume_Pool_{i}";
                 int nodeOffset = i * maxNodesPerVolume;
                 int payloadOffset = i * maxNodesPerVolume;
-                int brickOffset = i * maxBricksPerVolume * 216;
+                int brickOffset = i * maxBricksPerVolume * 64;
                 vol.AssignMemorySlice(this, nodeOffset, payloadOffset, brickOffset, maxNodesPerVolume, maxBricksPerVolume);
                 vol.gameObject.SetActive(false);
                 _pool.Enqueue(vol);

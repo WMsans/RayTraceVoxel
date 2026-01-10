@@ -81,139 +81,38 @@ float3 GetLODNormal(float3 hitPos, float3 boxPos, float3 boxSize)
 float SampleBrick(uint brickOffset, uint brickPtr, float3 localPos)
 {
     float3 p = localPos;
-    int3 i = floor(p);
+    int3 i = clamp((int3)floor(p), 0, 2);
     float3 f = p - (float3)i;
-    float3 w = f * f * (3.0 - 2.0 * f);
-    
-    // Offset by Padding to find start index in 6x6x6 buffer
-    int3 bi = i + BRICK_PADDING; 
-    
-    // Stride for 6x6x6
-    uint strideY = BRICK_STORAGE_DIM;
-    uint strideZ = BRICK_STORAGE_DIM * BRICK_STORAGE_DIM;
-
-    uint baseIdx = brickOffset + brickPtr + bi.z * strideZ + bi.y * strideY + bi.x;
+    uint baseIdx = brickOffset + brickPtr + i.z * 16 + i.y * 4 + i.x;
     
     float c000 = _GlobalBrickBuffer[baseIdx];
     float c001 = _GlobalBrickBuffer[baseIdx + 1];
-    float c010 = _GlobalBrickBuffer[baseIdx + strideY];
-    float c011 = _GlobalBrickBuffer[baseIdx + strideY + 1];
-    float c100 = _GlobalBrickBuffer[baseIdx + strideZ];
-    float c101 = _GlobalBrickBuffer[baseIdx + strideZ + 1];
-    float c110 = _GlobalBrickBuffer[baseIdx + strideZ + strideY];
-    float c111 = _GlobalBrickBuffer[baseIdx + strideZ + strideY + 1];
+    float c010 = _GlobalBrickBuffer[baseIdx + 4];
+    float c011 = _GlobalBrickBuffer[baseIdx + 5];
+    float c100 = _GlobalBrickBuffer[baseIdx + 16];
+    float c101 = _GlobalBrickBuffer[baseIdx + 17];
+    float c110 = _GlobalBrickBuffer[baseIdx + 20];
+    float c111 = _GlobalBrickBuffer[baseIdx + 21];
     
-    return lerp(lerp(lerp(c000, c001, w.x), lerp(c010, c011, w.x), w.y), lerp(lerp(c100, c101, w.x), lerp(c110, c111, w.x), w.y), w.z);
-}
-
-void GetCubicWeights(float t, out float4 w, out float4 dwd)
-{
-    float t2 = t * t;
-    float t3 = t2 * t;
-
-    // Catmull-Rom weights
-    // w0 = 0.5 * (-t3 + 2t2 - t)
-    // w1 = 0.5 * (3t3 - 5t2 + 2)
-    // w2 = 0.5 * (-3t3 + 4t2 + t)
-    // w3 = 0.5 * (t3 - t2)
-    w = 0.5 * float4(
-        -t3 + 2.0*t2 - t,
-        3.0*t3 - 5.0*t2 + 2.0,
-        -3.0*t3 + 4.0*t2 + t,
-        t3 - t2
-    );
-
-    // Derivatives
-    // d0 = 0.5 * (-3t2 + 4t - 1)
-    // d1 = 0.5 * (9t2 - 10t)
-    // d2 = 0.5 * (-9t2 + 8t + 1)
-    // d3 = 0.5 * (3t2 - 2t)
-    dwd = 0.5 * float4(
-        -3.0*t2 + 4.0*t - 1.0,
-        9.0*t2 - 10.0*t,
-        -9.0*t2 + 8.0*t + 1.0,
-        3.0*t2 - 2.0*t
-    );
-}
-
-float4 SampleBrickTricubicGrad(uint brickOffset, uint brickPtr, float3 localPos)
-{
-    float3 p = localPos;
-    int3 i = floor(p);
-    float3 f = p - (float3)i;
-
-    float4 wx, dwx, wy, dwy, wz, dwz;
-    GetCubicWeights(f.x, wx, dwx);
-    GetCubicWeights(f.y, wy, dwy);
-    GetCubicWeights(f.z, wz, dwz);
-
-    // Indices (Start at i-1 because 0-th weight is for p-1)
-    // padded index = (coord) + padding.
-    // start coord = i - 1.
-    // start index = i - 1 + padding.
-    int3 bi = i - 1 + BRICK_PADDING;
-
-    uint strideY = BRICK_STORAGE_DIM;
-    uint strideZ = BRICK_STORAGE_DIM * BRICK_STORAGE_DIM;
-    uint basePtr = brickOffset + brickPtr;
-
-    float value = 0;
-    float3 grad = 0;
-
-    for (int z = 0; z < 4; z++)
-    {
-        float weightZ = wz[z];
-        float dWeightZ = dwz[z];
-        uint idxZ = (bi.z + z) * strideZ;
-
-        for (int y = 0; y < 4; y++)
-        {
-            float weightY = wy[y];
-            float dWeightY = dwy[y];
-            uint idxY = (bi.y + y) * strideY;
-
-            for (int x = 0; x < 4; x++)
-            {
-                float weightX = wx[x];
-                float dWeightX = dwx[x];
-                
-                uint idx = basePtr + idxZ + idxY + (bi.x + x);
-                float val = _GlobalBrickBuffer[idx];
-
-                // Accumulate Value
-                // V = Sum( val * wx * wy * wz )
-                value += val * weightX * weightY * weightZ;
-
-                // Accumulate Gradient (Chain Rule)
-                // dV/dx = Sum( val * dwx * wy * wz )
-                grad.x += val * dWeightX * weightY * weightZ;
-                grad.y += val * weightX * dWeightY * weightZ;
-                grad.z += val * weightX * weightY * dWeightZ;
-            }
-        }
-    }
-    
-    return float4(grad, value);
+    // Tricubic interpolation would be better, but sticking to Trilinear for performance/consistency
+    return lerp(lerp(lerp(c000, c001, f.x), lerp(c010, c011, f.x), f.y), lerp(lerp(c100, c101, f.x), lerp(c110, c111, f.x), f.y), f.z);
 }
 
 float3 CalculateNormal(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    // Use Tricubic Analytic Gradient for smooth normals
-    float4 gradVal = SampleBrickTricubicGrad(brickOffset, brickPtr, localPos);
-    float3 normal = gradVal.xyz;
-    
-    return length(normal) > 1e-6 ? normalize(normal) : float3(0, 1, 0);
+    // Use smaller delta for more precise normals on smooth surfaces
+    float d = 0.1; 
+    float dx = SampleBrick(brickOffset, brickPtr, localPos + float3(d,0,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(d,0,0));
+    float dy = SampleBrick(brickOffset, brickPtr, localPos + float3(0,d,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,d,0));
+    float dz = SampleBrick(brickOffset, brickPtr, localPos + float3(0,0,d)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,0,d));
+    float3 v = float3(dx, dy, dz);
+    return length(v) > 1e-6 ? normalize(v) : float3(0, 1, 0);
 }
 
 uint GetVoxelMaterial(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    int3 i = floor(localPos + 0.5);
-    int3 bi = i + BRICK_PADDING;
-    
-    uint strideY = BRICK_STORAGE_DIM;
-    uint strideZ = BRICK_STORAGE_DIM * BRICK_STORAGE_DIM;
-    
-    uint idx = brickOffset + brickPtr + bi.z * strideZ + bi.y * strideY + bi.x;
+    uint3 i = clamp((uint3)floor(localPos + 0.5), 0, 3);
+    uint idx = brickOffset + brickPtr + i.z * 16 + i.y * 4 + i.x;
     return _GlobalBrickMaterialBuffer[idx];
 }
 
@@ -639,7 +538,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness, metallic, ao);
         
         float3 debugNormal = bestHit.normal * 0.5 + 0.5; // Map -1..1 to 0..1
-        _Result[id.xy] = float4(color, 1.0);
+        _Result[id.xy] = float4(debugNormal, 1.0);
         return; // Stop here
         
         // Write Depth 
