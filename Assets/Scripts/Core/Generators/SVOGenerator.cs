@@ -5,7 +5,7 @@ namespace VoxelEngine.Core.Generators
 {
     public static class SVOGenerator
     {
-        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize, int lodLevel = 0)
+        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize)
         {
             if (shader == null || buffers == null) return;
             
@@ -32,7 +32,6 @@ namespace VoxelEngine.Core.Generators
             shader.SetInt("_GridSize", resolution); 
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
             shader.SetFloat("_ChunkWorldSize", chunkSize);
-            shader.SetInt("_LOD", lodLevel);
 
             int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
             // Kernel is [numthreads(4,4,4)], so divide by 4

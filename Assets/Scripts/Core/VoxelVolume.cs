@@ -22,7 +22,6 @@ namespace VoxelEngine.Core
         // Runtime State
         public Vector3 WorldOrigin { get; private set; }
         public float WorldSize { get; private set; }
-        public int LOD { get; private set; }
         public Bounds WorldBounds => new Bounds(WorldOrigin + Vector3.one * WorldSize * 0.5f, Vector3.one * WorldSize);
 
         // IVoxelStorage Implementation
@@ -49,11 +48,10 @@ namespace VoxelEngine.Core
             );
         }
 
-        public void OnPullFromPool(Vector3 worldOrigin, float size, int lod = 0)
+        public void OnPullFromPool(Vector3 worldOrigin, float size)
         {
             WorldOrigin = worldOrigin;
             WorldSize = size;
-            LOD = lod;
 
             BufferManager.ResetCounters();
             this.gameObject.SetActive(true);
@@ -68,7 +66,7 @@ namespace VoxelEngine.Core
         private void Generate()
         {
             if (svoCompute == null) return;
-            SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize, LOD);
+            SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize);
         }
 
         // Persistence (Simplified for now)

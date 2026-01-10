@@ -87,14 +87,14 @@ namespace VoxelEngine.Core.Streaming
             }
         }
 
-        public VoxelVolume GetVolume(Vector3 position, float size, int lod = 0)
+        public VoxelVolume GetVolume(Vector3 position, float size)
         {
             if (_pool.Count == 0) return null;
             VoxelVolume vol = _pool.Dequeue();
             vol.transform.position = position;
             float scale = size / vol.Resolution; 
             vol.transform.localScale = Vector3.one * scale;
-            vol.OnPullFromPool(position, size, lod);
+            vol.OnPullFromPool(position, size);
             _activeVolumes.Add(vol);
             
             // Initial update (will be overwritten by per-frame culling)

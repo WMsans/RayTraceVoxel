@@ -14,7 +14,6 @@ RWStructuredBuffer<uint> _CounterBuffer;
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
-uint _LOD; 
 
 // --- Global Offsets ---
 uint _NodeOffset;
@@ -71,7 +70,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float worldRadius = 3.0 * scale;
 
     // Use the pipeline to check intersection with the brick bounds
-    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, _LOD);
+    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld);
     float dist = centerCtx.sdf;
 
     if (dist < worldRadius)
@@ -93,7 +92,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
                     // Run pipeline for each voxel
-                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, _LOD);
+                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld);
                     float sdf = voxelCtx.sdf;
 
                     uint idx = _BrickOffset + brickPtr + (z*16 + y*4 + x);

@@ -32,8 +32,7 @@ namespace VoxelEngine.Core.Streaming
             _rootNode = new WorldOctreeNode(Vector3.zero, initialWorldSize, 0, null);
 
             // Initially enable the root volume
-            // LOD = MaxDepth - Depth(0) = MaxDepth
-            _rootNode.EnableVolume(this.transform, maxDepth);
+            _rootNode.EnableVolume(this.transform);
         }
 
         private void Update()
@@ -89,8 +88,7 @@ namespace VoxelEngine.Core.Streaming
             foreach (var child in node.Children)
             {
                 // This triggers GetVolume -> OnPullFromPool -> Generate(SDF)
-                int childLOD = Mathf.Max(0, maxDepth - child.Depth);
-                child.EnableVolume(this.transform, childLOD);
+                child.EnableVolume(this.transform);
             }
 
             // 3. Hide/Return the parent VoxelVolume
@@ -102,8 +100,7 @@ namespace VoxelEngine.Core.Streaming
         {
             // 1. Acquire 1 VoxelVolume for the parent (Low LOD)
             // This generates the low-resolution representation of the large area
-            int lod = Mathf.Max(0, maxDepth - node.Depth);
-            node.EnableVolume(this.transform, lod);
+            node.EnableVolume(this.transform);
 
             // 2. Hide/Return the 8 child VoxelVolumes and destroy child nodes
             // WorldOctreeNode.Merge() recursively calls DisableVolume() on children

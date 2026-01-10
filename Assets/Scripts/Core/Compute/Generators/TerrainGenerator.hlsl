@@ -69,21 +69,11 @@ void Stage_Terrain(inout GenerationContext ctx)
     
     // Additive/Subtractive FBM
     // 3 octaves, persistence 0.5, lacunarity 2.0, higher scale
-    // Optimization: If we are at a lower LOD (farther away), skip or reduce detail
-    float detail = 0;
-    if (ctx.lod == 0)
-    {
-        detail = fbm(warpPos, 3, 0.5, 2.0, 0.02); // Scale 0.02 -> ~50 units
-    }
+    float detail = fbm(warpPos, 3, 0.5, 2.0, 0.02); // Scale 0.02 -> ~50 units
     
-    // Mask detail to prevent floating islands in the air
-    // If baseDensity is too negative, we fade out the detail.
-    // detail * 0.2 can add up to ~0.2 density. We must ensure baseDensity + detail <= 0 if baseDensity is meant to be air.
-    float detailMask = smoothstep(-0.3, -0.05, baseDensity);
-
     // Composite
     // Multiplier 0.2 reduces the impact of detail so it doesn't overwhelm base shape
-    float finalDensity = baseDensity + (detail * 0.2 * detailMask);
+    float finalDensity = baseDensity + (detail * 0.2);
 
     // Convert to SDF
     // Near surface, the gradient is dominated by the noise falloff + vertical falloff.
