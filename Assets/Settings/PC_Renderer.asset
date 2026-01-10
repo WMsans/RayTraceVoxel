@@ -17,7 +17,7 @@ MonoBehaviour:
     raytraceShader: {fileID: 7200000, guid: 3df9fb35cd1f6e6cb98239204f808a24, type: 3}
     compositeShader: {fileID: 4800000, guid: 2991eb697ecd14c98a06d3f35413a176, type: 3}
     injectionPoint: 400
-    lodBias: 128
+    lodBias: 1
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
