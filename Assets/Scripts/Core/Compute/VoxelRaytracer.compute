@@ -213,15 +213,18 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     SVONode childNode = _GlobalNodeBuffer[chunk.nodeOffset + childNodeIndex];
                     float4 packedCol = UnpackColor(childNode.lodColor);
                     
-                    if (packedCol.a > 0.0) 
+                    // Was: if (packedCol.a > 0.0)
+                    // New: if (packedCol.a > 0.05)
+                    // 0.05 filters out nodes that are less than 5% solid. 
+                    // This removes single-voxel noise artifacts from becoming huge distant blocks.
+                    if (packedCol.a > 0.05) 
                     { 
                         // HIT: Valid LOD Block
                         hitLeaf = true;
                         result.isLOD = true;
                         result.lodColor = packedCol.rgb;
-                        result.matId = childNode.lodMaterial; // Extract Material
+                        result.matId = childNode.lodMaterial;
                         
-                        // Set state to the CHILD so we intersect the correct box below
                         nodeIndex = childNodeIndex;
                         nodeSize = childSize;
                         nodePos = childPos;

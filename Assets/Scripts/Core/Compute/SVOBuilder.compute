@@ -14,6 +14,7 @@ RWStructuredBuffer<uint> _CounterBuffer;
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
+uint _LOD; 
 
 // --- Global Offsets ---
 uint _NodeOffset;
@@ -57,7 +58,7 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     _NodeBuffer[_NodeOffset + id] = node;
 }
 
-[numthreads(8, 8, 8)]
+[numthreads(4, 4, 4)]
 void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
     uint bricksAxis = _GridSize / BRICK_SIZE;
@@ -70,7 +71,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float worldRadius = 3.0 * scale;
 
     // Use the pipeline to check intersection with the brick bounds
-    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld);
+    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, _LOD);
     float dist = centerCtx.sdf;
 
     if (dist < worldRadius)
@@ -92,7 +93,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
                     // Run pipeline for each voxel
-                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld);
+                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, _LOD);
                     float sdf = voxelCtx.sdf;
 
                     uint idx = _BrickOffset + brickPtr + (z*16 + y*4 + x);
@@ -131,7 +132,8 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         // Store Average Color in Leaf
         if (voxelCount > 0)
         {
-            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(accumulatedColor / voxelCount);
+            float density = voxelCount / 64.0;
+            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
         }
         else
         {
@@ -158,7 +160,7 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     if (id >= _TargetLevelCount) return;
     uint nodeIndex = _TargetLevelOffset + id;
     SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
-    // If no children, it's empty space (unless we handle sparse leaves differently)
+
     if (node.topology == 0)
     {
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
@@ -174,21 +176,28 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     // Iterate 8 children
     for (int i = 0; i < 8; i++)
     {
-        // Add _NodeOffset because childBasePtr is local to chunk
         SVONode child = _NodeBuffer[_NodeOffset + childBasePtr + i];
         float4 c = UnpackColor(child.lodColor);
         
-        if (c.a > 0.0) // Only average non-empty nodes
+        if (c.a > 0.0) 
         {
-            acc += c;
-            count += 1.0;
-            if (child.lodMaterial != 0) maxMaterial = child.lodMaterial; // Propagate material
+            acc.rgb += c.rgb; // Accumulate Color
+            acc.a += c.a;     // Accumulate Density
+            count += 1.0;     // Track active children for Color Averaging
+            if (child.lodMaterial != 0) maxMaterial = child.lodMaterial;
         }
     }
 
     if (count > 0.0)
     {
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(acc / count);
+        // Color is average of ACTIVE children
+        float3 avgColor = acc.rgb / count;
+        
+        // Alpha is average density of THE WHOLE NODE (8 octants)
+        // This ensures sparse nodes get a very low alpha
+        float nodeDensity = acc.a / 8.0; 
+
+        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(avgColor, nodeDensity));
         _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = maxMaterial;
     }
     else

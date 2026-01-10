@@ -70,7 +70,7 @@ namespace VoxelEngine.Core.Streaming
 
         // --- Volume Management (UPDATED) ---
 
-        public void EnableVolume(Transform container)
+        public void EnableVolume(Transform container, int lod)
         {
             if (ActiveVolume != null) return; 
 
@@ -84,11 +84,11 @@ namespace VoxelEngine.Core.Streaming
             Vector3 minCorner = Center - (Vector3.one * Size * 0.5f);
             
             // Request from Pool
-            ActiveVolume = VoxelVolumePool.Instance.GetVolume(minCorner, Size);
+            ActiveVolume = VoxelVolumePool.Instance.GetVolume(minCorner, Size, lod);
             
             if (ActiveVolume != null)
             {
-                ActiveVolume.name = $"Volume_D{Depth}_{Center}";
+                ActiveVolume.name = $"Volume_D{Depth}_LOD{lod}_{Center}";
             }
         }
 
