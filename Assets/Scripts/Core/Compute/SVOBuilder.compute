@@ -3,6 +3,8 @@
 #pragma kernel PropagateLOD 
 
 #include "./Includes/VoxelStructures.hlsl"
+#include "./Generators/SineFloor.hlsl"
+#include "./Generators/Spheres.hlsl"
 
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
@@ -58,14 +60,8 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
 
 float GetGlobalSDF(float3 worldPos)
 {
-    float floorHeight = sin(worldPos.x * 0.02) * 40.0 + cos(worldPos.z * 0.02) * 40.0;
-    float distFloor = worldPos.y - floorHeight;
-    float3 p = worldPos;
-    float period = 120.0; 
-    float3 cell = floor(p / period);
-    float3 local = (p / period - cell) * period; 
-    float3 center = float3(60, 60, 60);
-    float distSpheres = length(local - center) - 30.0;
+    float distFloor = GetSineFloorSDF(worldPos);
+    float distSpheres = GetSpheresSDF(worldPos);
     return min(distFloor, distSpheres);
 }
 
