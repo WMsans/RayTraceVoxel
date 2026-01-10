@@ -33,6 +33,10 @@ float4 _MainLightPosition;
 float4 _MainLightColor;
 // x = PixelSpreadAngle (tan(FOV/2)*2/H)
 float4 _RaytraceParams;
+float _DebugNormalDelta; // <--- Add this
+float _DebugViewNormals; // <--- Add this (0 = Off, 1 = On)
+float _DebugViewBricks;
+
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
@@ -100,11 +104,14 @@ float SampleBrick(uint brickOffset, uint brickPtr, float3 localPos)
 
 float3 CalculateNormal(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    // Use smaller delta for more precise normals on smooth surfaces
-    float d = 0.1; 
+    // TEST: Default to 1.0 if the global is 0 to see immediate difference
+    float d = _DebugNormalDelta > 0.0 ? _DebugNormalDelta : 0.5;
+    
+    // Sampling with a wider delta smoothes out the trilinear 'creases'
     float dx = SampleBrick(brickOffset, brickPtr, localPos + float3(d,0,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(d,0,0));
     float dy = SampleBrick(brickOffset, brickPtr, localPos + float3(0,d,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,d,0));
     float dz = SampleBrick(brickOffset, brickPtr, localPos + float3(0,0,d)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,0,d));
+    
     float3 v = float3(dx, dy, dz);
     return length(v) > 1e-6 ? normalize(v) : float3(0, 1, 0);
 }
@@ -114,6 +121,13 @@ uint GetVoxelMaterial(uint brickOffset, uint brickPtr, float3 localPos)
     uint3 i = clamp((uint3)floor(localPos + 0.5), 0, 3);
     uint idx = brickOffset + brickPtr + i.z * 16 + i.y * 4 + i.x;
     return _GlobalBrickMaterialBuffer[idx];
+}
+
+float3 GetRandomColor(uint seed)
+{
+    float3 p3 = frac(float3(seed, seed, seed) * float3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
 }
 
 // --- PBR Functions ---
@@ -275,6 +289,7 @@ struct HitInfo {
     uint matId; 
     bool isLOD;      // New flag
     float3 lodColor; // Data for LOD
+    uint brickId;
 };
 HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxDist, float tStart)
 {
@@ -290,6 +305,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
     HitInfo result;
     result.hit = false; result.pos = 0; result.normal = 0; result.matId = 0;
     result.isLOD = false; result.lodColor = 0;
+    result.brickId = 0; 
     
     while (tCurrent < tEnd && iter < MAX_ITERATIONS)
     {
@@ -433,6 +449,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                         result.pos = p;
                         result.normal = CalculateNormal(chunk.brickOffset, brickPtr, localPos);
                         result.matId = GetVoxelMaterial(chunk.brickOffset, brickPtr, localPos);
+                        result.brickId = brickPtr; // <--- ADD THIS: Capture the pointer
                         return result;
                     }
                     
@@ -538,6 +555,25 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness, metallic, ao);
         
         float3 debugNormal = bestHit.normal * 0.5 + 0.5; // Map -1..1 to 0..1
+        if (_DebugViewBricks > 0.5)
+        {
+            if (bestHit.isLOD) 
+            {
+                // Tint LODs red so you know they aren't real bricks
+                color = float3(1.0, 0.0, 0.0) * 0.5 + bestHit.lodColor * 0.5;
+            }
+            else
+            {
+                // Random color based on Unique Brick Pointer
+                color = GetRandomColor(bestHit.brickId);
+            }
+        }
+        
+        if (_DebugViewNormals > 0.5)
+        {
+            // Map Normal from -1..1 to 0..1 for visualization
+            color = bestHit.normal * 0.5 + 0.5; 
+        }
         _Result[id.xy] = float4(color, 1.0);
         return; // Stop here
         

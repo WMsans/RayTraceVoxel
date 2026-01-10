@@ -15,4 +15,28 @@ void InitContext(inout GenerationContext ctx, float3 pos) {
     ctx.customData = float4(0, 0, 0, 0);
 }
 
+float smin(float a, float b, float k, out float h)
+{
+    h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return lerp(b, a, h) - k * h * (1.0 - h);
+}
+
+// Helper to apply Smooth Union to the context
+void UnionSmooth(inout GenerationContext ctx, float d, uint matID, float smoothness)
+{
+    float h;
+    // Blend the current world SDF (ctx.sdf) with the new object (d)
+    ctx.sdf = smin(ctx.sdf, d, smoothness, h);
+    
+    // Material blending logic:
+    // h is the mix factor. 
+    // h > 0.5 means the 'ctx.sdf' (existing world) is dominant.
+    // h < 0.5 means the 'd' (new object) is dominant.
+    // This creates a clean material line along the smooth curve.
+    if (h < 0.5)
+    {
+        ctx.material = matID;
+    }
+}
+
 #endif
