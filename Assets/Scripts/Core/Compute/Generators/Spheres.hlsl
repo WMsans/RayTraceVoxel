@@ -16,7 +16,7 @@ void Stage_Spheres(inout GenerationContext ctx)
     if (d < ctx.sdf)
     {
         ctx.sdf = d;
-        ctx.material = 0; // Assign generic sphere material ID
+        ctx.material = 2; // Assign generic sphere material ID
     }
 }
 
