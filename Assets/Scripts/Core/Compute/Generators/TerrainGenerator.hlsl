@@ -2,90 +2,82 @@
 #define TERRAIN_GEN
 
 #include "../Includes/GenerationContext.hlsl"
-#include "../Includes/Noise.hlsl"
+
+// Adapted from Inigo Quilez - https://iquilezles.org/
+// Scale factor adapted for Voxel World (1 unit = 1 meter approx)
+// Original reference SC was 250.0 for kilometers-scale landscapes.
+#define SC 1.0 
+
+// Hash function to replace texture lookup (Procedural Value Noise Source)
+float hash(float2 p)
+{
+    float3 p3  = frac(float3(p.xyx) * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+// Value Noise with Derivatives
+float3 noised(float2 x)
+{
+    float2 f = frac(x);
+    // Quintic interpolation curve
+    float2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
+    float2 du = 30.0*f*f*(f*(f-2.0)+1.0);
+    
+    float2 p = floor(x);
+    float a = hash(p + float2(0,0));
+    float b = hash(p + float2(1,0));
+    float c = hash(p + float2(0,1));
+    float d = hash(p + float2(1,1));
+    
+    float k0 = a;
+    float k1 = b - a;
+    float k2 = c - a;
+    float k3 = a - b - c + d;
+    
+    float val = k0 + k1*u.x + k2*u.y + k3*u.x*u.y;
+    float2 grad = du * (float2(k1, k2) + k3*u.yx);
+    
+    return float3(val, grad);
+}
+
+// Rotation matrix (0.8, 0.6, -0.6, 0.8) matching the GLSL reference
+static const float2x2 m2 = float2x2(0.8, 0.6, -0.6, 0.8);
+
+float terrainM(float2 x)
+{
+    float2 p = x * 0.003 / SC;
+    float a = 0.0;
+    float b = 1.0;
+    float2 d = float2(0.0, 0.0);
+    
+    // 9 Octaves of Erosion-Noise
+    for(int i = 0; i < 9; i++)
+    {
+        float3 n = noised(p);
+        d += n.yz;
+        a += b * n.x / (1.0 + dot(d,d));
+        b *= 0.5;
+        p = mul(m2, p) * 2.0;
+    }
+    
+    return SC * 120.0 * a;
+}
 
 void Stage_Terrain(inout GenerationContext ctx)
 {
-    // --- Phase 1: The Coordinate Space & Domain Warping ---
+    // Height calculation
+    float height = terrainM(ctx.position.xz);
     
-    // Global Coordinate Resolution: Already in ctx.position (World Space)
+    // Vertical Signed Distance (Positive = Air, Negative = Ground)
+    // Multiplier 0.5 helps avoid raymarching artifacts on steep slopes
+    float d = (ctx.position.y - height) * 0.5;
     
-    // Domain Warping (The "Overhang" Stage)
-    // Sample a low-frequency, low-amplitude 3D noise vector.
-    // Scale: 0.01 (Large structures), Amplitude: 20.0
-    float3 warpOffset = float3(100, 0, 100); 
-    float3 warp = float3(
-        snoise(ctx.position * 0.008 + warpOffset),
-        snoise(ctx.position * 0.008 + warpOffset * 2.0),
-        snoise(ctx.position * 0.008 + warpOffset * 3.0)
-    ) * 20.0;
-
-    float3 warpPos = ctx.position + warp;
-
-    // --- Phase 2: Base Continental Density (The "Shape" Stage) ---
-    
-    // 3D Noise Selection (Base Shape)
-    // Low frequency noise.
-    float noiseValue = snoise(warpPos * 0.004); // Scale 0.004 -> ~250 units
-    
-    // The Gradient Mask
-    // BaseDensity = NoiseValue - (Height * VerticalFalloff).
-    // Adjust VerticalFalloff to control world height/depth. 
-    // Small falloff = taller mountains/deeper oceans.
-    float verticalFalloff = 0.01;
-    float baseDensity = noiseValue - (warpPos.y * verticalFalloff);
-
-    // Early Exit (Optimization)
-    // If significantly Air (< -0.5) or Solid (> 0.5), we skip details.
-    // We must still update ctx.sdf to provide a distance estimate for raymarching.
-    // Distance approx: -Density / Falloff
-    
-    float threshold = 0.6; // Tune this to control where details appear.
-    
-    if (baseDensity < -threshold) 
-    {
-        // Air - Estimate distance and return
-        float dist = -baseDensity / verticalFalloff;
-        ctx.sdf = min(ctx.sdf, dist);
-        return; 
-    }
-    
-    if (baseDensity > threshold)
-    {
-        // Deep Underground - Solid
-        float dist = -baseDensity / verticalFalloff;
-        if (dist < ctx.sdf)
-        {
-            ctx.sdf = dist;
-            ctx.material = 2; // Terrain Material
-        }
-        return;
-    }
-
-    // --- Phase 3: Volumetric Detail (The "Erosion" Stage) ---
-    
-    // Voxels here are near the surface (-threshold < baseDensity < threshold).
-    // Apply high-frequency details.
-    
-    // Additive/Subtractive FBM
-    // 3 octaves, persistence 0.5, lacunarity 2.0, higher scale
-    float detail = fbm(warpPos, 3, 0.5, 2.0, 0.02); // Scale 0.02 -> ~50 units
-    
-    // Composite
-    // Multiplier 0.2 reduces the impact of detail so it doesn't overwhelm base shape
-    float finalDensity = baseDensity + (detail * 0.2);
-
-    // Convert to SDF
-    // Near surface, the gradient is dominated by the noise falloff + vertical falloff.
-    // We can just use a constant scaler or the same falloff approximation.
-    // Using a slightly more conservative estimator for surface details.
-    float d = -finalDensity * 20.0; // * 20.0 is an empirical scalar to match units roughly
-
-    // Union
+    // Union with existing SDF
     if (d < ctx.sdf)
     {
         ctx.sdf = d;
-        ctx.material = 3;
+        ctx.material = 2; // Terrain Material
     }
 }
 
