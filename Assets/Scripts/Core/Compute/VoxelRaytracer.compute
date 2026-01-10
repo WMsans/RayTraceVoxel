@@ -54,17 +54,27 @@ float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMa
     return float2(tNear, tFar);
 }
 
-// Helper to get normal of a box surface
-float3 GetBoxNormal(float3 hitPos, float3 boxMin, float3 boxSize)
+float3 GetLODNormal(float3 hitPos, float3 boxPos, float3 boxSize)
 {
-    float3 center = boxMin + boxSize * 0.5;
+    float3 center = boxPos + boxSize * 0.5;
     float3 p = hitPos - center;
-    float3 d = abs(p) / (boxSize * 0.5);
-    float maxAxis = max(max(d.x, d.y), d.z);
-    // Return sign of dominant axis
-    if (d.x >= maxAxis - 1e-4) return float3(sign(p.x), 0, 0);
-    if (d.y >= maxAxis - 1e-4) return float3(0, sign(p.y), 0);
-    return float3(0, 0, sign(p.z));
+    float3 signP = sign(p);
+    float3 absP = abs(p);
+    float3 distToEdge = boxSize * 0.5 - absP;
+    
+    // Smooth Bevel Effect
+    float bevelSize = boxSize.x * 0.1; // 10% bevel
+    float3 bevelNormal = normalize(max(absP - (boxSize * 0.5 - bevelSize), 0.0) * signP);
+    
+    // If we are strictly on a flat face (not in bevel area), return face normal
+    // But to look "smooth" everywhere, we can just return the bevel normal if length > 0
+    if (length(bevelNormal) > 0.001) return bevelNormal;
+
+    // Fallback to face normal
+    float maxAxis = max(max(absP.x, absP.y), absP.z);
+    if (absP.x >= maxAxis - 1e-4) return float3(signP.x, 0, 0);
+    if (absP.y >= maxAxis - 1e-4) return float3(0, signP.y, 0);
+    return float3(0, 0, signP.z);
 }
 
 // Brick Sampling with Global Offset
@@ -84,12 +94,14 @@ float SampleBrick(uint brickOffset, uint brickPtr, float3 localPos)
     float c110 = _GlobalBrickBuffer[baseIdx + 20];
     float c111 = _GlobalBrickBuffer[baseIdx + 21];
     
+    // Tricubic interpolation would be better, but sticking to Trilinear for performance/consistency
     return lerp(lerp(lerp(c000, c001, f.x), lerp(c010, c011, f.x), f.y), lerp(lerp(c100, c101, f.x), lerp(c110, c111, f.x), f.y), f.z);
 }
 
 float3 CalculateNormal(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    float d = 0.5;
+    // Use smaller delta for more precise normals on smooth surfaces
+    float d = 0.1; 
     float dx = SampleBrick(brickOffset, brickPtr, localPos + float3(d,0,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(d,0,0));
     float dy = SampleBrick(brickOffset, brickPtr, localPos + float3(0,d,0)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,d,0));
     float dz = SampleBrick(brickOffset, brickPtr, localPos + float3(0,0,d)) - SampleBrick(brickOffset, brickPtr, localPos - float3(0,0,d));
@@ -104,9 +116,104 @@ uint GetVoxelMaterial(uint brickOffset, uint brickPtr, float3 localPos)
     return _GlobalBrickMaterialBuffer[idx];
 }
 
-float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness) {
-    float NdotL = max(0.0, dot(N, L));
-    return albedo * lightColor * NdotL; 
+// --- PBR Functions ---
+
+float DistributionGGX(float3 N, float3 H, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+
+    float nom = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / max(denom, 0.0000001);
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+
+    float nom = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return nom / max(denom, 0.0000001);
+}
+
+float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+
+float3 FresnelSchlick(float cosTheta, float3 F0)
+{
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+float3 GetSkyColor(float3 rayDir)
+{
+    float3 skyUp = float3(0.1, 0.3, 0.6); // Deep blue
+    float3 skyHorizon = float3(0.6, 0.7, 0.8); // White-ish blue
+    float3 ground = float3(0.05, 0.04, 0.04); // Dark ground
+    
+    float y = rayDir.y;
+    float3 sky = lerp(skyHorizon, skyUp, pow(max(y, 0.0), 0.5));
+    float3 finalColor = lerp(ground, sky, smoothstep(-0.1, 0.1, y));
+    
+    // Sun
+    float3 sunDir = normalize(float3(0.2, 0.8, 0.4));
+    float sunMask = pow(max(dot(rayDir, sunDir), 0.0), 200.0);
+    finalColor += float3(1.0, 0.9, 0.7) * sunMask * 2.0;
+    
+    return finalColor;
+}
+
+// Main PBR Lighting Calculation
+float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic, float ao) 
+{
+    float3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0);
+    
+    // 1. Calculate F0 (Surface reflection at zero incidence)
+    float3 F0 = float3(0.04, 0.04, 0.04); 
+    F0 = lerp(F0, albedo, metallic);
+
+    // 2. Calculate BRDF Terms
+    float NDF = DistributionGGX(N, H, roughness);   
+    float G = GeometrySmith(N, V, L, roughness);      
+    float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
+       
+    // 3. Calculate Specular (Cook-Torrance)
+    float3 numerator = NDF * G * F; 
+    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001; 
+    float3 specular = numerator / denominator;
+    
+    // 4. Calculate Diffuse
+    float3 kS = F;
+    float3 kD = float3(1.0, 1.0, 1.0) - kS;
+    kD *= 1.0 - metallic;	  
+
+    // 5. Combine (Ambient + Direct)
+    float3 direct = (kD * albedo / PI + specular) * lightColor * NdotL;
+
+    // IBL / Ambient
+    float3 envColor = GetSkyColor(reflect(-V, N));
+    float3 ambient = envColor * albedo * ao * 0.3; // Basic ambient scale
+
+    // Fake Rim
+    float rimVal = 1.0 - max(dot(V, N), 0.0);
+    rimVal = smoothstep(0.5, 1.0, rimVal);
+    float3 rim = rimVal * float3(0.5, 0.6, 0.8) * ao * 0.2;
+    
+    return ambient + direct + rim;
 }
 
 void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outMetallic, out float outAO, float lod)
@@ -223,10 +330,6 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     SVONode childNode = _GlobalNodeBuffer[chunk.nodeOffset + childNodeIndex];
                     float4 packedCol = UnpackColor(childNode.lodColor);
                     
-                    // Was: if (packedCol.a > 0.0)
-                    // New: if (packedCol.a > 0.05)
-                    // 0.05 filters out nodes that are less than 5% solid. 
-                    // This removes single-voxel noise artifacts from becoming huge distant blocks.
                     if (packedCol.a > 0.05) 
                     { 
                         // HIT: Valid LOD Block
@@ -243,12 +346,9 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     else
                     {
                         // MISS: Empty LOD Block
-                        // FIX: We must advance tCurrent past this empty node to avoid infinite loop!
                         float2 tChild = IntersectBox(rayOriginNode, rayDir, childPos, childPos + childSize);
                         tCurrent = tChild.y + EPSILON;
-                        // Break inner loop to restart traversal at new tCurrent
                         hitLeaf = false;
-                        // Ensure we don't process as hit
                         break;
                     }
                 }
@@ -287,8 +387,8 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     result.hit = true;
                     result.pos = rayOriginNode + rayDir * (tHit + EPSILON);
                     
-                    // FIX: Use Box Normal for 3D look (fixes "Paper Thin" look)
-                    result.normal = GetBoxNormal(result.pos, nodePos, nodeSize);
+                    // NEW: Use Beveled Normal instead of Box Normal
+                    result.normal = GetLODNormal(result.pos, nodePos, nodeSize);
                     return result;
                 }
             }
@@ -298,23 +398,49 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                 VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + leafNode.payloadIndex];
                 uint brickPtr = payload.brickDataIndex;
                 
-                float tMarch = tCurrent;
+                float tMarch = max(tCurrent, tLeaf.x);
                 float marchEnd = min(tEnd, tLeaf.y);
+                
+                // Refined Marching Loop
                 for (int m = 0; m < MAX_MARCH_STEPS; m++)
                 {
                     if (tMarch >= marchEnd) break;
                     float3 p = rayOriginNode + rayDir * tMarch;
                     float3 localPos = p - nodePos;
                     float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
+                    
                     if (dist < EPSILON)
                     {
+                        // REFINE INTERSECTION (Linear Interpolation)
+                        // Assume dist varies linearly between previous step and current step
+                        // We want to find t where dist == 0 (actually dist == EPSILON_SURFACE)
+                        // But since we just stepped, let's just use the current point or a small backstep
+                        
+                        // Simple Refinement: Bisection (3 iterations)
+                        float tMin = tMarch - 0.05; // We know it was outside before this step
+                        float tMax = tMarch;
+                        for(int r=0; r<3; r++) {
+                            float tMid = (tMin + tMax) * 0.5;
+                            float dMid = SampleBrick(chunk.brickOffset, brickPtr, (rayOriginNode + rayDir * tMid) - nodePos);
+                            if (dMid < EPSILON) tMax = tMid;
+                            else tMin = tMid;
+                        }
+                        tMarch = tMax;
+                        p = rayOriginNode + rayDir * tMarch;
+                        localPos = p - nodePos;
+
                         result.hit = true;
                         result.pos = p;
                         result.normal = CalculateNormal(chunk.brickOffset, brickPtr, localPos);
                         result.matId = GetVoxelMaterial(chunk.brickOffset, brickPtr, localPos);
                         return result;
                     }
-                    tMarch += max(dist, 0.05);
+                    
+                    // Adaptive Step Size
+                    // Don't clamp strictly to 0.05 if we are close!
+                    // But keep a safety minimum to avoid infinite loops
+                    float step = max(dist, 0.005); 
+                    tMarch += step;
                 }
             }
             // If we missed the brick iso-surface or it was LOD, exit node
@@ -322,116 +448,6 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
         }
     }
     return result;
-}
-
-// --- PBR Functions ---
-
-float DistributionGGX(float3 N, float3 H, float roughness)
-{
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float NdotH = max(dot(N, H), 0.0);
-    float NdotH2 = NdotH * NdotH;
-
-    float nom = a2;
-    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = PI * denom * denom;
-
-    return nom / max(denom, 0.0000001);
-}
-
-float GeometrySchlickGGX(float NdotV, float roughness)
-{
-    float r = (roughness + 1.0);
-    float k = (r * r) / 8.0;
-
-    float nom = NdotV;
-    float denom = NdotV * (1.0 - k) + k;
-
-    return nom / max(denom, 0.0000001);
-}
-
-float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
-{
-    float NdotV = max(dot(N, V), 0.0);
-    float NdotL = max(dot(N, L), 0.0);
-    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
-    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
-
-    return ggx1 * ggx2;
-}
-
-float3 FresnelSchlick(float cosTheta, float3 F0)
-{
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
-}
-
-// Main PBR Lighting Calculation
-float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic, float ao) 
-{
-    float3 H = normalize(V + L);
-    float NdotL = max(dot(N, L), 0.0);
-    
-    // 1. Calculate F0 (Surface reflection at zero incidence)
-    // 0.04 is standard for dielectrics, use Albedo for metals
-    float3 F0 = float3(0.04, 0.04, 0.04); 
-    F0 = lerp(F0, albedo, metallic);
-
-    // 2. Calculate BRDF Terms
-    float NDF = DistributionGGX(N, H, roughness);   
-    float G = GeometrySmith(N, V, L, roughness);      
-    float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-       
-    // 3. Calculate Specular (Cook-Torrance)
-    float3 numerator = NDF * G * F; 
-    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001; // +0.0001 to prevent divide by zero
-    float3 specular = numerator / denominator;
-    
-    // 4. Calculate Diffuse
-    // kS is the ratio of light that gets reflected (Fresnel)
-    float3 kS = F;
-    // kD is the remaining light that gets refracted (Diffuse)
-    float3 kD = float3(1.0, 1.0, 1.0) - kS;
-    // Metallic surfaces have no diffuse reflection
-    kD *= 1.0 - metallic;	  
-
-    // 5. Combine (Ambient + Direct)
-    // Note: albedo / PI is the standard Lambertian diffuse
-    float3 direct = (kD * albedo / PI + specular) * lightColor * NdotL;
-
-    float3 skyColor = float3(0.15, 0.2, 0.3); 
-    float3 groundColor = float3(0.05, 0.05, 0.05);
-    
-    // Mix based on Up/Down normal orientation
-    float hemiMix = remap(N.y, -1.0, 1.0, 0.0, 1.0);
-    float3 ambientLight = lerp(groundColor, skyColor, hemiMix);
-    
-    // Apply AO from your voxel data here
-    float3 ambient = ambientLight * albedo * ao;
-
-    // --- 2. Procedural Environment Reflection (Fake IBL) ---
-    // PBR needs to reflect "something". If you don't have a cubemap, fake it.
-    float3 R = reflect(-V, N);
-    
-    // Fake Sky Reflection: Gradient based on reflection vector Y
-    float horizon = smoothstep(-0.1, 0.1, R.y);
-    float3 envColor = lerp(groundColor, skyColor * 2.0, horizon); 
-    
-    // Add a fake "Sun" hotspot in the reflection
-    float sunSpec = pow(max(dot(R, normalize(float3(0.5, 1, 0.5))), 0.0), 64.0);
-    envColor += float3(1, 0.9, 0.8) * sunSpec;
-    
-    // Fresnel (kS) acts as the mask for how much environment we see
-    // Roughness blurs the reflection (simply dim it for cheap approximation)
-    float3 indirectSpecular = envColor * kS * (1.0 - roughness);
-
-    float rimVal = 1.0 - max(dot(V, N), 0.0);
-    rimVal = smoothstep(0.6, 1.0, rimVal); // Sharpen the rim
-    
-    // Tint rim with sky color or white
-    float3 rim = rimVal * float3(0.2, 0.3, 0.4) * ao;
-    
-    return ambient + direct + indirectSpecular + rim;
 }
 
 // --- MAIN KERNEL ---
