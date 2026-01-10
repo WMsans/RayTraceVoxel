@@ -6,6 +6,7 @@
 // --- Stage Includes ---
 // Add new generator file includes here
 #include "./Generators/TerrainGenerator.hlsl"
+#include "./Generators/Spheres.hlsl"
 
 GenerationContext RunGeneratorPipeline(float3 worldPos)
 {
@@ -16,8 +17,8 @@ GenerationContext RunGeneratorPipeline(float3 worldPos)
     // You can reorder these, add conditions, or use ctx.customData to pass info between them.
     
     // Stage_SineFloor(ctx);
-    // Stage_Spheres(ctx);
     Stage_Terrain(ctx);
+    Stage_Spheres(ctx);
     
     return ctx;
 }

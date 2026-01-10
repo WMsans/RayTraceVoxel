@@ -537,7 +537,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // Final PBR Call
         float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness, metallic, ao);
         
-        _Result[id.xy] = float4(color, 1.0); // AO is now applied inside LightingPBR
+        float3 debugNormal = bestHit.normal * 0.5 + 0.5; // Map -1..1 to 0..1
+        _Result[id.xy] = float4(debugNormal, 1.0);
+        return; // Stop here
         
         // Write Depth 
         float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
