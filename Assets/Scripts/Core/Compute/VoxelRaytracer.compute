@@ -325,7 +325,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                 // --- PHASE 3: CONE TRACING (LOD) ---
                 float rayRadius = tCurrent * pixelSpread;
                 // Stop if node is too small for the pixel (LOD Hit)
-                if (nodeSize < rayRadius && depth > 1) 
+                if (false) // nodeSize < rayRadius && depth > 1 
                 { 
                     SVONode childNode = _GlobalNodeBuffer[chunk.nodeOffset + childNodeIndex];
                     float4 packedCol = UnpackColor(childNode.lodColor);
@@ -538,7 +538,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness, metallic, ao);
         
         float3 debugNormal = bestHit.normal * 0.5 + 0.5; // Map -1..1 to 0..1
-        _Result[id.xy] = float4(debugNormal, 1.0);
+        _Result[id.xy] = float4(color, 1.0);
         return; // Stop here
         
         // Write Depth 
