@@ -76,18 +76,21 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     if (dist < worldRadius)
     {
         uint brickPtr;
-        InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
+        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
         float4 accumulatedColor = 0; // Accumulator
         float voxelCount = 0;
         uint detectedMaterial = 0;
 
-        for (uint z = 0; z < BRICK_SIZE; z++)
+        for (uint iz = 0; iz < BRICK_STORAGE_DIM; iz++)
         {
-            for (uint y = 0; y < BRICK_SIZE; y++)
+            for (uint iy = 0; iy < BRICK_STORAGE_DIM; iy++)
             {
-                for (uint x = 0; x < BRICK_SIZE; x++)
+                for (uint ix = 0; ix < BRICK_STORAGE_DIM; ix++)
                 {
-            
+                    int x = (int)ix - BRICK_PADDING;
+                    int y = (int)iy - BRICK_PADDING;
+                    int z = (int)iz - BRICK_PADDING;
+
                     float3 voxelPosLocal = brickOriginLocal + float3(x, y, z);
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
@@ -95,7 +98,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld);
                     float sdf = voxelCtx.sdf;
 
-                    uint idx = _BrickOffset + brickPtr + (z*16 + y*4 + x);
+                    uint idx = _BrickOffset + brickPtr + (iz * BRICK_STORAGE_DIM * BRICK_STORAGE_DIM + iy * BRICK_STORAGE_DIM + ix);
                     _BrickBuffer[idx] = sdf / scale; 
                     
                     // Default to the material found at this voxel, or 1 if somehow 0 was returned but sdf < 0
@@ -103,14 +106,17 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     if (mat == 0) mat = 1; 
                     _BrickMaterialBuffer[idx] = mat;
 
-                    // Accumulate Color for solid voxels
-                    if (sdf < 0) 
+                    // Accumulate Color for solid voxels (ONLY INSIDE BRICK)
+                    if (x >= 0 && x < BRICK_SIZE && y >= 0 && y < BRICK_SIZE && z >= 0 && z < BRICK_SIZE)
                     {
-                        // Using white instead.
-                        float3 col = float3(1.0, 1.0, 1.0); 
-                        accumulatedColor += float4(col, 1.0);
-                        voxelCount += 1.0;
-                        detectedMaterial = mat; // Capture material (last one wins, or we could use majority vote)
+                        if (sdf < 0) 
+                        {
+                            // Using white instead.
+                            float3 col = float3(1.0, 1.0, 1.0); 
+                            accumulatedColor += float4(col, 1.0);
+                            voxelCount += 1.0;
+                            detectedMaterial = mat; 
+                        }
                     }
                 }
             }
