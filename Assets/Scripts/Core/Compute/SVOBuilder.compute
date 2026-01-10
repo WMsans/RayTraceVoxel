@@ -3,8 +3,7 @@
 #pragma kernel PropagateLOD 
 
 #include "./Includes/VoxelStructures.hlsl"
-#include "./Generators/SineFloor.hlsl"
-#include "./Generators/Spheres.hlsl"
+#include "./GeneratorPipeline.hlsl"
 
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
@@ -58,13 +57,6 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     _NodeBuffer[_NodeOffset + id] = node;
 }
 
-float GetGlobalSDF(float3 worldPos)
-{
-    float distFloor = GetSineFloorSDF(worldPos);
-    float distSpheres = GetSpheresSDF(worldPos);
-    return min(distFloor, distSpheres);
-}
-
 [numthreads(8, 8, 8)]
 void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
@@ -77,7 +69,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
     float worldRadius = 3.0 * scale;
 
-    float dist = GetGlobalSDF(brickCenterWorld);
+    // Use the pipeline to check intersection with the brick bounds
+    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld);
+    float dist = centerCtx.sdf;
+
     if (dist < worldRadius)
     {
         uint brickPtr;
@@ -95,10 +90,19 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             
                     float3 voxelPosLocal = brickOriginLocal + float3(x, y, z);
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
-                    float sdf = GetGlobalSDF(voxelPosWorld);
+                    
+                    // Run pipeline for each voxel
+                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld);
+                    float sdf = voxelCtx.sdf;
+
                     uint idx = _BrickOffset + brickPtr + (z*16 + y*4 + x);
                     _BrickBuffer[idx] = sdf / scale; 
-                    _BrickMaterialBuffer[idx] = 1;
+                    
+                    // Default to the material found at this voxel, or 1 if somehow 0 was returned but sdf < 0
+                    uint mat = voxelCtx.material;
+                    if (mat == 0) mat = 1; 
+                    _BrickMaterialBuffer[idx] = mat;
+
                     // Accumulate Color for solid voxels
                     if (sdf < 0) 
                     {
@@ -106,7 +110,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                         float3 col = float3(1.0, 1.0, 1.0); 
                         accumulatedColor += float4(col, 1.0);
                         voxelCount += 1.0;
-                        detectedMaterial = 1; // Capture material
+                        detectedMaterial = mat; // Capture material (last one wins, or we could use majority vote)
                     }
                 }
             }
