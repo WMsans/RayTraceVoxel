@@ -16,13 +16,13 @@ MonoBehaviour:
   voxelName: IceGround
   renderType: 1
   blockTextures:
-    Albedo: {fileID: 2800000, guid: 8e3972ad0a0dce34e9c1a44d3b4ff5a7, type: 3}
-    Normal: {fileID: 2800000, guid: 6149208393558c84e85a91227c42bfdb, type: 3}
-    Roughness: {fileID: 2800000, guid: e8ac9f0e62bfd444184ea9c55f2d9b99, type: 3}
+    Albedo: {fileID: 2800000, guid: 44e9eb55c82bcbc4ab17a2e8e039e8e7, type: 3}
+    Normal: {fileID: 2800000, guid: 8107d941dc71c6343963d1a0b6c43149, type: 3}
+    Roughness: {fileID: 2800000, guid: 2c71f0245e40eca4594a0e4b96236c75, type: 3}
     Metallic: 0
-    AmbientOcclusion: {fileID: 2800000, guid: c928b6d2f01a5f546b2c3b834fd9b612, type: 3}
-    TopAlbedo: {fileID: 2800000, guid: 7432fc2c4d2403f419efacfc0b4ccc28, type: 3}
-    TopNormal: {fileID: 2800000, guid: 1ff8d2ad322d6624390db374784ff949, type: 3}
-    TopRoughness: {fileID: 2800000, guid: 083fd0d745cce2f4bbec60b581bf56b5, type: 3}
+    AmbientOcclusion: {fileID: 2800000, guid: 88554e8928a8a4d488f88a64dbd019d4, type: 3}
+    TopAlbedo: {fileID: 2800000, guid: 5acbfcaf97503054f840b971403f909c, type: 3}
+    TopNormal: {fileID: 2800000, guid: f96ae6a9b719dac4197dc8b51b92c714, type: 3}
+    TopRoughness: {fileID: 2800000, guid: 1d474c18c3c237b48a163944547961da, type: 3}
     TopMetallic: 0
-    TopAmbientOcclusion: {fileID: 2800000, guid: 825cdcd71232deb4883a897692a86c9c, type: 3}
+    TopAmbientOcclusion: {fileID: 2800000, guid: d4632dbfb2078d4448a292e2c050a460, type: 3}

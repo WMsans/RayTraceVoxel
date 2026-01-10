@@ -31,6 +31,7 @@ namespace VoxelEngine.Core.Data
         {
             get
             {
+                // Initialize if buffer is missing but data exists
                 if (_voxelMaterialBuffer == null && _packedGpuData != null && _packedGpuData.Count > 0)
                 {
                     Initialize();
@@ -60,6 +61,7 @@ namespace VoxelEngine.Core.Data
             if (_voxelMaterialBuffer != null) _voxelMaterialBuffer.Release();
 
             // --- Upload Buffer ---
+            // Ensure the buffer is allocated for the full count of the packed data
             _voxelMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, _packedGpuData.Count, Marshal.SizeOf<VoxelTypeGPU>());
             _voxelMaterialBuffer.SetData(_packedGpuData);
 
@@ -75,7 +77,10 @@ namespace VoxelEngine.Core.Data
             albedoTextureArray = albedo;
             normalTextureArray = normal;
             maskTextureArray = mask;
+
+            // FIX: Force re-initialization of the buffer so the new definitions are uploaded to the GPU immediately.
+            // This ensures the buffer expands to fit the new gpuData count.
+            Initialize();
         }
     }
 }
-

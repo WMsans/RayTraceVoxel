@@ -118,33 +118,43 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
     
     VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
     
-    // Simple triplanar weights
+    // 1. Sharpen weights to reduce bleeding
     float3 weights = abs(normal);
+    weights = pow(weights, 8.0); // Higher power = sharper transitions
     weights /= (weights.x + weights.y + weights.z);
+
+    // 2. Determine if we are looking at Top or Bottom
+    // If normal points down, use Side texture (or separate Bottom texture) instead of Top
+    uint yAlbedoID = (normal.y > 0) ? mat.topAlbedoIndex : mat.sideAlbedoIndex;
+    uint yMaskID = (normal.y > 0) ? mat.topMaskIndex : mat.sideMaskIndex;
+    float yMetallic = (normal.y > 0) ? mat.topMetallic : mat.sideMetallic;
 
     // Sample Textures
     float2 uvX = worldPos.zy;
     float2 uvY = worldPos.xz;
     float2 uvZ = worldPos.xy;
-
+    
     // Albedo
     float3 colX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), lod).rgb;
-    float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topAlbedoIndex), lod).rgb;
+    float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yAlbedoID), lod).rgb;
     float3 colZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), lod).rgb;
     outAlbedo = colX * weights.x + colY * weights.y + colZ * weights.z;
-
+    
     // Mask (G=AO, A=Smoothness) 
     float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), lod);
-    float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, mat.topMaskIndex), lod);
+    float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yMaskID), lod);
     float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), lod);
     float4 mask = maskX * weights.x + maskY * weights.y + maskZ * weights.z;
     
     outAO = mask.g;
-    outRoughness = mask.b; // Smoothness to Roughness
+    outRoughness = mask.b;
+    // Smoothness to Roughness
 
-    // Metallic (Blended from Voxel Definitions)
-    // weights.y corresponds to the Top face
-    outMetallic = lerp(mat.sideMetallic, mat.topMetallic, weights.y);
+    // Metallic
+    float metallicX = mat.sideMetallic;
+    float metallicY = yMetallic;
+    float metallicZ = mat.sideMetallic;
+    outMetallic = metallicX * weights.x + metallicY * weights.y + metallicZ * weights.z;
 
     // Normals (Pass through geometry normal for now)
     outNormal = normal; 
