@@ -188,6 +188,9 @@ finalColor += float3(1.0, 0.9, 0.7) * sunMask * 2.0;
 
 float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic, float ao) 
 {
+    // Safety clamp to prevent singularities
+    roughness = max(roughness, 0.05);
+
     float3 H = normalize(V + L);
 float NdotL = max(dot(N, L), 0.0);
     
@@ -209,10 +212,10 @@ float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001;
 kD *= 1.0 - metallic;	  
 
     // 5. Combine (Ambient + Direct)
-    float3 direct = (kD * albedo / PI + specular) * lightColor * NdotL;
+    float3 direct = (kD * albedo / PI + specular) * lightColor * NdotL * 3;
 // IBL / Ambient
     float3 envColor = GetSkyColor(reflect(-V, N));
-float3 ambient = envColor * albedo * ao * 0.3;
+float3 ambient = envColor * albedo * ao * 0.5;
 // Basic ambient scale
 
     // Fake Rim

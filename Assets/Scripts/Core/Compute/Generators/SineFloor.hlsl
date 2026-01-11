@@ -22,7 +22,7 @@ void Stage_SineFloor(inout GenerationContext ctx)
     {
         ctx.sdf = d;
         ctx.gradient = floorGrad;
-        ctx.material = 1; // Assign generic floor material ID
+        ctx.material = 4; // Assign generic floor material ID
     }
 }
 
