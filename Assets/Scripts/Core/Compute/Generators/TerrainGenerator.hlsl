@@ -44,7 +44,7 @@ float3 noised(float2 x)
 // Rotation matrix (0.8, 0.6, -0.6, 0.8) matching the GLSL reference
 static const float2x2 m2 = float2x2(0.8, 0.6, -0.6, 0.8);
 
-float terrainM(float2 x)
+float3 terrainM(float2 x)
 {
     float2 p = x * 0.003 / SC;
     float a = 0.0;
@@ -61,22 +61,29 @@ float terrainM(float2 x)
         p = mul(m2, p) * 2.0;
     }
     
-    return SC * 120.0 * a;
+    return float3(SC * 120.0 * a, d);
 }
 
 void Stage_Terrain(inout GenerationContext ctx)
 {
     // Height calculation
-    float height = terrainM(ctx.position.xz);
+    float3 h_data = terrainM(ctx.position.xz);
+    float height = h_data.x;
+    float2 d_deriv = h_data.yz;
     
     // Vertical Signed Distance (Positive = Air, Negative = Ground)
     // Multiplier 0.5 helps avoid raymarching artifacts on steep slopes
     float d = (ctx.position.y - height) * 0.5;
     
+    // Calculate Gradient from the derivative
+    // Logic: Normal N = normalize(-H'x, 1, -H'z)
+    float3 terrainGrad = normalize(float3(-d_deriv.x, 1.0, -d_deriv.y));
+
     // Union with existing SDF
     if (d < ctx.sdf)
     {
         ctx.sdf = d;
+        ctx.gradient = terrainGrad;
         ctx.material = 2; // Terrain Material
     }
 }
