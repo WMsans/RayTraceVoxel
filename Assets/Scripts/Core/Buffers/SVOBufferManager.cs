@@ -15,6 +15,7 @@ namespace VoxelEngine.Core.Buffers
         public GraphicsBuffer PayloadBuffer { get; private set; }
         public GraphicsBuffer BrickBuffer { get; private set; }
         public GraphicsBuffer BrickMaterialBuffer { get; private set; }
+        public GraphicsBuffer BrickNormalBuffer { get; private set; } 
         
         // Local Counter Buffer (Still per-chunk for generation safety)
         public GraphicsBuffer CounterBuffer { get; private set; }
@@ -27,7 +28,7 @@ namespace VoxelEngine.Core.Buffers
         public SVOBufferManager(
             GraphicsBuffer nodes, int nodeOffset,
             GraphicsBuffer payloads, int payloadOffset,
-            GraphicsBuffer bricks, GraphicsBuffer materials, int brickOffset)
+            GraphicsBuffer bricks, GraphicsBuffer materials, GraphicsBuffer normals, int brickOffset) 
         {
             NodeBuffer = nodes;
             NodeOffset = nodeOffset;
@@ -37,6 +38,7 @@ namespace VoxelEngine.Core.Buffers
             
             BrickBuffer = bricks;
             BrickMaterialBuffer = materials;
+            BrickNormalBuffer = normals; 
             BrickOffset = brickOffset;
 
             // Allocate a small local counter for generation logic

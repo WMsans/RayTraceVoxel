@@ -78,6 +78,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
             private static readonly int _GlobalBrickBufferParams = Shader.PropertyToID("_GlobalBrickBuffer");
             private static readonly int _GlobalBrickMaterialBufferParams = Shader.PropertyToID("_GlobalBrickMaterialBuffer");
+            private static readonly int _GlobalBrickNormalBufferParams = Shader.PropertyToID("_GlobalBrickNormalBuffer"); //
             private static readonly int _ChunkBufferParams = Shader.PropertyToID("_ChunkBuffer");
             private static readonly int _ChunkCountParams = Shader.PropertyToID("_ChunkCount");
             private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
@@ -112,8 +113,7 @@ namespace VoxelEngine.Core.Rendering
                     VoxelRaytracerFeature.RaycastHitBuffer.Release();
                     VoxelRaytracerFeature.RaycastHitBuffer = null;
                 }
-            }
-
+            }            
             private void CheckTextureHandle(ref RTHandle handle, Texture texture)
             {
                 if (texture == null) return;
@@ -138,6 +138,7 @@ namespace VoxelEngine.Core.Rendering
                 public GraphicsBuffer payloadBuffer;
                 public GraphicsBuffer brickBuffer;
                 public GraphicsBuffer brickMaterialBuffer;
+                public GraphicsBuffer brickNormalBuffer; //
                 public GraphicsBuffer chunkBuffer;
                 public int chunkCount;
                 public GraphicsBuffer materialBuffer;
@@ -151,12 +152,9 @@ namespace VoxelEngine.Core.Rendering
             {
                 if (VoxelVolumePool.Instance == null) return;
 
-                // --- IMPROVED CULLING LOGIC ---
                 var cameraData = frameData.Get<UniversalCameraData>();
                 
-                // 1. Get all 6 planes: [0]Left, [1]Right, [2]Down, [3]Up, [4]Near, [5]Far
                 Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
-                
                 Plane[] cullingPlanes;
 
                 if (_settings.useCameraFarPlane)
@@ -165,8 +163,6 @@ namespace VoxelEngine.Core.Rendering
                 }
                 else
                 {
-                    // 2. Create array of 5 planes, EXCLUDING the Far Plane (Index 5)
-                    // This creates an infinite frustum cone.
                     cullingPlanes = new Plane[5];
                     for (int i = 0; i < 5; i++)
                     {
@@ -174,13 +170,10 @@ namespace VoxelEngine.Core.Rendering
                     }
                 }
 
-                // 3. Update the pool with these infinite planes
                 VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes);
 
-                // 4. Abort if nothing is visible
                 if (VoxelVolumePool.Instance.VisibleChunkCount == 0) return;
 
-                // --- Standard Setup Continues ---
                 var resourceData = frameData.Get<UniversalResourceData>();
                 var lightData = frameData.Get<UniversalLightData>();
                 var cameraDesc = cameraData.cameraTargetDescriptor;
@@ -222,9 +215,9 @@ namespace VoxelEngine.Core.Rendering
                     data.payloadBuffer = pool.GlobalPayloadBuffer;
                     data.brickBuffer = pool.GlobalBrickBuffer;
                     data.brickMaterialBuffer = pool.GlobalBrickMaterialBuffer;
+                    data.brickNormalBuffer = pool.GlobalBrickNormalBuffer; //
                     data.chunkBuffer = pool.ChunkBuffer;
                     
-                    // Pass the Culled Count
                     data.chunkCount = pool.VisibleChunkCount;
 
                     data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
@@ -260,8 +253,9 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeBufferParam(cs, ker, _GlobalPayloadBufferParams, pd.payloadBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickBufferParams, pd.brickBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickMaterialBufferParams, pd.brickMaterialBuffer);
+                        cmd.SetComputeBufferParam(cs, ker, _GlobalBrickNormalBufferParams, pd.brickNormalBuffer); //
                         cmd.SetComputeBufferParam(cs, ker, _ChunkBufferParams, pd.chunkBuffer);
-                        cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount); // Culled count
+                        cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount); 
                         cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
                         
                         if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, _VoxelMaterialBufferParams, pd.materialBuffer);
@@ -284,7 +278,7 @@ namespace VoxelEngine.Core.Rendering
                         cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);
                     });
                 }
-
+                
                 using (var builder = renderGraph.AddRasterRenderPass<BlitPassData>("Composite Voxels", out var blitData))
                 {
                     blitData.source = tempResult;

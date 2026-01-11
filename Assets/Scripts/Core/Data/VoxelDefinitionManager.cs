@@ -21,7 +21,7 @@ namespace VoxelEngine.Core.Data
         [Header("GPU Data")]
         public Texture2DArray albedoTextureArray;
         public Texture2DArray normalTextureArray;
-        public Texture2DArray maskTextureArray; // Packed: G=AO, A=Smoothness
+        public Texture2DArray maskTextureArray;
 
         [SerializeField, HideInInspector]
         private List<VoxelTypeGPU> _packedGpuData = new List<VoxelTypeGPU>();

@@ -12,13 +12,18 @@ void Stage_Spheres(inout GenerationContext ctx)
     float3 center = float3(60, 60, 60);
     
     // 1. Calculate the sphere distance as usual
-    float d = length(local - center) - 30.0;
+    float3 diff = local - center;
+    float d = length(diff) - 30.0;
     
-    // 2. Define the material and blend radius
+    // 2. Calculate Gradient (Normal) for the sphere
+    float3 sphereGradient = normalize(diff);
+
+    // 3. Define the material and blend radius
     uint sphereMat = 3; // Example: Purple material
     float blendRadius = 15.0; // LARGE value = smooth blend, SMALL value = sharp blend
 
-    UnionSmooth(ctx, d, sphereMat, blendRadius);
+    // Pass the gradient to UnionSmooth
+    UnionSmooth(ctx, d, sphereGradient, sphereMat, blendRadius);
 }
 
 #endif
