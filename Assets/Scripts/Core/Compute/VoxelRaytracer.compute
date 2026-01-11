@@ -168,20 +168,13 @@ float3 FresnelSchlick(float cosTheta, float3 F0)
 
 float3 GetSkyColor(float3 rayDir)
 {
-    float3 skyUp = float3(0.1, 0.3, 0.6);
-// Deep blue
-    float3 skyHorizon = float3(0.6, 0.7, 0.8);
-// White-ish blue
-    float3 ground = float3(0.05, 0.04, 0.04);
-// Dark ground
+    float3 skyUp = float3(0.1, 0.3, 0.6); // Deep blue
+    float3 skyHorizon = float3(0.6, 0.7, 0.8); // White-ish blue
+    float3 ground = float3(0.05, 0.04, 0.04); // Dark ground
     
     float y = rayDir.y;
-float3 sky = lerp(skyHorizon, skyUp, pow(max(y, 0.0), 0.5));
+    float3 sky = lerp(skyHorizon, skyUp, pow(max(y, 0.0), 0.5));
     float3 finalColor = lerp(ground, sky, smoothstep(-0.1, 0.1, y));
-// Sun
-    float3 sunDir = normalize(float3(0.2, 0.8, 0.4));
-    float sunMask = pow(max(dot(rayDir, sunDir), 0.0), 200.0);
-finalColor += float3(1.0, 0.9, 0.7) * sunMask * 2.0;
     
     return finalColor;
 }
