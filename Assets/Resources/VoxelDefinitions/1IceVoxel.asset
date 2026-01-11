@@ -18,11 +18,11 @@ MonoBehaviour:
   blockTextures:
     Albedo: {fileID: 2800000, guid: 7432fc2c4d2403f419efacfc0b4ccc28, type: 3}
     Normal: {fileID: 2800000, guid: 1ff8d2ad322d6624390db374784ff949, type: 3}
-    Smoothness: {fileID: 2800000, guid: 3fbe44cc939174d3c9df48e4587a6f81, type: 3}
+    Roughness: {fileID: 2800000, guid: 083fd0d745cce2f4bbec60b581bf56b5, type: 3}
     Metallic: 0
     AmbientOcclusion: {fileID: 2800000, guid: 825cdcd71232deb4883a897692a86c9c, type: 3}
     TopAlbedo: {fileID: 2800000, guid: 7432fc2c4d2403f419efacfc0b4ccc28, type: 3}
     TopNormal: {fileID: 2800000, guid: 1ff8d2ad322d6624390db374784ff949, type: 3}
-    TopSmoothness: {fileID: 2800000, guid: 3fbe44cc939174d3c9df48e4587a6f81, type: 3}
+    TopRoughness: {fileID: 2800000, guid: 083fd0d745cce2f4bbec60b581bf56b5, type: 3}
     TopMetallic: 0
     TopAmbientOcclusion: {fileID: 2800000, guid: 825cdcd71232deb4883a897692a86c9c, type: 3}

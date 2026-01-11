@@ -1,96 +1,121 @@
 #pragma kernel InitDenseStructure
 #pragma kernel BuildBricks
+#pragma kernel PropagateLOD 
 
 #include "./Includes/VoxelStructures.hlsl"
+#include "./GeneratorPipeline.hlsl"
 
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer; 
-RWStructuredBuffer<uint> _BrickMaterialBuffer; // NEW
-RWStructuredBuffer<uint> _CounterBuffer; 
-
+RWStructuredBuffer<uint> _BrickMaterialBuffer; 
+RWStructuredBuffer<uint> _BrickNormalBuffer;
+RWStructuredBuffer<uint> _CounterBuffer;
 uint _GridSize;
+float3 _ChunkWorldOrigin;
+float _ChunkWorldSize;
+uint _NodeOffset;
+uint _PayloadOffset;
+uint _BrickOffset;
 
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
 {
-    // FIX: Set the Node Count (4681 for depth 4) so the Serializer knows how many nodes to save.
-    if (id == 0)
-    {
-        _CounterBuffer[0] = 4681;
-    }
-
+    if (id == 0) _CounterBuffer[0] = 4681;
     if (id >= 4681) return;
- SVONode node;
+    
+    SVONode node;
     node.payloadIndex = 0;
     node.topology = 0;
+    node.lodColor = 0;
+    node.lodMaterial = 0;
 
     uint level = 0;
     uint indexInLevel = id;
- if (id >= 585) { level = 4; indexInLevel = id - 585;
- }
-    else if (id >= 73) { level = 3; indexInLevel = id - 73;
- }
-    else if (id >= 9) { level = 2; indexInLevel = id - 9;
- }
-    else if (id >= 1) { level = 1; indexInLevel = id - 1;
- }
+    if (id >= 585) { level = 4; indexInLevel = id - 585; }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
     
     if (level < 4)
     {
         uint nextLevelOffset = 0;
- if (level == 0) nextLevelOffset = 1;
+        if (level == 0) nextLevelOffset = 1;
         if (level == 1) nextLevelOffset = 9;
- if (level == 2) nextLevelOffset = 73;
+        if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
- uint childPtr = nextLevelOffset + (indexInLevel * 8);
+        uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
- }
-    
-    _NodeBuffer[id] = node;
- }
-
-// --- SIMPLIFIED SDF ---
-float GetSDF(float3 pos)
-{
-    float sizeF = (float)_GridSize;
-    float3 center = float3(sizeF * 0.5, sizeF * 0.5, sizeF * 0.5);
-    return length(pos - center) - (sizeF * 0.4);
+    }
+    _NodeBuffer[_NodeOffset + id] = node;
 }
 
-[numthreads(8, 8, 8)]
+[numthreads(4, 4, 4)]
 void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
     uint bricksAxis = _GridSize / BRICK_SIZE;
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
 
-    float3 brickOrigin = id * BRICK_SIZE;
-    float3 brickCenter = brickOrigin + (float)BRICK_SIZE * 0.5;
+    float3 brickOriginLocal = id * BRICK_SIZE;
+    float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
+    float scale = _ChunkWorldSize / (float)_GridSize;
+    float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
+    float worldRadius = 3.0 * scale; 
     
-    float activeThreshold = (float)BRICK_SIZE * 1.5;
-    float dist = GetSDF(brickCenter);
+    // Check intersection
+    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld);
+    float dist = centerCtx.sdf;
 
-    if (dist < activeThreshold)
+    if (dist < worldRadius)
     {
         uint brickPtr;
-        // Allocate space (same index used for both Float and Material buffers)
-        InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
+        // Allocate 216 voxels (6*6*6)
+        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
+        
+        float4 accumulatedColor = 0;
+        float voxelCount = 0;
+        uint detectedMaterial = 0;
 
-        for (uint z = 0; z < BRICK_SIZE; z++)
+        // UPDATED LOOP: Iterate over storage size (6x6x6)
+        // Map storage index [0..5] to spatial offset [-1..4]
+        for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
         {
-            for (uint y = 0; y < BRICK_SIZE; y++)
+            for (uint y = 0; y < BRICK_STORAGE_SIZE; y++)
             {
-                for (uint x = 0; x < BRICK_SIZE; x++)
+                for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
                 {
-                    float3 voxelPos = brickOrigin + float3(x, y, z);
-                    float sdf = GetSDF(voxelPos);
-                    uint idx = brickPtr + (z*16 + y*4 + x);
+                    // Calculate spatial offset relative to brick origin
+                    int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+                    float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
+                    float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
-                    _BrickBuffer[idx] = sdf;
+                    // Run pipeline
+                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld);
+                    float sdf = voxelCtx.sdf;
+
+                    // Calculate 1D index in the 6x6x6 block
+                    uint idx = _BrickOffset + brickPtr + (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x);
                     
-                    // NEW: Set per-voxel material
-                    // Default to 1 (Solid) or procedural logic
-                    _BrickMaterialBuffer[idx] = 1; 
+                    _BrickBuffer[idx] = sdf / scale; 
+                    _BrickNormalBuffer[idx] = PackNormal(voxelCtx.gradient);
+
+                    uint mat = voxelCtx.material;
+                    if (mat == 0) mat = 1; 
+                    _BrickMaterialBuffer[idx] = mat;
+
+                    // Only accumulate color/material for the INNER 4x4x4 part
+                    if (x >= BRICK_PADDING && x < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        y >= BRICK_PADDING && y < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        z >= BRICK_PADDING && z < BRICK_STORAGE_SIZE - BRICK_PADDING)
+                    {
+                        if (sdf < 0) 
+                        {
+                            float3 col = float3(1.0, 1.0, 1.0); 
+                            accumulatedColor += float4(col, 1.0);
+                            voxelCount += 1.0;
+                            detectedMaterial = mat;
+                        }
+                    }
                 }
             }
         }
@@ -101,18 +126,78 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
         VoxelPayload payload;
         payload.brickDataIndex = brickPtr;
-        // No materialId here
-        
-        _PayloadBuffer[payloadIndex] = payload;
-        
+        _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
+
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[nodeIndex].payloadIndex = payloadIndex;
-        _NodeBuffer[nodeIndex].topology = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = payloadIndex;
+        _NodeBuffer[_NodeOffset + nodeIndex].topology = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = detectedMaterial;
+
+        if (voxelCount > 0)
+        {
+            float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
+            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
+        }
+        else
+        {
+            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        }
     }
     else
     {
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[nodeIndex].payloadIndex = 0;
-        _NodeBuffer[nodeIndex].topology = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].topology = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = 0;
+    }
+}
+
+// --- Mipmapping Kernel ---
+uint _TargetLevelOffset;
+uint _TargetLevelCount;
+
+[numthreads(64, 1, 1)]
+void PropagateLOD(uint id : SV_DispatchThreadID)
+{
+    if (id >= _TargetLevelCount) return;
+    uint nodeIndex = _TargetLevelOffset + id;
+    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+
+    if (node.topology == 0)
+    {
+        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        return;
+    }
+
+    uint childBasePtr = node.topology & 0xFFFFFF; 
+    float4 acc = 0;
+    float count = 0;
+    uint maxMaterial = 0;
+
+    for (int i = 0; i < 8; i++)
+    {
+        SVONode child = _NodeBuffer[_NodeOffset + childBasePtr + i];
+        float4 c = UnpackColor(child.lodColor);
+        if (c.a > 0.0) 
+        {
+            acc.rgb += c.rgb;
+            acc.a += c.a;
+            count += 1.0;
+            if (child.lodMaterial != 0) maxMaterial = child.lodMaterial;
+        }
+    }
+
+    if (count > 0.0)
+    {
+        float3 avgColor = acc.rgb / count;
+        float nodeDensity = acc.a / 8.0;
+        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(avgColor, nodeDensity));
+        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = maxMaterial;
+    }
+    else
+    {
+         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+         _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = 0;
     }
 }

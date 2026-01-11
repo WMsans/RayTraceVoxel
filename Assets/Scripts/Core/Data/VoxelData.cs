@@ -8,11 +8,17 @@ namespace VoxelEngine.Core.Data
     {
         public uint topology; 
         public uint payloadIndex;
+        public uint lodColor;
+        public uint lodMaterial;
         
-        public const int BRICK_SIZE = 4;
-        public const int BRICK_VOXEL_COUNT = 64;
+        // --- Updated Constants ---
+        public const int BRICK_SIZE = 4;        // Logical size (World space coverage relative to scale)
+        public const int BRICK_PADDING = 1;     // Padding on each side
+        public const int BRICK_STORAGE_SIZE = 6; // 4 + 1 + 1
+        public const int BRICK_VOXEL_COUNT = 216; // 6 * 6 * 6
     }
 
+    // ... [Rest of VoxelData.cs remains unchanged]
     [StructLayout(LayoutKind.Sequential)]
     public struct VoxelPayload
     {
