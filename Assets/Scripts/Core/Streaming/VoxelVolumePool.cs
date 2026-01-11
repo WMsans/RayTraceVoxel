@@ -33,6 +33,7 @@ namespace VoxelEngine.Core.Streaming
         public GraphicsBuffer GlobalPayloadBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickMaterialBuffer { get; private set; }
+        public GraphicsBuffer GlobalBrickNormalBuffer { get; private set; } //
         
         public GraphicsBuffer ChunkBuffer { get; private set; }
         private ChunkDef[] _chunkData;
@@ -64,6 +65,7 @@ namespace VoxelEngine.Core.Streaming
             
             GlobalBrickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(float));
             GlobalBrickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
+            GlobalBrickNormalBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint)); //
 
             _chunkData = new ChunkDef[poolSize];
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
@@ -167,6 +169,7 @@ namespace VoxelEngine.Core.Streaming
             GlobalPayloadBuffer?.Release();
             GlobalBrickBuffer?.Release();
             GlobalBrickMaterialBuffer?.Release();
+            GlobalBrickNormalBuffer?.Release(); //
             ChunkBuffer?.Release();
         }
     }

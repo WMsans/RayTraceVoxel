@@ -8,6 +8,7 @@ namespace VoxelEngine.Core.Interfaces
         GraphicsBuffer PayloadBuffer { get; }
         GraphicsBuffer BrickBuffer { get; }
         GraphicsBuffer BrickMaterialBuffer { get; }
+        GraphicsBuffer BrickNormalBuffer { get; }
         GraphicsBuffer CounterBuffer { get; }
         
         int Resolution { get; }

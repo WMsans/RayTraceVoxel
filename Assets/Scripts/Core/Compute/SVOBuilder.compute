@@ -9,8 +9,8 @@ RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer; 
 RWStructuredBuffer<uint> _BrickMaterialBuffer; 
-RWStructuredBuffer<uint> _CounterBuffer; 
-
+RWStructuredBuffer<uint> _BrickNormalBuffer; //
+RWStructuredBuffer<uint> _CounterBuffer;
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
@@ -68,7 +68,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
     float worldRadius = 3.0 * scale;
-
     // Use the pipeline to check intersection with the brick bounds
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld);
     float dist = centerCtx.sdf;
@@ -98,11 +97,13 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     uint idx = _BrickOffset + brickPtr + (z*16 + y*4 + x);
                     _BrickBuffer[idx] = sdf / scale; 
                     
+                    // Store Normal
+                    _BrickNormalBuffer[idx] = PackNormal(voxelCtx.gradient); //
+
                     // Default to the material found at this voxel, or 1 if somehow 0 was returned but sdf < 0
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1; 
                     _BrickMaterialBuffer[idx] = mat;
-
                     // Accumulate Color for solid voxels
                     if (sdf < 0) 
                     {

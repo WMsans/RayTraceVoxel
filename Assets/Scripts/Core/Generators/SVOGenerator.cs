@@ -23,6 +23,7 @@ namespace VoxelEngine.Core.Generators
             shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
             shader.SetBuffer(kernelBuild, "_BrickBuffer", buffers.BrickBuffer);
             shader.SetBuffer(kernelBuild, "_BrickMaterialBuffer", buffers.BrickMaterialBuffer);
+            shader.SetBuffer(kernelBuild, "_BrickNormalBuffer", buffers.BrickNormalBuffer); //
             shader.SetBuffer(kernelBuild, "_CounterBuffer", buffers.CounterBuffer);
             
             shader.SetInt("_NodeOffset", buffers.NodeOffset);

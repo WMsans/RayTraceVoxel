@@ -29,6 +29,7 @@ namespace VoxelEngine.Core
         public GraphicsBuffer PayloadBuffer => BufferManager?.PayloadBuffer;
         public GraphicsBuffer BrickBuffer => BufferManager?.BrickBuffer;
         public GraphicsBuffer BrickMaterialBuffer => BufferManager?.BrickMaterialBuffer;
+        public GraphicsBuffer BrickNormalBuffer => BufferManager?.BrickNormalBuffer; //
         public GraphicsBuffer CounterBuffer => BufferManager?.CounterBuffer;
         
         public int Resolution => resolution;
@@ -44,7 +45,7 @@ namespace VoxelEngine.Core
             BufferManager = new SVOBufferManager(
                 pool.GlobalNodeBuffer, nodeOffset,
                 pool.GlobalPayloadBuffer, payloadOffset,
-                pool.GlobalBrickBuffer, pool.GlobalBrickMaterialBuffer, brickOffset
+                pool.GlobalBrickBuffer, pool.GlobalBrickMaterialBuffer, pool.GlobalBrickNormalBuffer, brickOffset //
             );
         }
 
