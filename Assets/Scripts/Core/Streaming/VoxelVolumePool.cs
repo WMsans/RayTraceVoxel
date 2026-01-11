@@ -19,13 +19,9 @@ namespace VoxelEngine.Core.Streaming
     public class VoxelVolumePool : MonoBehaviour
     {
         public static VoxelVolumePool Instance { get; private set; }
-
-        [Header("Pool Settings")]
         public VoxelVolume prefab;
         public int poolSize = 100;
         public Transform poolContainer;
-
-        [Header("Global Memory Settings")]
         public int maxNodesPerVolume = 50000; 
         public int maxBricksPerVolume = 25000; 
 
@@ -33,15 +29,11 @@ namespace VoxelEngine.Core.Streaming
         public GraphicsBuffer GlobalPayloadBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickMaterialBuffer { get; private set; }
-        public GraphicsBuffer GlobalBrickNormalBuffer { get; private set; } //
-        
+        public GraphicsBuffer GlobalBrickNormalBuffer { get; private set; }
         public GraphicsBuffer ChunkBuffer { get; private set; }
         private ChunkDef[] _chunkData;
-
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
-        
-        // This is what we pass to the GPU now
         public int VisibleChunkCount { get; private set; }
 
         private void Awake()
@@ -56,16 +48,18 @@ namespace VoxelEngine.Core.Streaming
         {
             int totalNodes = poolSize * maxNodesPerVolume;
             int totalBricks = poolSize * maxBricksPerVolume; 
-            int totalBrickVoxels = totalBricks * 64;
+            
+            // UPDATED: Use constant from SVONode
+            int totalBrickVoxels = totalBricks * SVONode.BRICK_VOXEL_COUNT;
 
-            Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes, {totalBricks/1000}k Bricks.");
+            Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes, {totalBricks/1000}k Bricks ({totalBrickVoxels/1000000}M voxels).");
 
             GlobalNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<SVONode>());
             GlobalPayloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<VoxelPayload>());
             
             GlobalBrickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(float));
             GlobalBrickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
-            GlobalBrickNormalBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint)); //
+            GlobalBrickNormalBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
 
             _chunkData = new ChunkDef[poolSize];
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
@@ -82,7 +76,10 @@ namespace VoxelEngine.Core.Streaming
                 vol.gameObject.name = $"Volume_Pool_{i}";
                 int nodeOffset = i * maxNodesPerVolume;
                 int payloadOffset = i * maxNodesPerVolume;
-                int brickOffset = i * maxBricksPerVolume * 64;
+                
+                // UPDATED: Calculate offset using new voxel count
+                int brickOffset = i * maxBricksPerVolume * SVONode.BRICK_VOXEL_COUNT;
+                
                 vol.AssignMemorySlice(this, nodeOffset, payloadOffset, brickOffset, maxNodesPerVolume, maxBricksPerVolume);
                 vol.gameObject.SetActive(false);
                 _pool.Enqueue(vol);
@@ -98,8 +95,6 @@ namespace VoxelEngine.Core.Streaming
             vol.transform.localScale = Vector3.one * scale;
             vol.OnPullFromPool(position, size);
             _activeVolumes.Add(vol);
-            
-            // Initial update (will be overwritten by per-frame culling)
             UpdateChunkBuffer(null);
             return vol;
         }
@@ -124,20 +119,12 @@ namespace VoxelEngine.Core.Streaming
         private void UpdateChunkBuffer(Plane[] cullingPlanes)
         {
             int writeIndex = 0;
-            
             for (int i = 0; i < _activeVolumes.Count; i++)
             {
                 var vol = _activeVolumes[i];
-
-                // --- Frustum Culling ---
                 if (cullingPlanes != null)
                 {
-                    // Check if AABB is within frustum
-                    // If we passed 5 planes, the Far plane is ignored, preventing pop-in
-                    if (!GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds))
-                    {
-                        continue; 
-                    }
+                    if (!GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds)) continue; 
                 }
 
                 ChunkDef def = new ChunkDef();
@@ -150,14 +137,8 @@ namespace VoxelEngine.Core.Streaming
                 _chunkData[writeIndex] = def;
                 writeIndex++;
             }
-
             VisibleChunkCount = writeIndex;
-            
-            if (poolSize > 0)
-            {
-                // Upload only the visible data to the GPU (or all if buffer is fixed size, but we only iterate up to VisibleChunkCount in shader)
-                ChunkBuffer.SetData(_chunkData);
-            }
+            if (poolSize > 0) ChunkBuffer.SetData(_chunkData);
         }
 
         public int ActiveChunkCount => _activeVolumes.Count;
@@ -169,7 +150,7 @@ namespace VoxelEngine.Core.Streaming
             GlobalPayloadBuffer?.Release();
             GlobalBrickBuffer?.Release();
             GlobalBrickMaterialBuffer?.Release();
-            GlobalBrickNormalBuffer?.Release(); //
+            GlobalBrickNormalBuffer?.Release();
             ChunkBuffer?.Release();
         }
     }

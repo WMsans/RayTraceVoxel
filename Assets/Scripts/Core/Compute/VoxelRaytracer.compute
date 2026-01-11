@@ -14,7 +14,6 @@ StructuredBuffer<uint> _GlobalBrickNormalBuffer; //
 StructuredBuffer<ChunkDef> _ChunkBuffer;
 int _ChunkCount;
 
-// ... (Textures & Params unchanged) ...
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
 Texture2D<float> _CameraDepthTexture; SamplerState sampler_CameraDepthTexture;
 Texture2DArray _AlbedoTextureArray;
@@ -41,7 +40,6 @@ float _DebugViewBricks;
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
 
-// ... (Utility Functions, IntersectBox, GetLODNormal, SampleBrick unchanged) ...
 float remap(float value, float min1, float max1, float min2, float max2) {
     return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
 }
@@ -79,87 +77,87 @@ return float3(0, 0, signP.z);
 // Brick Sampling with Global Offset
 float SampleBrick(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    float3 p = localPos;
-int3 i = clamp((int3)floor(p), 0, 2);
-    float3 f = p - (float3)i;
-uint baseIdx = brickOffset + brickPtr + i.z * 16 + i.y * 4 + i.x;
+    // localPos is 0..4 relative to the node
+    // Memory layout is -1..5 (size 6)
+    // Shift coordinate to memory space
+    float3 p = localPos + (float)BRICK_PADDING;
     
+    // Clamp to safe interpolation range:
+    // We need indices i and i+1. Max index is STORAGE_SIZE-1.
+    // So i must be <= STORAGE_SIZE - 2.
+    int3 i = clamp((int3)floor(p), 0, BRICK_STORAGE_SIZE - 2);
+    
+    float3 f = p - (float3)i;
+    
+    // Calculate 1D index. Stride is based on BRICK_STORAGE_SIZE (6)
+    uint baseIdx = brickOffset + brickPtr + 
+                   (i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
+                   (i.y * BRICK_STORAGE_SIZE) + 
+                   i.x;
+    
+    // Fetch 8 neighbors
     float c000 = _GlobalBrickBuffer[baseIdx];
-float c001 = _GlobalBrickBuffer[baseIdx + 1];
-    float c010 = _GlobalBrickBuffer[baseIdx + 4];
-    float c011 = _GlobalBrickBuffer[baseIdx + 5];
-float c100 = _GlobalBrickBuffer[baseIdx + 16];
-    float c101 = _GlobalBrickBuffer[baseIdx + 17];
-    float c110 = _GlobalBrickBuffer[baseIdx + 20];
-float c111 = _GlobalBrickBuffer[baseIdx + 21];
+    float c001 = _GlobalBrickBuffer[baseIdx + 1];
+    float c010 = _GlobalBrickBuffer[baseIdx + BRICK_STORAGE_SIZE];
+    float c011 = _GlobalBrickBuffer[baseIdx + BRICK_STORAGE_SIZE + 1];
+    
+    uint sliceStride = BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE;
+    float c100 = _GlobalBrickBuffer[baseIdx + sliceStride];
+    float c101 = _GlobalBrickBuffer[baseIdx + sliceStride + 1];
+    float c110 = _GlobalBrickBuffer[baseIdx + sliceStride + BRICK_STORAGE_SIZE];
+    float c111 = _GlobalBrickBuffer[baseIdx + sliceStride + BRICK_STORAGE_SIZE + 1];
     
     return lerp(lerp(lerp(c000, c001, f.x), lerp(c010, c011, f.x), f.y), lerp(lerp(c100, c101, f.x), lerp(c110, c111, f.x), f.y), f.z);
 }
 
-// Replaces the Point Sampling version
 float3 GetVoxelNormal(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    // 1. Offset by 0.5 to align with voxel centers (data is at 0.5, 1.5, etc.)
-    float3 p = localPos - 0.5;
+    // Normal storage is usually cell-centered or same grid. 
+    // Assuming same grid for simplicity:
+    float3 p = localPos + (float)BRICK_PADDING - 0.5; // -0.5 centering if using cell centers, but sticking to node corners:
     
-    // 2. Clamp p to the valid interpolation range [0, 3]
-    // This prevents 'f' from exceeding 1.0 or dropping below 0.0,
-    // which stops the math from extrapolating into wild/invalid values.
-    p = clamp(p, 0.0, 3.0);
-
-    // 3. Calculate index and fraction
-    // We use min(..., 2) to ensure we never look for index 4 (i+1)
-    int3 i = min((int3)floor(p), int3(2, 2, 2));
+    // Actually, SDF gradients are usually computed at the same nodes as SDF values.
+    p = localPos + (float)BRICK_PADDING;
+    
+    int3 i = clamp((int3)floor(p), 0, BRICK_STORAGE_SIZE - 2);
     float3 f = p - (float3)i;
 
-    // 4. Helper to fetch and unpack a specific voxel index
     uint baseIdx = brickOffset + brickPtr;
+    uint sliceStride = BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE;
+    uint rowStride = BRICK_STORAGE_SIZE;
+    
+    // Calculate offsets manually
+    uint idx000 = (i.z * sliceStride + i.y * rowStride + i.x);
+    
+    // Sample 8
+    float3 v000 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000]);
+    float3 v001 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + 1]);
+    float3 v010 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + rowStride]);
+    float3 v011 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + rowStride + 1]);
+    
+    float3 v100 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride]);
+    float3 v101 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride + 1]);
+    float3 v110 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride + rowStride]);
+    float3 v111 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride + rowStride + 1]);
 
-    // Sample 8 neighbors
-    uint n000 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + i.y * 4 + i.x)];
-    uint n001 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + i.y * 4 + i.x + 1)];
-    uint n010 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + (i.y + 1) * 4 + i.x)];
-    uint n011 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + (i.y + 1) * 4 + i.x + 1)];
-    uint n100 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + i.y * 4 + i.x)];
-    uint n101 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + i.y * 4 + i.x + 1)];
-    uint n110 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + (i.y + 1) * 4 + i.x)];
-    uint n111 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + (i.y + 1) * 4 + i.x + 1)];
-
-    // 5. Unpack all to float3
-    float3 v000 = UnpackNormal(n000);
-    float3 v001 = UnpackNormal(n001);
-    float3 v010 = UnpackNormal(n010);
-    float3 v011 = UnpackNormal(n011);
-    float3 v100 = UnpackNormal(n100);
-    float3 v101 = UnpackNormal(n101);
-    float3 v110 = UnpackNormal(n110);
-    float3 v111 = UnpackNormal(n111);
-
-    // 6. Trilinear Interpolation
     float3 mixX00 = lerp(v000, v001, f.x);
     float3 mixX01 = lerp(v010, v011, f.x);
     float3 mixX10 = lerp(v100, v101, f.x);
     float3 mixX11 = lerp(v110, v111, f.x);
-
     float3 mixY0 = lerp(mixX00, mixX01, f.y);
     float3 mixY1 = lerp(mixX10, mixX11, f.y);
 
-    float3 finalNormal = lerp(mixY0, mixY1, f.z);
-
-    // 7. Safety check: avoid normalizing zero vectors which create NaNs
-    // if (dot(finalNormal, finalNormal) < 1e-6) return float3(0, 1, 0);
-
-    return normalize(finalNormal);
+    return normalize(lerp(mixY0, mixY1, f.z));
 }
 
 uint GetVoxelMaterial(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    uint3 i = clamp((uint3)floor(localPos + 0.5), 0, 3);
-uint idx = brickOffset + brickPtr + i.z * 16 + i.y * 4 + i.x;
+    // Nearest neighbor
+    float3 p = localPos + (float)BRICK_PADDING;
+    uint3 i = clamp((uint3)floor(p + 0.5), 0, BRICK_STORAGE_SIZE - 1);
+    uint idx = brickOffset + brickPtr + i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + i.y * BRICK_STORAGE_SIZE + i.x;
     return _GlobalBrickMaterialBuffer[idx];
 }
-
-// ... (GetRandomColor, DistributionGGX, GeometrySchlickGGX, GeometrySmith, FresnelSchlick, GetSkyColor, LightingPBR, TriplanarSampling unchanged) ...
 
 float3 GetRandomColor(uint seed)
 {
@@ -492,12 +490,9 @@ tMarch += step;
     return result;
 }
 
-// ... (CSMain and rest of shader unchanged) ...
 [numthreads(8, 8, 1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
-    // ...
-    // (Content omitted for brevity as it remains logically identical, just using the new TraceSVO)
     uint width, height; _Result.GetDimensions(width, height);
 if (id.x >= width || id.y >= height) return;
 
@@ -523,7 +518,6 @@ bool anyHit = false;
         ChunkDef chunk = _ChunkBuffer[i];
 // Intersect Chunk Bounds (World Space)
         float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
-// If ray hits chunk and the hit is closer than our current best...
         if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > 0)
         {
             float tStart = max(0.0, tBox.x);

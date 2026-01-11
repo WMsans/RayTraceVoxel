@@ -9,13 +9,11 @@ RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<float> _BrickBuffer; 
 RWStructuredBuffer<uint> _BrickMaterialBuffer; 
-RWStructuredBuffer<uint> _BrickNormalBuffer; //
+RWStructuredBuffer<uint> _BrickNormalBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
-
-// --- Global Offsets ---
 uint _NodeOffset;
 uint _PayloadOffset;
 uint _BrickOffset;
@@ -30,18 +28,14 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     node.payloadIndex = 0;
     node.topology = 0;
     node.lodColor = 0;
-    node.lodMaterial = 0; // Init lodMaterial
+    node.lodMaterial = 0;
 
     uint level = 0;
     uint indexInLevel = id;
-    if (id >= 585) { level = 4; indexInLevel = id - 585;
-    }
-    else if (id >= 73) { level = 3; indexInLevel = id - 73;
-    }
-    else if (id >= 9) { level = 2; indexInLevel = id - 9;
-    }
-    else if (id >= 1) { level = 1; indexInLevel = id - 1;
-    }
+    if (id >= 585) { level = 4; indexInLevel = id - 585; }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
     
     if (level < 4)
     {
@@ -53,7 +47,6 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
-    
     _NodeBuffer[_NodeOffset + id] = node;
 }
 
@@ -67,51 +60,61 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
-    float worldRadius = 3.0 * scale;
-    // Use the pipeline to check intersection with the brick bounds
+    float worldRadius = 3.0 * scale; 
+    
+    // Check intersection
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld);
     float dist = centerCtx.sdf;
 
     if (dist < worldRadius)
     {
         uint brickPtr;
-        InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
-        float4 accumulatedColor = 0; // Accumulator
+        // Allocate 216 voxels (6*6*6)
+        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
+        
+        float4 accumulatedColor = 0;
         float voxelCount = 0;
         uint detectedMaterial = 0;
 
-        for (uint z = 0; z < BRICK_SIZE; z++)
+        // UPDATED LOOP: Iterate over storage size (6x6x6)
+        // Map storage index [0..5] to spatial offset [-1..4]
+        for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
         {
-            for (uint y = 0; y < BRICK_SIZE; y++)
+            for (uint y = 0; y < BRICK_STORAGE_SIZE; y++)
             {
-                for (uint x = 0; x < BRICK_SIZE; x++)
+                for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
                 {
-            
-                    float3 voxelPosLocal = brickOriginLocal + float3(x, y, z);
+                    // Calculate spatial offset relative to brick origin
+                    int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+                    float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
-                    // Run pipeline for each voxel
+                    // Run pipeline
                     GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld);
                     float sdf = voxelCtx.sdf;
 
-                    uint idx = _BrickOffset + brickPtr + (z*16 + y*4 + x);
-                    _BrickBuffer[idx] = sdf / scale; 
+                    // Calculate 1D index in the 6x6x6 block
+                    uint idx = _BrickOffset + brickPtr + (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x);
                     
-                    // Store Normal
-                    _BrickNormalBuffer[idx] = PackNormal(voxelCtx.gradient); //
+                    _BrickBuffer[idx] = sdf / scale; 
+                    _BrickNormalBuffer[idx] = PackNormal(voxelCtx.gradient);
 
-                    // Default to the material found at this voxel, or 1 if somehow 0 was returned but sdf < 0
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1; 
                     _BrickMaterialBuffer[idx] = mat;
-                    // Accumulate Color for solid voxels
-                    if (sdf < 0) 
+
+                    // Only accumulate color/material for the INNER 4x4x4 part
+                    if (x >= BRICK_PADDING && x < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        y >= BRICK_PADDING && y < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        z >= BRICK_PADDING && z < BRICK_STORAGE_SIZE - BRICK_PADDING)
                     {
-                        // Using white instead.
-                        float3 col = float3(1.0, 1.0, 1.0); 
-                        accumulatedColor += float4(col, 1.0);
-                        voxelCount += 1.0;
-                        detectedMaterial = mat; // Capture material (last one wins, or we could use majority vote)
+                        if (sdf < 0) 
+                        {
+                            float3 col = float3(1.0, 1.0, 1.0); 
+                            accumulatedColor += float4(col, 1.0);
+                            voxelCount += 1.0;
+                            detectedMaterial = mat;
+                        }
                     }
                 }
             }
@@ -124,15 +127,15 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         VoxelPayload payload;
         payload.brickDataIndex = brickPtr;
         _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
+
         uint nodeIndex = GetNodeIndex(4, id);
         _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = payloadIndex;
         _NodeBuffer[_NodeOffset + nodeIndex].topology = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = detectedMaterial; // Store LOD material
+        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = detectedMaterial;
 
-        // Store Average Color in Leaf
         if (voxelCount > 0)
         {
-            float density = voxelCount / 64.0;
+            float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
             _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
         }
         else
@@ -168,35 +171,27 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     }
 
     uint childBasePtr = node.topology & 0xFFFFFF; 
-
     float4 acc = 0;
     float count = 0;
     uint maxMaterial = 0;
 
-    // Iterate 8 children
     for (int i = 0; i < 8; i++)
     {
         SVONode child = _NodeBuffer[_NodeOffset + childBasePtr + i];
         float4 c = UnpackColor(child.lodColor);
-        
         if (c.a > 0.0) 
         {
-            acc.rgb += c.rgb; // Accumulate Color
-            acc.a += c.a;     // Accumulate Density
-            count += 1.0;     // Track active children for Color Averaging
+            acc.rgb += c.rgb;
+            acc.a += c.a;
+            count += 1.0;
             if (child.lodMaterial != 0) maxMaterial = child.lodMaterial;
         }
     }
 
     if (count > 0.0)
     {
-        // Color is average of ACTIVE children
         float3 avgColor = acc.rgb / count;
-        
-        // Alpha is average density of THE WHOLE NODE (8 octants)
-        // This ensures sparse nodes get a very low alpha
-        float nodeDensity = acc.a / 8.0; 
-
+        float nodeDensity = acc.a / 8.0;
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(avgColor, nodeDensity));
         _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = maxMaterial;
     }
