@@ -96,19 +96,60 @@ float c111 = _GlobalBrickBuffer[baseIdx + 21];
     return lerp(lerp(lerp(c000, c001, f.x), lerp(c010, c011, f.x), f.y), lerp(lerp(c100, c101, f.x), lerp(c110, c111, f.x), f.y), f.z);
 }
 
-// --- REPLACED CalculateNormal with GetVoxelNormal (Reads from buffer) ---
+// Replaces the Point Sampling version
 float3 GetVoxelNormal(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    // Use Nearest Neighbor for normal (or trilinear if we unpacked 8 and lerped, but NN is standard for packed normals)
-    // To enable smooth normals, trilinear interpolation of the UNPACKED vectors is best.
+    // 1. Offset by 0.5 to align with voxel centers (data is at 0.5, 1.5, etc.)
+    float3 p = localPos - 0.5;
     
-    float3 p = localPos;
-    int3 i = clamp((int3)floor(p), 0, 3); // Range 0-3 for voxels
-    uint idx = brickOffset + brickPtr + i.z * 16 + i.y * 4 + i.x;
-    
-    // Sample nearest stored normal
-    uint packed = _GlobalBrickNormalBuffer[idx];
-    return UnpackNormal(packed);
+    // 2. Clamp p to the valid interpolation range [0, 3]
+    // This prevents 'f' from exceeding 1.0 or dropping below 0.0,
+    // which stops the math from extrapolating into wild/invalid values.
+    p = clamp(p, 0.0, 3.0);
+
+    // 3. Calculate index and fraction
+    // We use min(..., 2) to ensure we never look for index 4 (i+1)
+    int3 i = min((int3)floor(p), int3(2, 2, 2));
+    float3 f = p - (float3)i;
+
+    // 4. Helper to fetch and unpack a specific voxel index
+    uint baseIdx = brickOffset + brickPtr;
+
+    // Sample 8 neighbors
+    uint n000 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + i.y * 4 + i.x)];
+    uint n001 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + i.y * 4 + i.x + 1)];
+    uint n010 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + (i.y + 1) * 4 + i.x)];
+    uint n011 = _GlobalBrickNormalBuffer[baseIdx + (i.z * 16 + (i.y + 1) * 4 + i.x + 1)];
+    uint n100 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + i.y * 4 + i.x)];
+    uint n101 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + i.y * 4 + i.x + 1)];
+    uint n110 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + (i.y + 1) * 4 + i.x)];
+    uint n111 = _GlobalBrickNormalBuffer[baseIdx + ((i.z + 1) * 16 + (i.y + 1) * 4 + i.x + 1)];
+
+    // 5. Unpack all to float3
+    float3 v000 = UnpackNormal(n000);
+    float3 v001 = UnpackNormal(n001);
+    float3 v010 = UnpackNormal(n010);
+    float3 v011 = UnpackNormal(n011);
+    float3 v100 = UnpackNormal(n100);
+    float3 v101 = UnpackNormal(n101);
+    float3 v110 = UnpackNormal(n110);
+    float3 v111 = UnpackNormal(n111);
+
+    // 6. Trilinear Interpolation
+    float3 mixX00 = lerp(v000, v001, f.x);
+    float3 mixX01 = lerp(v010, v011, f.x);
+    float3 mixX10 = lerp(v100, v101, f.x);
+    float3 mixX11 = lerp(v110, v111, f.x);
+
+    float3 mixY0 = lerp(mixX00, mixX01, f.y);
+    float3 mixY1 = lerp(mixX10, mixX11, f.y);
+
+    float3 finalNormal = lerp(mixY0, mixY1, f.z);
+
+    // 7. Safety check: avoid normalizing zero vectors which create NaNs
+    // if (dot(finalNormal, finalNormal) < 1e-6) return float3(0, 1, 0);
+
+    return normalize(finalNormal);
 }
 
 uint GetVoxelMaterial(uint brickOffset, uint brickPtr, float3 localPos)

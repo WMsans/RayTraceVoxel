@@ -17,8 +17,8 @@ GenerationContext RunGeneratorPipeline(float3 worldPos)
     // --- Pipeline Execution ---
     // You can reorder these, add conditions, or use ctx.customData to pass info between them.
     
-    Stage_SineFloor(ctx);
-    // Stage_Terrain(ctx);
+    // Stage_SineFloor(ctx);
+    Stage_Terrain(ctx);
     // Stage_Spheres(ctx);
     
     return ctx;
