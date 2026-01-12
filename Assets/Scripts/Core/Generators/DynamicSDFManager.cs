@@ -1,4 +1,9 @@
-using System; using System.Collections.Generic; using UnityEngine; using VoxelEngine.Core.Data; using System.Runtime.InteropServices;
+using System; 
+using System.Collections.Generic; 
+using UnityEngine; 
+using VoxelEngine.Core.Data; 
+using System.Runtime.InteropServices;
+
 namespace VoxelEngine.Core.Generators
 {
     public class DynamicSDFManager : MonoSingleton<DynamicSDFManager>
@@ -8,9 +13,13 @@ namespace VoxelEngine.Core.Generators
         public float globalBoundsMargin = 100.0f; 
         public bool rebuildEveryFrame = true; 
         public bool drawDebugGizmos = false;
+        
         // --- Data ---
-        // The raw list of objects
         private List<SDFObject> _objects = new List<SDFObject>();
+        
+        // Phase 4: Dirty Region Tracking
+        // Stores World Space bounds that need invalidation
+        private List<Bounds> _dirtyRegions = new List<Bounds>();
         
         // Helper struct for sorting
         private struct MortonEntry : IComparable<MortonEntry>
@@ -44,19 +53,62 @@ namespace VoxelEngine.Core.Generators
         public void RegisterObject(SDFObject obj)
         {
             _objects.Add(obj);
+            
+            // Mark the new object's region as dirty
+            AddDirtyRegion(obj);
+            
+            RebuildBVH();
         }
 
         public void ClearObjects()
         {
+            // Mark all existing object regions as dirty before removing them
+            // (So the chunks they vacate can clear themselves)
+            foreach (var obj in _objects)
+            {
+                AddDirtyRegion(obj);
+            }
+            
             _objects.Clear();
+            if (ObjectCount == 0) ReleaseBuffers();
         }
 
         public void UpdateObject(int index, SDFObject obj)
         {
             if (index >= 0 && index < _objects.Count)
             {
+                // 1. Mark OLD region as dirty (to clear the artifact at previous position)
+                AddDirtyRegion(_objects[index]);
+                
+                // 2. Update Data
                 _objects[index] = obj;
+                
+                // 3. Mark NEW region as dirty (to draw at new position)
+                AddDirtyRegion(obj);
             }
+        }
+
+        /// <summary>
+        /// Retrieves the list of dirty regions accumulated this frame and clears the internal list.
+        /// </summary>
+        public List<Bounds> GetAndClearDirtyRegions()
+        {
+            if (_dirtyRegions.Count == 0) return null;
+
+            var list = new List<Bounds>(_dirtyRegions);
+            _dirtyRegions.Clear();
+            return list;
+        }
+
+        private void AddDirtyRegion(SDFObject obj)
+        {
+            Vector3 center = (obj.boundsMin + obj.boundsMax) * 0.5f;
+            Vector3 size = obj.boundsMax - obj.boundsMin;
+            
+            // Add a small padding to ensure we catch boundary voxels
+            size += Vector3.one * 2.0f; 
+            
+            _dirtyRegions.Add(new Bounds(center, size));
         }
 
         private void OnDisable()
@@ -74,10 +126,6 @@ namespace VoxelEngine.Core.Generators
 
         /// <summary>
         /// Rebuilds the Linear BVH from scratch.
-        /// 1. Calculate Bounds & Morton Codes
-        /// 2. Sort by Morton Code
-        /// 3. Build Hierarchy (Linear construction)
-        /// 4. Upload to GPU
         /// </summary>
         public void RebuildBVH()
         {
@@ -91,13 +139,11 @@ namespace VoxelEngine.Core.Generators
             if (_sortedObjectIndices == null || _sortedObjectIndices.Length < numObjects)
                 _sortedObjectIndices = new int[numObjects];
 
-            // Internal nodes = N - 1. Total nodes = 2*N - 1. 
-            // We'll allocate enough space.
             int maxNodes = numObjects * 2; 
             if (_bvhNodes == null || _bvhNodes.Length < maxNodes)
                 _bvhNodes = new LBVHNode[maxNodes];
 
-            // 2. Calculate Global Bounds (to normalize Morton codes)
+            // 2. Calculate Global Bounds
             Vector3 globalMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
             Vector3 globalMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
 
@@ -109,11 +155,9 @@ namespace VoxelEngine.Core.Generators
                 globalMax = Vector3.Max(globalMax, bMax);
             }
             
-            // Add margin to avoid edge cases
             globalMin -= Vector3.one * globalBoundsMargin;
             globalMax += Vector3.one * globalBoundsMargin;
             Vector3 range = globalMax - globalMin;
-            // Prevent division by zero
             range.x = Mathf.Max(range.x, 0.001f);
             range.y = Mathf.Max(range.y, 0.001f);
             range.z = Mathf.Max(range.z, 0.001f);
@@ -121,17 +165,13 @@ namespace VoxelEngine.Core.Generators
             // 3. Compute Morton Codes
             for (int i = 0; i < numObjects; i++)
             {
-                // Calculate centroid
                 Vector3 center = (_objects[i].boundsMin + _objects[i].boundsMax) * 0.5f;
-                
-                // Normalize to [0, 1]
                 Vector3 n = new Vector3(
                     (center.x - globalMin.x) / range.x,
                     (center.y - globalMin.y) / range.y,
                     (center.z - globalMin.z) / range.z
                 );
                 
-                // Quantize to 10 bits [0, 1023]
                 uint x = (uint)Mathf.Clamp(n.x * 1023.0f, 0, 1023);
                 uint y = (uint)Mathf.Clamp(n.y * 1023.0f, 0, 1023);
                 uint z = (uint)Mathf.Clamp(n.z * 1023.0f, 0, 1023);
@@ -143,11 +183,9 @@ namespace VoxelEngine.Core.Generators
                 };
             }
 
-            // 4. Sort (Linearizes the objects along the Z-curve)
-            // Note: For < 10k objects, Array.Sort is extremely fast on CPU.
+            // 4. Sort
             Array.Sort(_mortonKeys, 0, numObjects);
 
-            // Fill the indirection array
             for(int i=0; i<numObjects; i++)
             {
                 _sortedObjectIndices[i] = _mortonKeys[i].originalIndex;
@@ -161,7 +199,6 @@ namespace VoxelEngine.Core.Generators
             UpdateBuffers(numObjects);
         }
 
-        // Expands a 10-bit integer into 30 bits by inserting 2 zeros after each bit.
         private uint ExpandBits(uint v)
         {
             v = (v * 0x00010001u) & 0xFF0000FFu;
@@ -173,19 +210,14 @@ namespace VoxelEngine.Core.Generators
 
         private int GenerateHierarchy(int first, int last)
         {
-            // Allocate new node
             int nodeIdx = _nodeCount++;
             var node = new LBVHNode();
 
-            // Leaf Case
             if (first == last)
             {
-                // Bitwise NOT to indicate leaf and store index
-                // We point to the index in the sorted list (0..N-1), which the shader then uses to look up _ObjectIndices
                 node.leftChild = ~first; 
-                node.rightChild = -1; // Unused
+                node.rightChild = -1; 
                 
-                // Set bounds from the actual object
                 int objIdx = _sortedObjectIndices[first];
                 node.boundsMin = _objects[objIdx].boundsMin;
                 node.boundsMax = _objects[objIdx].boundsMax;
@@ -194,16 +226,13 @@ namespace VoxelEngine.Core.Generators
                 return nodeIdx;
             }
 
-            // Internal Node Case: Find Split
             int split = FindSplit(first, last);
-
             int childA = GenerateHierarchy(first, split);
             int childB = GenerateHierarchy(split + 1, last);
 
             node.leftChild = childA;
             node.rightChild = childB;
 
-            // Compute AABB union
             Vector3 minA = _bvhNodes[childA].boundsMin;
             Vector3 maxA = _bvhNodes[childA].boundsMax;
             Vector3 minB = _bvhNodes[childB].boundsMin;
@@ -216,26 +245,15 @@ namespace VoxelEngine.Core.Generators
             return nodeIdx;
         }
 
-        /// <summary>
-        /// Finds the split index that partitions the range [first, last] based on the highest differing bit in Morton codes.
-        /// </summary>
         private int FindSplit(int first, int last)
         {
             uint firstCode = _mortonKeys[first].code;
             uint lastCode = _mortonKeys[last].code;
 
-            // If codes are identical, split in the middle
-            if (firstCode == lastCode)
-            {
-                return (first + last) >> 1;
-            }
+            if (firstCode == lastCode) return (first + last) >> 1;
 
-            // Calculate the highest differing bit between the first and last keys
-            // This effectively finds the "plane" separating the volume
             int commonPrefix = CountLeadingZeros(firstCode ^ lastCode);
-
-            // Use binary search to find where the next bit changes
-            int split = first; // Initial guess
+            int split = first; 
             int step = last - first;
 
             while (step > 1)
@@ -247,21 +265,14 @@ namespace VoxelEngine.Core.Generators
                 {
                     uint splitCode = _mortonKeys[newSplit].code;
                     int splitPrefix = CountLeadingZeros(firstCode ^ splitCode);
-                    
-                    // If the prefix matches the common prefix of the range, it belongs to the left side
-                    if (splitPrefix > commonPrefix)
-                    {
-                        split = newSplit;
-                    }
+                    if (splitPrefix > commonPrefix) split = newSplit;
                 }
             }
-
             return split;
         }
 
         private int CountLeadingZeros(uint x)
         {
-            // Generic C# implementation for CLZ
             if (x == 0) return 32;
             int n = 0;
             if (x <= 0x0000FFFF) { n += 16; x <<= 16; }
@@ -274,7 +285,6 @@ namespace VoxelEngine.Core.Generators
 
         private void UpdateBuffers(int numObjects)
         {
-            // 1. Objects Buffer
             if (SDFObjectBuffer == null || SDFObjectBuffer.count < numObjects)
             {
                 SDFObjectBuffer?.Release();
@@ -282,7 +292,6 @@ namespace VoxelEngine.Core.Generators
             }
             SDFObjectBuffer.SetData(_objects);
 
-            // 2. Indices Buffer (Sorted)
             if (ObjectIndexBuffer == null || ObjectIndexBuffer.count < numObjects)
             {
                 ObjectIndexBuffer?.Release();
@@ -290,7 +299,6 @@ namespace VoxelEngine.Core.Generators
             }
             ObjectIndexBuffer.SetData(_sortedObjectIndices, 0, 0, numObjects);
 
-            // 3. BVH Nodes Buffer
             if (LBVHNodeBuffer == null || LBVHNodeBuffer.count < _nodeCount)
             {
                 LBVHNodeBuffer?.Release();
@@ -308,29 +316,39 @@ namespace VoxelEngine.Core.Generators
         
         private void OnDrawGizmos()
         {
-            if (!drawDebugGizmos || _nodeCount == 0 || _bvhNodes == null) return;
-            
-            // Draw Root
-            Gizmos.color = Color.cyan;
-            DrawNodeRecursive(0, 0);
+            if (drawDebugGizmos)
+            {
+                // Draw Bounds of Objects
+                Gizmos.color = Color.yellow;
+                foreach (var obj in _objects)
+                {
+                    Vector3 center = (obj.boundsMin + obj.boundsMax) * 0.5f;
+                    Vector3 size = obj.boundsMax - obj.boundsMin;
+                    Gizmos.DrawWireCube(center, size);
+                }
+
+                if (_nodeCount > 0 && _bvhNodes != null)
+                {
+                    Gizmos.color = Color.cyan;
+                    DrawNodeRecursive(0, 0);
+                }
+            }
         }
 
         private void DrawNodeRecursive(int nodeIdx, int depth)
         {
             if (nodeIdx < 0 || nodeIdx >= _nodeCount) return;
             var node = _bvhNodes[nodeIdx];
-            
             Vector3 size = node.boundsMax - node.boundsMin;
             Vector3 center = node.boundsMin + size * 0.5f;
-            
             Gizmos.DrawWireCube(center, size);
-
-            if (node.leftChild >= 0) // Internal Node
+            if (node.leftChild >= 0)
             {
                 DrawNodeRecursive(node.leftChild, depth + 1);
                 DrawNodeRecursive(node.rightChild, depth + 1);
             }
         }
+        
         public SDFObject GetObject(int index)
         {
             if (index >= 0 && index < _objects.Count) return _objects[index];

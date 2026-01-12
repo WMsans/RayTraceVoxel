@@ -1,4 +1,6 @@
 using UnityEngine;
+using System.Collections.Generic;
+using VoxelEngine.Core.Generators; // For DynamicSDFManager
 
 namespace VoxelEngine.Core.Streaming
 {
@@ -38,10 +40,56 @@ namespace VoxelEngine.Core.Streaming
 
         private void Update()
         {
-            if (viewer == null) return;
+            if (viewer != null)
+            {
+                // Run the LOD Logic
+                UpdateNodeLOD(_rootNode, viewer.position);
+            }
+
+            // Phase 4: Process Cache Invalidation
+            ProcessDirtyRegions();
+        }
+
+        /// <summary>
+        /// Phase 4: Checks for dirty SDF regions and regenerates affected VoxelVolumes.
+        /// </summary>
+        private void ProcessDirtyRegions()
+        {
+            if (DynamicSDFManager.Instance == null) return;
+
+            // 1. Get dirty regions (this clears the list in the manager)
+            List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
+            if (dirtyRegions == null || dirtyRegions.Count == 0) return;
+
+            // 2. Get all currently active volumes
+            var activeVolumes = VoxelVolumeRegistry.Volumes;
             
-            // Run the LOD Logic
-            UpdateNodeLOD(_rootNode, viewer.position);
+            // Optimization: Use a HashSet to avoid regenerating the same volume twice if it overlaps multiple dirty regions
+            HashSet<VoxelVolume> volumesToUpdate = new HashSet<VoxelVolume>();
+
+            // 3. Find Intersections
+            for (int i = 0; i < dirtyRegions.Count; i++)
+            {
+                Bounds dirty = dirtyRegions[i];
+                
+                // Brute-force check against active chunks (usually fast enough for <100 chunks)
+                for (int v = 0; v < activeVolumes.Count; v++)
+                {
+                    VoxelVolume vol = activeVolumes[v];
+                    if (!vol.gameObject.activeInHierarchy) continue;
+
+                    if (vol.WorldBounds.Intersects(dirty))
+                    {
+                        volumesToUpdate.Add(vol);
+                    }
+                }
+            }
+
+            // 4. Trigger Regeneration
+            foreach (var vol in volumesToUpdate)
+            {
+                vol.Regenerate();
+            }
         }
 
         /// <summary>

@@ -56,7 +56,7 @@ namespace VoxelEngine.Core
 
             BufferManager.ResetCounters();
             this.gameObject.SetActive(true);
-            Generate();
+            Regenerate();
         }
 
         public void OnReturnToPool()
@@ -64,9 +64,10 @@ namespace VoxelEngine.Core
             this.gameObject.SetActive(false);
         }
 
-        private void Generate()
+        // Renamed from Generate to Regenerate and made public for Phase 4 Update Loop
+        public void Regenerate()
         {
-            if (svoCompute == null) return;
+            if (svoCompute == null || !IsReady) return;
             SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize);
         }
 
