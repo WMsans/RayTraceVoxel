@@ -10,6 +10,11 @@ public class DynamicSDFTest : MonoBehaviour
     public float rotationSpeed = 1.0f;
     public float heightOffset = 0.0f; 
 
+    [Header("Object Settings")]
+    [Tooltip("Sets the scale of the SDF objects. Scale 20 = Radius ~10.")]
+    public float sphereScale = 20.0f; 
+    public float cubeScale = 20.0f;
+
     private void Start()
     {
         if (DynamicSDFManager.Instance == null) return;
@@ -17,36 +22,36 @@ public class DynamicSDFTest : MonoBehaviour
         DynamicSDFManager.Instance.ClearObjects();
 
         // 1. Register a Sphere (Union)
-        float sphereBoundsSize = 20.0f;
+        // Calculate bounds based on scale (Radius = Scale * 0.5) plus some padding
+        float sphereBoundRadius = (sphereScale * 0.5f) + 4.0f;
         Vector3 spherePos = new Vector3(orbitRadius, heightOffset, 0);
         
         SDFObject sphere = new SDFObject
         {
             position = spherePos,
             rotation = Quaternion.identity,
-            scale = Vector3.one * 1.5f,
-            // Fix: Initialize valid bounds so initial SVO generation sees it!
-            boundsMin = spherePos - Vector3.one * sphereBoundsSize,
-            boundsMax = spherePos + Vector3.one * sphereBoundsSize,
+            // Fix: Scale must be large enough to be visible on the terrain
+            scale = Vector3.one * sphereScale, 
+            boundsMin = spherePos - Vector3.one * sphereBoundRadius,
+            boundsMax = spherePos + Vector3.one * sphereBoundRadius,
             type = 0, // Sphere
             operation = 0, // Union
-            blendFactor = 8.0f, 
+            blendFactor = 5.0f, 
             materialId = 3 
         };
         DynamicSDFManager.Instance.RegisterObject(sphere);
 
         // 2. Register a Cube (Subtraction)
-        float cubeBoundsSize = 25.0f;
+        float cubeBoundRadius = (cubeScale * 0.5f) + 4.0f;
         Vector3 cubePos = new Vector3(-orbitRadius, heightOffset, 0);
 
         SDFObject cube = new SDFObject
         {
             position = cubePos,
             rotation = Quaternion.identity,
-            scale = Vector3.one,
-            // Fix: Initialize valid bounds
-            boundsMin = cubePos - Vector3.one * cubeBoundsSize,
-            boundsMax = cubePos + Vector3.one * cubeBoundsSize,
+            scale = Vector3.one * cubeScale,
+            boundsMin = cubePos - Vector3.one * cubeBoundRadius,
+            boundsMax = cubePos + Vector3.one * cubeBoundRadius,
             type = 1, // Cube
             operation = 1, // Subtract
             blendFactor = 3.0f,
@@ -69,10 +74,11 @@ public class DynamicSDFTest : MonoBehaviour
         float sy = heightOffset + Mathf.Sin(t * 2.5f) * 10.0f; 
 
         sphere.position = new Vector3(sx, sy, sz);
+        sphere.scale = Vector3.one * sphereScale; // Update scale live
         
-        float sphereBoundsSize = 20.0f; 
-        sphere.boundsMin = sphere.position - Vector3.one * sphereBoundsSize;
-        sphere.boundsMax = sphere.position + Vector3.one * sphereBoundsSize;
+        float sphereBoundRadius = (sphereScale * 0.5f) + 4.0f;
+        sphere.boundsMin = sphere.position - Vector3.one * sphereBoundRadius;
+        sphere.boundsMax = sphere.position + Vector3.one * sphereBoundRadius;
         
         DynamicSDFManager.Instance.UpdateObject(0, sphere);
 
@@ -84,10 +90,11 @@ public class DynamicSDFTest : MonoBehaviour
         
         cube.position = new Vector3(cx, heightOffset, cz);
         cube.rotation = Quaternion.Euler(t * 50f, t * 30f, 0f);
-        
-        float cubeBoundsSize = 25.0f; 
-        cube.boundsMin = cube.position - Vector3.one * cubeBoundsSize;
-        cube.boundsMax = cube.position + Vector3.one * cubeBoundsSize;
+        cube.scale = Vector3.one * cubeScale;
+
+        float cubeBoundRadius = (cubeScale * 0.5f) + 4.0f;
+        cube.boundsMin = cube.position - Vector3.one * cubeBoundRadius;
+        cube.boundsMax = cube.position + Vector3.one * cubeBoundRadius;
         
         DynamicSDFManager.Instance.UpdateObject(1, cube);
     }
