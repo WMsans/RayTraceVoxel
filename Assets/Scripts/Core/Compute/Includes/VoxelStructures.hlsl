@@ -10,16 +10,15 @@
 // Structs
 struct SVONode 
 { 
-    uint topology; 
+    uint topology;
     uint payloadIndex;
     uint lodColor; 
     uint lodMaterial; 
 };
 
-// ... [Rest of VoxelStructures.hlsl remains unchanged]
 struct VoxelPayload 
 { 
-    uint brickDataIndex; 
+    uint brickDataIndex;
 };
 
 struct VoxelTypeGPU
@@ -32,7 +31,7 @@ struct VoxelTypeGPU
     uint topNormalIndex; 
     uint topMaskIndex;
     
-    float sideMetallic; 
+    float sideMetallic;
     float topMetallic; 
     
     uint renderType;
@@ -54,6 +53,32 @@ struct ChunkDef
     uint payloadOffset;
     uint brickOffset;
     float3 padding; 
+};
+
+// --- Dynamic SDF Structures ---
+struct SDFObject
+{
+    float3 position;
+    float pad0;
+    
+    float4 rotation;
+    
+    float3 scale;
+    float pad1;
+    
+    float3 boundsMin;
+    float pad2;
+    
+    float3 boundsMax;
+    float pad3;
+    
+    int type;      // 0=Sphere, 1=Cube, 2=Mesh
+    int operation; // 0=Union, 1=Subtract, 2=Intersect, 3=Smooth
+    float blendFactor;
+    int materialId;
+    
+    int textureIndex;
+    float3 padding;
 };
 
 // Helper Functions

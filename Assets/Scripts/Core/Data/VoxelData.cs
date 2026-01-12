@@ -3,6 +3,9 @@ using System.Runtime.InteropServices;
 
 namespace VoxelEngine.Core.Data
 {
+    public enum SDFObjectType { Sphere = 0, Cube = 1, Mesh = 2 }
+    public enum SDFOperation { Union = 0, Subtract = 1, Intersect = 2, SmoothUnion = 3 }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct SVONode
     {
@@ -18,7 +21,6 @@ namespace VoxelEngine.Core.Data
         public const int BRICK_VOXEL_COUNT = 216; // 6 * 6 * 6
     }
 
-    // ... [Rest of VoxelData.cs remains unchanged]
     [StructLayout(LayoutKind.Sequential)]
     public struct VoxelPayload
     {
@@ -49,5 +51,36 @@ namespace VoxelEngine.Core.Data
         public Vector4 position;
         public Vector4 color;
         public Vector4 attenuation;
+    }
+
+    /// <summary>
+    /// Represents a dynamic SDF object in the scene.
+    /// Aligned to 16 bytes for HLSL StructuredBuffer compatibility.
+    /// </summary>
+    [System.Serializable]
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SDFObject
+    {
+        public Vector3 position;
+        public float pad0; 
+        
+        public Quaternion rotation; 
+        
+        public Vector3 scale;
+        public float pad1; 
+        
+        public Vector3 boundsMin; 
+        public float pad2;
+        
+        public Vector3 boundsMax; 
+        public float pad3;
+        
+        public int type;      // 0=Sphere, 1=Cube, 2=Mesh
+        public int operation; // 0=Union, 1=Subtract, 2=Intersect, 3=Smooth
+        public float blendFactor;
+        public int materialId;
+        
+        public int textureIndex; // Corresponds to the index in the SDFShapeManager list
+        public Vector3 padding; 
     }
 }
