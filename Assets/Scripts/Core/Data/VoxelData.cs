@@ -83,4 +83,26 @@ namespace VoxelEngine.Core.Data
         public int textureIndex; // Corresponds to the index in the SDFShapeManager list
         public Vector3 padding; 
     }
+
+    /// <summary>
+    /// A node in the Linear Bounding Volume Hierarchy.
+    /// Used to cull SDF objects against terrain bricks efficiently.
+    /// Size: 32 bytes (16-byte aligned)
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LBVHNode
+    {
+        public Vector3 boundsMin;
+        /// <summary>
+        /// Index of the left child. 
+        /// If negative, this node is a Leaf, and the index is ~LeftChild (bitwise not) pointing to the object index.
+        /// </summary>
+        public int leftChild; 
+        
+        public Vector3 boundsMax;
+        /// <summary>
+        /// Index of the right child. Unused if Leaf.
+        /// </summary>
+        public int rightChild;
+    }
 }
