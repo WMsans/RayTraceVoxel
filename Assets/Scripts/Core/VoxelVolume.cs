@@ -29,13 +29,25 @@ namespace VoxelEngine.Core
         public GraphicsBuffer PayloadBuffer => BufferManager?.PayloadBuffer;
         public GraphicsBuffer BrickBuffer => BufferManager?.BrickBuffer;
         public GraphicsBuffer BrickMaterialBuffer => BufferManager?.BrickMaterialBuffer;
-        public GraphicsBuffer BrickNormalBuffer => BufferManager?.BrickNormalBuffer; //
+        public GraphicsBuffer BrickNormalBuffer => BufferManager?.BrickNormalBuffer;
         public GraphicsBuffer CounterBuffer => BufferManager?.CounterBuffer;
         
         public int Resolution => resolution;
         public int MaxNodes => _maxNodes;
         public int MaxBricks => _maxBricks;
         public bool IsReady => BufferManager != null;
+
+        // --- FIX: Register with the system so WorldManager can find us ---
+        private void OnEnable()
+        {
+            VoxelVolumeRegistry.Register(this);
+        }
+
+        private void OnDisable()
+        {
+            VoxelVolumeRegistry.Unregister(this);
+        }
+        // ----------------------------------------------------------------
 
         public void AssignMemorySlice(VoxelVolumePool pool, int nodeOffset, int payloadOffset, int brickOffset, int nodes, int bricks)
         {
@@ -45,7 +57,7 @@ namespace VoxelEngine.Core
             BufferManager = new SVOBufferManager(
                 pool.GlobalNodeBuffer, nodeOffset,
                 pool.GlobalPayloadBuffer, payloadOffset,
-                pool.GlobalBrickBuffer, pool.GlobalBrickMaterialBuffer, pool.GlobalBrickNormalBuffer, brickOffset //
+                pool.GlobalBrickBuffer, pool.GlobalBrickMaterialBuffer, pool.GlobalBrickNormalBuffer, brickOffset
             );
         }
 
@@ -55,13 +67,13 @@ namespace VoxelEngine.Core
             WorldSize = size;
 
             BufferManager.ResetCounters();
-            this.gameObject.SetActive(true);
+            this.gameObject.SetActive(true); // Triggers OnEnable -> Registry.Register
             Regenerate();
         }
 
         public void OnReturnToPool()
         {
-            this.gameObject.SetActive(false);
+            this.gameObject.SetActive(false); // Triggers OnDisable -> Registry.Unregister
         }
 
         // Renamed from Generate to Regenerate and made public for Phase 4 Update Loop

@@ -18,9 +18,13 @@ namespace VoxelEngine.Core.Generators
         private List<SDFObject> _objects = new List<SDFObject>();
         
         // Phase 4: Dirty Region Tracking
-        // Stores World Space bounds that need invalidation
         private List<Bounds> _dirtyRegions = new List<Bounds>();
         
+        // --- VISUALIZATION ADDITION ---
+        // We need a separate list for Gizmos because _dirtyRegions gets cleared by the WorldManager logic before OnDrawGizmos runs.
+        private List<Bounds> _debugDirtyRegions = new List<Bounds>();
+        // ------------------------------
+
         // Helper struct for sorting
         private struct MortonEntry : IComparable<MortonEntry>
         {
@@ -53,17 +57,12 @@ namespace VoxelEngine.Core.Generators
         public void RegisterObject(SDFObject obj)
         {
             _objects.Add(obj);
-            
-            // Mark the new object's region as dirty
             AddDirtyRegion(obj);
-            
             RebuildBVH();
         }
 
         public void ClearObjects()
         {
-            // Mark all existing object regions as dirty before removing them
-            // (So the chunks they vacate can clear themselves)
             foreach (var obj in _objects)
             {
                 AddDirtyRegion(obj);
@@ -94,6 +93,10 @@ namespace VoxelEngine.Core.Generators
         public List<Bounds> GetAndClearDirtyRegions()
         {
             if (_dirtyRegions.Count == 0) return null;
+
+            // Cache for visualization before clearing
+            _debugDirtyRegions.Clear();
+            _debugDirtyRegions.AddRange(_dirtyRegions);
 
             var list = new List<Bounds>(_dirtyRegions);
             _dirtyRegions.Clear();
@@ -325,6 +328,13 @@ namespace VoxelEngine.Core.Generators
                     Vector3 center = (obj.boundsMin + obj.boundsMax) * 0.5f;
                     Vector3 size = obj.boundsMax - obj.boundsMin;
                     Gizmos.DrawWireCube(center, size);
+                }
+
+                // Draw Dirty Regions (RED)
+                Gizmos.color = new Color(1, 0, 0, 0.8f);
+                foreach (var dirty in _debugDirtyRegions)
+                {
+                    Gizmos.DrawWireCube(dirty.center, dirty.size);
                 }
 
                 if (_nodeCount > 0 && _bvhNodes != null)

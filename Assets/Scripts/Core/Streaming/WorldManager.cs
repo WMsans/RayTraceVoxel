@@ -59,6 +59,7 @@ namespace VoxelEngine.Core.Streaming
 
             // 1. Get dirty regions (this clears the list in the manager)
             List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
+            Debug.Log(dirtyRegions.Count);
             if (dirtyRegions == null || dirtyRegions.Count == 0) return;
 
             // 2. Get all currently active volumes
