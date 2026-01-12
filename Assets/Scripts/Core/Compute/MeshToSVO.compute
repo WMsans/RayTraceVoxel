@@ -98,8 +98,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                         // Accumulate Color for solid voxels
                         if (sdf < 0)
                         {
-                            // Simple default color for now as MeshToSVO doesn't have 
-                            color buffer yet
                             float3 col = float3(0.8, 0.8, 0.8);
                             accumulatedColor += float4(col, 1.0);
                             voxelCount += 1.0;

@@ -331,5 +331,10 @@ namespace VoxelEngine.Core.Generators
                 DrawNodeRecursive(node.rightChild, depth + 1);
             }
         }
+        public SDFObject GetObject(int index)
+        {
+            if (index >= 0 && index < _objects.Count) return _objects[index];
+            return default;
+        }
     }
 }

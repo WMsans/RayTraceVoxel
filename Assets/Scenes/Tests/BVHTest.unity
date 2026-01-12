@@ -255,8 +255,8 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 459020857}
-  - component: {fileID: 459020858}
   - component: {fileID: 459020859}
+  - component: {fileID: 459020860}
   m_Layer: 0
   m_Name: BVH_Tester
   m_TagString: Untagged
@@ -279,23 +279,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &459020858
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 459020856}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: f35cd9fdf78fa7f40ba5fefe23d4b14f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Testing.BVHTestAgent
-  objectCount: 50
-  spawnRadius: 50
-  moveSpeed: 2
-  showLeafs: 1
-  showInternal: 1
 --- !u!114 &459020859
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -310,7 +293,23 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Generators.DynamicSDFManager
   globalBoundsMargin: 100
   rebuildEveryFrame: 1
-  drawDebugGizmos: 0
+  drawDebugGizmos: 1
+--- !u!114 &459020860
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 459020856}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7116198fe3f82774ca04ea408c154f81, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::DynamicSDFTest
+  animate: 1
+  orbitRadius: 30
+  rotationSpeed: 1
+  heightOffset: 5
 --- !u!1 &1040459921
 GameObject:
   m_ObjectHideFlags: 0
@@ -433,8 +432,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4ce1e990257a21545af7603536218f89, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.WorldManager
-  initialWorldSize: 1024
-  maxDepth: 4
+  initialWorldSize: 256
+  maxDepth: 2
+  drawDebugGizmos: 0
   viewer: {fileID: 1040459924}
   splitFactor: 1.5
   mergeFactor: 1.8

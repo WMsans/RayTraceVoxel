@@ -65,7 +65,7 @@ struct SDFObject
     
     float3 scale;
     float pad1;
-    
+
     float3 boundsMin;
     float pad2;
     
@@ -80,6 +80,30 @@ struct SDFObject
     int textureIndex;
     float3 padding;
 };
+
+struct LBVHNode
+{
+    float3 boundsMin;
+    int leftChild; // If < 0, ~leftChild is index into ObjectIndexBuffer
+    float3 boundsMax;
+    int rightChild;
+};
+
+// --- Math Helpers ---
+
+// Rotate vector v by quaternion q
+float3 RotateVector(float3 v, float4 q)
+{
+    float3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+// Get Inverse (Conjugate) of a normalized quaternion
+float4 InvertRotation(float4 q)
+{
+    return float4(-q.xyz, q.w);
+}
+
 
 // Helper Functions
 uint GetNodeIndex(uint level, uint3 gridPos)

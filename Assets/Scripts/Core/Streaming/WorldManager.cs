@@ -9,6 +9,7 @@ namespace VoxelEngine.Core.Streaming
         [Header("Configuration")]
         public int initialWorldSize = 1024;
         public int maxDepth = 4;
+        public bool drawDebugGizmos = false;
 
         [Header("LOD Settings")]
         public Transform viewer;
@@ -119,7 +120,7 @@ namespace VoxelEngine.Core.Streaming
         // Debug Gizmos to visualize the octree
         private void OnDrawGizmos()
         {
-            if (_rootNode != null)
+            if (drawDebugGizmos && _rootNode != null)
             {
                 DrawNodeGizmos(_rootNode);
             }
