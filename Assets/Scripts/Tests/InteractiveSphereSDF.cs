@@ -48,15 +48,39 @@ namespace VoxelEngine.Core.Testing
         {
             if (DynamicSDFManager.Instance == null) return;
 
-            // If we haven't registered yet (e.g. Manager initialized after this script), try again
+            bool needsReRegistration = false;
+
+            // 1. Basic Validity Check
+            // If the manager was reset/cleared and our index is now out of bounds
             if (objectIndex == -1 || objectIndex >= DynamicSDFManager.Instance.ObjectCount)
+            {
+                needsReRegistration = true;
+            }
+            // 2. Data Integrity Check
+            // If the manager was cleared and refilled (e.g. by another script like BVHTestAgent), 
+            // our objectIndex might point to a valid slot that is now occupied by a DIFFERENT object.
+            // We verify if the object at our index matches our last known cached state.
+            else if (_isInitialized)
+            {
+                SDFObject currentData = DynamicSDFManager.Instance.GetObject(objectIndex);
+
+                // Compare the Manager's data against our Cached state.
+                // If they differ significantly, we have been overwritten/displaced.
+                if (Vector3.SqrMagnitude(currentData.position - _lastPosition) > 0.001f ||
+                    currentData.type != 0 || // Ensure it is still a Sphere
+                    currentData.materialId != _lastMaterialID)
+                {
+                    needsReRegistration = true;
+                }
+            }
+
+            if (needsReRegistration)
             {
                 RegisterSphere();
             }
-
             // OPTIMIZATION: Only update the manager if the object has actually changed.
             // This prevents the WorldManager from constantly regenerating chunks (Red Debug Boxes).
-            if (HasChanged())
+            else if (HasChanged())
             {
                 UpdateSphere();
                 UpdateCache();
