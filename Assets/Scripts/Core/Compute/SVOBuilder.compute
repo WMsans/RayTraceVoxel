@@ -5,11 +5,13 @@
 #include "./Includes/VoxelStructures.hlsl"
 #include "./GeneratorPipeline.hlsl"
 
+// --- Global Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
-RWStructuredBuffer<float> _BrickBuffer; 
-RWStructuredBuffer<uint> _BrickMaterialBuffer; 
-RWStructuredBuffer<uint> _BrickNormalBuffer;
+
+// [OPTIMIZATION] Merged Buffer (Replaces BrickBuffer, MaterialBuffer, NormalBuffer)
+RWStructuredBuffer<uint> _BrickDataBuffer; 
+
 RWStructuredBuffer<uint> _CounterBuffer;
 
 // Dynamic SDF Buffers
@@ -17,15 +19,18 @@ StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
 StructuredBuffer<int> _SDFObjectIndexBuffer;
 // _SDFObjectBuffer is defined in GeneratorPipeline.hlsl
 
+// --- Global Uniforms (Moved to Top) ---
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
 uint _NodeOffset;
 uint _PayloadOffset;
 uint _BrickOffset;
-
-// Fix: Add explicit object count to prevent accessing unbound buffers
 int _NumDynamicObjects;
+
+// Mipmapping Uniforms (Moved here to fix 'undeclared identifier' error)
+uint _TargetLevelOffset;
+uint _TargetLevelCount;
 
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
@@ -38,7 +43,6 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     node.topology = 0;
     node.lodColor = 0;
     node.lodMaterial = 0;
-
     uint level = 0;
     uint indexInLevel = id;
     if (id >= 585) { level = 4; indexInLevel = id - 585; }
@@ -53,7 +57,6 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
         if (level == 1) nextLevelOffset = 9;
         if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
-        
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
@@ -71,47 +74,38 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
-    float brickWorldRadius = (float)BRICK_SIZE * scale * 0.87; // approx sqrt(3)/2 * size
+    float brickWorldRadius = (float)BRICK_SIZE * scale * 0.87;
 
-    // AABB for Traversal (Include padding)
     float3 brickMin = _ChunkWorldOrigin + ((brickOriginLocal - BRICK_PADDING) * scale);
     float3 brickMax = _ChunkWorldOrigin + ((brickOriginLocal + BRICK_SIZE + BRICK_PADDING) * scale);
 
     // 2. LBVH Traversal (Pre-pass)
-    // Find all Dynamic Objects that intersect this brick
     uint activeObjects[32];
-    // FIX: Initialize array to avoid undefined behavior when passed to RunGeneratorPipeline
     for(int i=0; i<32; i++) activeObjects[i] = 0;
-
     int activeCount = 0;
 
-    // Fix: Only traverse if we actually have objects and a valid buffer
     if (_NumDynamicObjects > 0)
     {
         int stack[32];
         int stackPtr = 0;
         stack[0] = 0; // Root
         stackPtr++;
-
         while(stackPtr > 0 && activeCount < 32)
         {
             int nodeIdx = stack[--stackPtr];
             LBVHNode node = _LBVHNodeBuffer[nodeIdx];
             
-            // AABB Intersection
             if (all(max(brickMin, node.boundsMin) <= min(brickMax, node.boundsMax)))
             {
                 if (node.leftChild < 0) // Leaf
                 {
-                    // Decode Object Index (~leftChild)
                     int objIdx = ~node.leftChild;
-                    // Indirection to sorted/original list
                     int realIdx = _SDFObjectIndexBuffer[objIdx];
                     activeObjects[activeCount++] = realIdx;
                 }
                 else // Internal
                 {
-                    if(stackPtr < 30) // Prevent stack overflow
+                    if(stackPtr < 30) 
                     {
                         stack[stackPtr++] = node.leftChild;
                         stack[stackPtr++] = node.rightChild;
@@ -121,18 +115,14 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    // 3. Evaluate SDF at Brick Center (Optimization)
-    // Pass the active list to the generator
+    // 3. Evaluate SDF at Brick Center
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, activeCount);
-
-    // Check if the brick is relevant (close to surface)
-    // Radius of influence: ~3 voxels
     float worldRadius = 3.0 * scale;
 
     if (centerCtx.sdf < worldRadius)
     {
         uint brickPtr;
-        // Allocate 216 voxels (6*6*6)
+        // Allocate 216 voxels (6x6x6)
         InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
         
         float4 accumulatedColor = 0;
@@ -146,23 +136,21 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             {
                 for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
                 {
-                    // Calculate spatial offset relative to brick origin
                     int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
                     float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
-
-                    // Run pipeline with the active object list
+                    
                     GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, activeCount);
                     float sdf = voxelCtx.sdf;
-
-                    // Calculate 1D index
-                    uint idx = _BrickOffset + brickPtr + (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x);
-                    _BrickBuffer[idx] = sdf / scale; 
-                    _BrickNormalBuffer[idx] = PackNormal(voxelCtx.gradient);
-
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1;
-                    _BrickMaterialBuffer[idx] = mat;
+
+                    // [OPTIMIZATION] Pack Data
+                    // Normal, SDF, and Material are packed into a single uint
+                    uint packedData = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
+                    
+                    uint idx = _BrickOffset + brickPtr + (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x);
+                    _BrickDataBuffer[idx] = packedData;
 
                     // Accumulate for LOD (Inner 4x4x4 only)
                     if (x >= BRICK_PADDING && x < BRICK_STORAGE_SIZE - BRICK_PADDING &&
@@ -171,11 +159,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     {
                         if (sdf < 0) 
                         {
-                            float3 col = float3(1.0, 1.0, 1.0);
-                            // Could sample material color here
-                            accumulatedColor += float4(col, 1.0);
-                            voxelCount += 1.0;
-                            detectedMaterial = mat;
+                             float3 col = float3(1.0, 1.0, 1.0);
+                             accumulatedColor += float4(col, 1.0);
+                             voxelCount += 1.0;
+                             detectedMaterial = mat;
                         }
                     }
                 }
@@ -192,7 +179,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         
         uint nodeIndex = GetNodeIndex(4, id);
         _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = payloadIndex;
-        _NodeBuffer[_NodeOffset + nodeIndex].topology = 0;
         _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = detectedMaterial;
         
         if (voxelCount > 0)
@@ -210,15 +196,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         // Empty Brick
         uint nodeIndex = GetNodeIndex(4, id);
         _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].topology = 0;
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
         _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = 0;
     }
 }
-
-// --- Mipmapping Kernel ---
-uint _TargetLevelOffset;
-uint _TargetLevelCount;
 
 [numthreads(64, 1, 1)]
 void PropagateLOD(uint id : SV_DispatchThreadID)
@@ -226,7 +207,6 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     if (id >= _TargetLevelCount) return;
     uint nodeIndex = _TargetLevelOffset + id;
     SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
-
     if (node.topology == 0)
     {
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;

@@ -5,10 +5,9 @@
 
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
-RWStructuredBuffer<float> _BrickBuffer; 
-RWStructuredBuffer<uint> _BrickMaterialBuffer;
+// Merged
+RWStructuredBuffer<uint> _BrickDataBuffer; 
 RWStructuredBuffer<uint> _CounterBuffer;
-
 StructuredBuffer<float> _DenseSDFBuffer;
 StructuredBuffer<int> _DenseMaterialBuffer;
 uint _GridSize;
@@ -71,8 +70,9 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     if (distCenter < allocationThreshold)
     {
         uint brickPtr;
-        InterlockedAdd(_CounterBuffer[2], 64, brickPtr);
-        float4 accumulatedColor = 0; // Accumulator
+        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
+        
+        float4 accumulatedColor = 0;
         float voxelCount = 0;
         uint detectedMaterial = 0;
 
@@ -82,26 +82,34 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             {
                 for (uint x = 0; x < BRICK_SIZE; x++)
                 {
-            
                     uint3 voxelLocal = uint3(x, y, z);
                     uint3 voxelGlobal = (uint3)brickOrigin + voxelLocal;
+                    
                     if (voxelGlobal.x < _GridSize && voxelGlobal.y < _GridSize && voxelGlobal.z < _GridSize)
                     {
                         uint sdfIdx = voxelGlobal.x + voxelGlobal.y * _GridSize + voxelGlobal.z * _GridSize * _GridSize;
                         float sdf = _DenseSDFBuffer[sdfIdx];
                         int matID = _DenseMaterialBuffer[sdfIdx];
                         
+                        // Normal estimation for packing? 
+                        // MeshToSVO usually runs offline. We can approximate or just use up vector if dense buffer doesn't have gradients.
+                        // Assuming Dense buffer only has SDF. We can't easily get normal without more samples.
+                        // For now, use (0,1,0) or implement finite difference on _DenseSDFBuffer.
+                        // Finite Difference on Dense Buffer:
+                        float dX = _DenseSDFBuffer[sdfIdx + 1];
+                        float dY = _DenseSDFBuffer[sdfIdx + _GridSize];
+                        float dZ = _DenseSDFBuffer[sdfIdx + _GridSize*_GridSize];
+                        float3 grad = normalize(float3(dX - sdf, dY - sdf, dZ - sdf));
+                        
                         uint destIdx = brickPtr + (z*16 + y*4 + x);
-                        _BrickBuffer[destIdx] = sdf;
-                        _BrickMaterialBuffer[destIdx] = (uint)matID;
+                        
+                        _BrickDataBuffer[destIdx] = PackVoxelData(sdf, grad, (uint)matID);
 
-                        // Accumulate Color for solid voxels
-                        if (sdf < 0)
-                        {
-                            float3 col = float3(0.8, 0.8, 0.8);
-                            accumulatedColor += float4(col, 1.0);
-                            voxelCount += 1.0;
-                            detectedMaterial = (uint)matID; // Capture material
+                        if (sdf < 0) {
+                             float3 col = float3(0.8, 0.8, 0.8);
+                             accumulatedColor += float4(col, 1.0);
+                             voxelCount += 1.0;
+                             detectedMaterial = (uint)matID;
                         }
                     }
                 }

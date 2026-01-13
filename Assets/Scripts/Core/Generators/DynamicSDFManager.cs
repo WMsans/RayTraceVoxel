@@ -313,8 +313,13 @@ namespace VoxelEngine.Core.Generators
         private void ReleaseBuffers()
         {
             SDFObjectBuffer?.Release();
+            SDFObjectBuffer = null; 
+
             LBVHNodeBuffer?.Release();
+            LBVHNodeBuffer = null; 
+
             ObjectIndexBuffer?.Release();
+            ObjectIndexBuffer = null; 
         }
         
         private void OnDrawGizmos()

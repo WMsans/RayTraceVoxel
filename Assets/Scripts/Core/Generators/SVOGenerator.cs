@@ -10,7 +10,6 @@ namespace VoxelEngine.Core.Generators
         {
             if (shader == null || buffers == null) return;
             
-            // 1. Init Structure
             int kernelInit = shader.FindKernel("InitDenseStructure");
             shader.SetBuffer(kernelInit, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelInit, "_CounterBuffer", buffers.CounterBuffer);
@@ -18,13 +17,9 @@ namespace VoxelEngine.Core.Generators
             
             shader.Dispatch(kernelInit, 74, 1, 1);
 
-            // 2. Build Bricks
             int kernelBuild = shader.FindKernel("BuildBricks");
-            
-            // --- NEW: Bind Dynamic SDF Buffers ---
             var sdfManager = DynamicSDFManager.Instance;
             
-            // Fix: Explicitly handle the count. If manager isn't ready, pass 0 to disable the loop in shader.
             if (sdfManager != null && sdfManager.IsReady)
             {
                 shader.SetInt("_NumDynamicObjects", sdfManager.ObjectCount);
@@ -37,12 +32,10 @@ namespace VoxelEngine.Core.Generators
                 shader.SetInt("_NumDynamicObjects", 0);
             }
             
-            // --- NEW: Bind SDF Atlas ---
             var shapeManager = SDFShapeManager.Instance;
             if (shapeManager != null && shapeManager.sdfAtlas != null)
             {
                 shader.SetTexture(kernelBuild, "_SDFAtlas", shapeManager.sdfAtlas);
-                // Params: x=Res, y=TotalDepth, z=ShapeCount
                 shader.SetVector("_SDFAtlasParams", new Vector4(
                     shapeManager.targetResolution, 
                     shapeManager.sdfAtlas.depth, 
@@ -50,17 +43,17 @@ namespace VoxelEngine.Core.Generators
                     0));
             }
 
-            // Standard Bindings
             shader.SetBuffer(kernelBuild, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
-            shader.SetBuffer(kernelBuild, "_BrickBuffer", buffers.BrickBuffer);
-            shader.SetBuffer(kernelBuild, "_BrickMaterialBuffer", buffers.BrickMaterialBuffer);
-            shader.SetBuffer(kernelBuild, "_BrickNormalBuffer", buffers.BrickNormalBuffer);
+            
+            // Merged Buffer Binding
+            shader.SetBuffer(kernelBuild, "_BrickDataBuffer", buffers.BrickDataBuffer);
+            
             shader.SetBuffer(kernelBuild, "_CounterBuffer", buffers.CounterBuffer);
             
             shader.SetInt("_NodeOffset", buffers.NodeOffset);
             shader.SetInt("_PayloadOffset", buffers.PayloadOffset);
-            shader.SetInt("_BrickOffset", buffers.BrickOffset);
+            shader.SetInt("_BrickOffset", buffers.BrickDataOffset); // Changed
 
             shader.SetInt("_GridSize", resolution); 
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
@@ -71,7 +64,6 @@ namespace VoxelEngine.Core.Generators
             
             shader.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
 
-            // 3. Propagate LOD
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetInt("_NodeOffset", buffers.NodeOffset); 

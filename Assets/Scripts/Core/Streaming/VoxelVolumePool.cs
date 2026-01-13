@@ -12,7 +12,7 @@ namespace VoxelEngine.Core.Streaming
         public uint nodeOffset;
         public Vector3 boundsMax;
         public uint payloadOffset;
-        public uint brickOffset;
+        public uint brickDataOffset; // Changed
         public Vector3 padding; 
     }
 
@@ -27,9 +27,10 @@ namespace VoxelEngine.Core.Streaming
 
         public GraphicsBuffer GlobalNodeBuffer { get; private set; }
         public GraphicsBuffer GlobalPayloadBuffer { get; private set; }
-        public GraphicsBuffer GlobalBrickBuffer { get; private set; }
-        public GraphicsBuffer GlobalBrickMaterialBuffer { get; private set; }
-        public GraphicsBuffer GlobalBrickNormalBuffer { get; private set; }
+        
+        // Merged Buffer
+        public GraphicsBuffer GlobalBrickDataBuffer { get; private set; }
+        
         public GraphicsBuffer ChunkBuffer { get; private set; }
         private ChunkDef[] _chunkData;
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
@@ -48,18 +49,16 @@ namespace VoxelEngine.Core.Streaming
         {
             int totalNodes = poolSize * maxNodesPerVolume;
             int totalBricks = poolSize * maxBricksPerVolume; 
-            
-            // UPDATED: Use constant from SVONode
             int totalBrickVoxels = totalBricks * SVONode.BRICK_VOXEL_COUNT;
 
-            Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes, {totalBricks/1000}k Bricks ({totalBrickVoxels/1000000}M voxels).");
+            // Allocation size significantly reduced
+            Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes, {totalBricks/1000}k Bricks. BrickData: {totalBrickVoxels * 4 / 1024 / 1024} MB");
 
             GlobalNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<SVONode>());
             GlobalPayloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<VoxelPayload>());
             
-            GlobalBrickBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(float));
-            GlobalBrickMaterialBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
-            GlobalBrickNormalBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
+            // Single Buffer (stride 4 bytes)
+            GlobalBrickDataBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
 
             _chunkData = new ChunkDef[poolSize];
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
@@ -76,8 +75,6 @@ namespace VoxelEngine.Core.Streaming
                 vol.gameObject.name = $"Volume_Pool_{i}";
                 int nodeOffset = i * maxNodesPerVolume;
                 int payloadOffset = i * maxNodesPerVolume;
-                
-                // UPDATED: Calculate offset using new voxel count
                 int brickOffset = i * maxBricksPerVolume * SVONode.BRICK_VOXEL_COUNT;
                 
                 vol.AssignMemorySlice(this, nodeOffset, payloadOffset, brickOffset, maxNodesPerVolume, maxBricksPerVolume);
@@ -132,7 +129,7 @@ namespace VoxelEngine.Core.Streaming
                 def.boundsMax = vol.WorldBounds.max;
                 def.nodeOffset = (uint)vol.BufferManager.NodeOffset;
                 def.payloadOffset = (uint)vol.BufferManager.PayloadOffset;
-                def.brickOffset = (uint)vol.BufferManager.BrickOffset;
+                def.brickDataOffset = (uint)vol.BufferManager.BrickDataOffset; // Changed
                 
                 _chunkData[writeIndex] = def;
                 writeIndex++;
@@ -148,9 +145,7 @@ namespace VoxelEngine.Core.Streaming
             if (Instance == this) Instance = null;
             GlobalNodeBuffer?.Release();
             GlobalPayloadBuffer?.Release();
-            GlobalBrickBuffer?.Release();
-            GlobalBrickMaterialBuffer?.Release();
-            GlobalBrickNormalBuffer?.Release();
+            GlobalBrickDataBuffer?.Release();
             ChunkBuffer?.Release();
         }
     }

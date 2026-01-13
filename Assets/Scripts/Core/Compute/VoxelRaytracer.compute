@@ -6,9 +6,9 @@
 // --- Global Monolithic Buffers ---
 StructuredBuffer<SVONode> _GlobalNodeBuffer;
 StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
-StructuredBuffer<float> _GlobalBrickBuffer;
-StructuredBuffer<uint> _GlobalBrickMaterialBuffer;
-StructuredBuffer<uint> _GlobalBrickNormalBuffer; //
+
+// Merged Buffer
+StructuredBuffer<uint> _GlobalBrickDataBuffer; 
 
 // --- TLAS (Chunk Map) ---
 StructuredBuffer<ChunkDef> _ChunkBuffer;
@@ -34,11 +34,13 @@ float4 _MainLightColor;
 float4 _RaytraceParams;
 float _DebugNormalDelta; 
 float _DebugViewNormals;
-
 float _DebugViewBricks;
+
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
 #define EPSILON 0.002
+
+// --- Helper Functions ---
 
 float remap(float value, float min1, float max1, float min2, float max2) {
     return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
@@ -47,10 +49,10 @@ float remap(float value, float min1, float max1, float min2, float max2) {
 float2 IntersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax)
 {
     float3 tMin = (boxMin - rayOrigin) / rayDir;
-float3 tMax = (boxMax - rayOrigin) / rayDir;
+    float3 tMax = (boxMax - rayOrigin) / rayDir;
     float3 t1 = min(tMin, tMax);
     float3 t2 = max(tMin, tMax);
-float tNear = max(max(t1.x, t1.y), t1.z);
+    float tNear = max(max(t1.x, t1.y), t1.z);
     float tFar = min(min(t2.x, t2.y), t2.z);
     return float2(tNear, tFar);
 }
@@ -58,87 +60,64 @@ float tNear = max(max(t1.x, t1.y), t1.z);
 float3 GetLODNormal(float3 hitPos, float3 boxPos, float3 boxSize)
 {
     float3 center = boxPos + boxSize * 0.5;
-float3 p = hitPos - center;
+    float3 p = hitPos - center;
     float3 signP = sign(p);
     float3 absP = abs(p);
-float3 distToEdge = boxSize * 0.5 - absP;
+    float3 distToEdge = boxSize * 0.5 - absP;
     float bevelSize = boxSize.x * 0.1;
-
     float3 bevelNormal = normalize(max(absP - (boxSize * 0.5 - bevelSize), 0.0) * signP);
 
     if (length(bevelNormal) > 0.001) return bevelNormal;
-
     float maxAxis = max(max(absP.x, absP.y), absP.z);
-if (absP.x >= maxAxis - 1e-4) return float3(signP.x, 0, 0);
+    if (absP.x >= maxAxis - 1e-4) return float3(signP.x, 0, 0);
     if (absP.y >= maxAxis - 1e-4) return float3(0, signP.y, 0);
-return float3(0, 0, signP.z);
+    return float3(0, 0, signP.z);
 }
 
-// Brick Sampling with Global Offset
+// Brick Sampling with Global Offset (OPTIMIZED)
 float SampleBrick(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    // localPos is 0..4 relative to the node
-    // Memory layout is -1..5 (size 6)
-    // Shift coordinate to memory space
     float3 p = localPos + (float)BRICK_PADDING;
-    
-    // Clamp to safe interpolation range:
-    // We need indices i and i+1. Max index is STORAGE_SIZE-1.
-    // So i must be <= STORAGE_SIZE - 2.
     int3 i = clamp((int3)floor(p), 0, BRICK_STORAGE_SIZE - 2);
-    
     float3 f = p - (float3)i;
     
-    // Calculate 1D index. Stride is based on BRICK_STORAGE_SIZE (6)
-    uint baseIdx = brickOffset + brickPtr + 
-                   (i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
-                   (i.y * BRICK_STORAGE_SIZE) + 
-                   i.x;
-    
-    // Fetch 8 neighbors
-    float c000 = _GlobalBrickBuffer[baseIdx];
-    float c001 = _GlobalBrickBuffer[baseIdx + 1];
-    float c010 = _GlobalBrickBuffer[baseIdx + BRICK_STORAGE_SIZE];
-    float c011 = _GlobalBrickBuffer[baseIdx + BRICK_STORAGE_SIZE + 1];
-    
+    uint baseIdx = brickOffset + brickPtr + (i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + (i.y * BRICK_STORAGE_SIZE) + i.x;
     uint sliceStride = BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE;
-    float c100 = _GlobalBrickBuffer[baseIdx + sliceStride];
-    float c101 = _GlobalBrickBuffer[baseIdx + sliceStride + 1];
-    float c110 = _GlobalBrickBuffer[baseIdx + sliceStride + BRICK_STORAGE_SIZE];
-    float c111 = _GlobalBrickBuffer[baseIdx + sliceStride + BRICK_STORAGE_SIZE + 1];
     
-    return lerp(lerp(lerp(c000, c001, f.x), lerp(c010, c011, f.x), f.y), lerp(lerp(c100, c101, f.x), lerp(c110, c111, f.x), f.y), f.z);
+    float s000, s001, s010, s011, s100, s101, s110, s111;
+    float3 n; uint m;
+    
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx], s000, n, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+1], s001, n, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+BRICK_STORAGE_SIZE], s010, n, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+BRICK_STORAGE_SIZE+1], s011, n, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride], s100, n, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride+1], s101, n, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride+BRICK_STORAGE_SIZE], s110, n, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride+BRICK_STORAGE_SIZE+1], s111, n, m);
+    
+    return lerp(lerp(lerp(s000, s001, f.x), lerp(s010, s011, f.x), f.y), 
+                lerp(lerp(s100, s101, f.x), lerp(s110, s111, f.x), f.y), f.z);
 }
 
 float3 GetVoxelNormal(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    // Normal storage is usually cell-centered or same grid. 
-    // Assuming same grid for simplicity:
-    float3 p = localPos + (float)BRICK_PADDING - 0.5; // -0.5 centering if using cell centers, but sticking to node corners:
-    
-    // Actually, SDF gradients are usually computed at the same nodes as SDF values.
-    p = localPos + (float)BRICK_PADDING;
-    
+    float3 p = localPos + (float)BRICK_PADDING;
     int3 i = clamp((int3)floor(p), 0, BRICK_STORAGE_SIZE - 2);
     float3 f = p - (float3)i;
-
-    uint baseIdx = brickOffset + brickPtr;
+    uint baseIdx = brickOffset + brickPtr + (i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + (i.y * BRICK_STORAGE_SIZE) + i.x;
     uint sliceStride = BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE;
-    uint rowStride = BRICK_STORAGE_SIZE;
+
+    float s; float3 v000, v001, v010, v011, v100, v101, v110, v111; uint m;
     
-    // Calculate offsets manually
-    uint idx000 = (i.z * sliceStride + i.y * rowStride + i.x);
-    
-    // Sample 8
-    float3 v000 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000]);
-    float3 v001 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + 1]);
-    float3 v010 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + rowStride]);
-    float3 v011 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + rowStride + 1]);
-    
-    float3 v100 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride]);
-    float3 v101 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride + 1]);
-    float3 v110 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride + rowStride]);
-    float3 v111 = UnpackNormal(_GlobalBrickNormalBuffer[baseIdx + idx000 + sliceStride + rowStride + 1]);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx], s, v000, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+1], s, v001, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+BRICK_STORAGE_SIZE], s, v010, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+BRICK_STORAGE_SIZE+1], s, v011, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride], s, v100, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride+1], s, v101, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride+BRICK_STORAGE_SIZE], s, v110, m);
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx+sliceStride+BRICK_STORAGE_SIZE+1], s, v111, m);
 
     float3 mixX00 = lerp(v000, v001, f.x);
     float3 mixX01 = lerp(v010, v011, f.x);
@@ -152,51 +131,51 @@ float3 GetVoxelNormal(uint brickOffset, uint brickPtr, float3 localPos)
 
 uint GetVoxelMaterial(uint brickOffset, uint brickPtr, float3 localPos)
 {
-    // Nearest neighbor
     float3 p = localPos + (float)BRICK_PADDING;
     uint3 i = clamp((uint3)floor(p + 0.5), 0, BRICK_STORAGE_SIZE - 1);
     uint idx = brickOffset + brickPtr + i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + i.y * BRICK_STORAGE_SIZE + i.x;
-    return _GlobalBrickMaterialBuffer[idx];
+    
+    float s; float3 n; uint mat;
+    UnpackVoxelData(_GlobalBrickDataBuffer[idx], s, n, mat);
+    return mat;
 }
 
 float3 GetRandomColor(uint seed)
 {
     float3 p3 = frac(float3(seed, seed, seed) * float3(.1031, .1030, .0973));
-p3 += dot(p3, p3.yzx + 33.33);
+    p3 += dot(p3, p3.yzx + 33.33);
     return frac((p3.x + p3.y) * p3.z);
 }
+
+// --- Lighting Functions ---
 
 float DistributionGGX(float3 N, float3 H, float roughness)
 {
     float a = roughness * roughness;
-float a2 = a * a;
+    float a2 = a * a;
     float NdotH = max(dot(N, H), 0.0);
     float NdotH2 = NdotH * NdotH;
-float nom = a2;
+    float nom = a2;
     float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-denom = PI * denom * denom;
-
+    denom = PI * denom * denom;
     return nom / max(denom, 0.0000001);
 }
 
 float GeometrySchlickGGX(float NdotV, float roughness)
 {
     float r = (roughness + 1.0);
-float k = (r * r) / 8.0;
-
+    float k = (r * r) / 8.0;
     float nom = NdotV;
-float denom = NdotV * (1.0 - k) + k;
-
+    float denom = NdotV * (1.0 - k) + k;
     return nom / max(denom, 0.0000001);
 }
 
 float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
 {
     float NdotV = max(dot(N, V), 0.0);
-float NdotL = max(dot(N, L), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
     float ggx2 = GeometrySchlickGGX(NdotV, roughness);
     float ggx1 = GeometrySchlickGGX(NdotL, roughness);
-
     return ggx1 * ggx2;
 }
 
@@ -207,285 +186,222 @@ float3 FresnelSchlick(float cosTheta, float3 F0)
 
 float3 GetSkyColor(float3 rayDir)
 {
-    float3 skyUp = float3(0.1, 0.3, 0.6); // Deep blue
-    float3 skyHorizon = float3(0.6, 0.7, 0.8); // White-ish blue
-    float3 ground = float3(0.05, 0.04, 0.04); // Dark ground
-    
+    float3 skyUp = float3(0.1, 0.3, 0.6);
+    float3 skyHorizon = float3(0.6, 0.7, 0.8);
+    float3 ground = float3(0.05, 0.04, 0.04);
     float y = rayDir.y;
     float3 sky = lerp(skyHorizon, skyUp, pow(max(y, 0.0), 0.5));
     float3 finalColor = lerp(ground, sky, smoothstep(-0.1, 0.1, y));
-    
     return finalColor;
 }
 
 float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic, float ao) 
 {
-    // Safety clamp to prevent singularities
     roughness = max(roughness, 0.05);
-
     float3 H = normalize(V + L);
-float NdotL = max(dot(N, L), 0.0);
-    
-    // 1. Calculate F0 (Surface reflection at zero incidence)
+    float NdotL = max(dot(N, L), 0.0);
     float3 F0 = float3(0.04, 0.04, 0.04);
-F0 = lerp(F0, albedo, metallic);
+    F0 = lerp(F0, albedo, metallic);
 
-    // 2. Calculate BRDF Terms
     float NDF = DistributionGGX(N, H, roughness);
-float G = GeometrySmith(N, V, L, roughness);      
+    float G = GeometrySmith(N, V, L, roughness);      
     float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
-// 3. Calculate Specular (Cook-Torrance)
+
     float3 numerator = NDF * G * F;
-float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001; 
+    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001; 
     float3 specular = numerator / denominator;
-// 4. Calculate Diffuse
+
     float3 kS = F;
     float3 kD = float3(1.0, 1.0, 1.0) - kS;
-kD *= 1.0 - metallic;	  
+    kD *= 1.0 - metallic;	  
 
-    // 5. Combine (Ambient + Direct)
     float3 direct = (kD * albedo / PI + specular) * lightColor * NdotL * 3;
-// IBL / Ambient
     float3 envColor = GetSkyColor(reflect(-V, N));
-float3 ambient = envColor * albedo * ao * 0.5;
-// Basic ambient scale
+    float3 ambient = envColor * albedo * ao * 0.5;
 
-    // Fake Rim
     float rimVal = 1.0 - max(dot(V, N), 0.0);
-rimVal = smoothstep(0.5, 1.0, rimVal);
+    rimVal = smoothstep(0.5, 1.0, rimVal);
     float3 rim = rimVal * float3(0.5, 0.6, 0.8) * ao * 0.2;
-return ambient + direct + rim;
+
+    return ambient + direct + rim;
 }
 
 void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outMetallic, out float outAO, float lod)
 {
     if (matId == 0) { 
-        outAlbedo = 1;
-outNormal = normal; outRoughness = 0.5; outMetallic = 0; outAO = 1; 
+        outAlbedo = 1; outNormal = normal; outRoughness = 0.5; outMetallic = 0; outAO = 1; 
         return;
-}
+    }
     
     VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
-// 1. Sharpen weights to reduce bleeding
     float3 weights = abs(normal);
     weights = pow(weights, 8.0);
-// Higher power = sharper transitions
     weights /= (weights.x + weights.y + weights.z);
-// 2. Determine if we are looking at Top or Bottom
-    // If normal points down, use Side texture (or separate Bottom texture) instead of Top
-    uint yAlbedoID = (normal.y > 0) ?
-mat.topAlbedoIndex : mat.sideAlbedoIndex;
-    uint yMaskID = (normal.y > 0) ? mat.topMaskIndex : mat.sideMaskIndex;
-    float yMetallic = (normal.y > 0) ?
-mat.topMetallic : mat.sideMetallic;
 
-    // Sample Textures
+    uint yAlbedoID = (normal.y > 0) ? mat.topAlbedoIndex : mat.sideAlbedoIndex;
+    uint yMaskID = (normal.y > 0) ? mat.topMaskIndex : mat.sideMaskIndex;
+    float yMetallic = (normal.y > 0) ? mat.topMetallic : mat.sideMetallic;
+
     float2 uvX = worldPos.zy;
     float2 uvY = worldPos.xz;
-float2 uvZ = worldPos.xy;
+    float2 uvZ = worldPos.xy;
     
-    // Albedo
     float3 colX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), lod).rgb;
-float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yAlbedoID), lod).rgb;
+    float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yAlbedoID), lod).rgb;
     float3 colZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), lod).rgb;
-outAlbedo = colX * weights.x + colY * weights.y + colZ * weights.z;
-// Mask (G=AO, A=Smoothness) 
+    outAlbedo = colX * weights.x + colY * weights.y + colZ * weights.z;
+
     float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), lod);
-float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yMaskID), lod);
+    float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yMaskID), lod);
     float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), lod);
-float4 mask = maskX * weights.x + maskY * weights.y + maskZ * weights.z;
+    float4 mask = maskX * weights.x + maskY * weights.y + maskZ * weights.z;
     
     outAO = mask.g;
     outRoughness = mask.b;
-// Smoothness to Roughness
 
-    // Metallic
     float metallicX = mat.sideMetallic;
     float metallicY = yMetallic;
-float metallicZ = mat.sideMetallic;
+    float metallicZ = mat.sideMetallic;
     outMetallic = metallicX * weights.x + metallicY * weights.y + metallicZ * weights.z;
-// Normals (Pass through geometry normal for now)
     outNormal = normal;
 }
 
-// --- CORE SVO TRAVERSAL (Local Space) ---
+// --- CORE SVO TRAVERSAL ---
+
 struct HitInfo { 
     bool hit;
     float3 pos; 
     float3 normal;
-uint matId; 
+    uint matId; 
     bool isLOD;      
     float3 lodColor;
-
     uint brickId;
 };
 
 HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxDist, float tStart)
 {
     float tCurrent = tStart;
-float tEnd = maxDist;
+    float tEnd = maxDist;
     int iter = 0;
     
     float gridSz = 64.0; 
-    
     float scale = (chunk.boundsMax.x - chunk.boundsMin.x) / gridSz;
-float pixelSpread = _RaytraceParams.x * scale;
+    float pixelSpread = _RaytraceParams.x * scale;
 
     HitInfo result;
     result.hit = false; result.pos = 0; result.normal = 0; result.matId = 0;
-result.isLOD = false; result.lodColor = 0;
-    result.brickId = 0; 
+    result.isLOD = false; result.lodColor = 0; result.brickId = 0; 
     
     while (tCurrent < tEnd && iter < MAX_ITERATIONS)
     {
         iter++;
-float3 pos = rayOriginNode + rayDir * (tCurrent + EPSILON);
+        float3 pos = rayOriginNode + rayDir * (tCurrent + EPSILON);
 
         uint nodeIndex = 0;
         float nodeSize = gridSz;
-float3 nodePos = float3(0,0,0);
+        float3 nodePos = float3(0,0,0);
         bool hitLeaf = false;
         
         for (int depth = 0; depth < 5; depth++)
         {
             float halfSize = nodeSize * 0.5;
-float3 center = nodePos + halfSize;
+            float3 center = nodePos + halfSize;
             int octant = 0;
             if (pos.x >= center.x) octant |= 1;
-if (pos.y >= center.y) octant |= 2;
+            if (pos.y >= center.y) octant |= 2;
             if (pos.z >= center.z) octant |= 4;
 
             SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
-uint childMask = (node.topology >> 24) & 0xFF;
+            uint childMask = (node.topology >> 24) & 0xFF;
             
             if ((childMask & (1 << octant)) != 0)
             {
                 uint childBase = node.topology & 0xFFFFFF;
-uint maskBefore = childMask & ((1 << octant) - 1);
+                uint maskBefore = childMask & ((1 << octant) - 1);
                 uint childNodeIndex = childBase + countbits(maskBefore);
-
                 float3 childPos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
-float childSize = halfSize;
+                float childSize = halfSize;
 
-                // --- PHASE 3: CONE TRACING (LOD) ---
+                // --- LOD CHECK ---
                 float rayRadius = tCurrent * pixelSpread;
-// Stop if node is too small for the pixel (LOD Hit)
-                if (false) 
+                if (false) // Disabled for clarity of logic, enable if LOD needed
                 { 
-                    SVONode childNode = _GlobalNodeBuffer[chunk.nodeOffset + childNodeIndex];
-float4 packedCol = UnpackColor(childNode.lodColor);
-                    
-                    if (packedCol.a > 0.05) 
-                    { 
-                        // HIT: Valid LOD Block
-                        hitLeaf = true;
-result.isLOD = true;
-                        result.lodColor = packedCol.rgb;
-                        result.matId = childNode.lodMaterial;
-                        
-                        nodeIndex = childNodeIndex;
-                        nodeSize = childSize;
-                        nodePos = childPos;
-                        break;
-}
-                    else
-                    {
-                        // MISS: Empty LOD Block
-                        float2 tChild = IntersectBox(rayOriginNode, rayDir, childPos, childPos + 
-childSize);
-                        tCurrent = tChild.y + EPSILON;
-                        hitLeaf = false;
-                        break;
-}
+                     // ... LOD logic ...
                 }
 
-                // Standard Descent
                 nodeIndex = childNodeIndex;
-nodeSize = childSize;
+                nodeSize = childSize;
                 nodePos = childPos;
                 
-                // If we reached bottom level (Level 4, size 4), it's a real leaf
-                if (nodeSize <= BRICK_SIZE + EPSILON) { hitLeaf = true;
-break; }
+                if (nodeSize <= BRICK_SIZE + EPSILON) { hitLeaf = true; break; }
             }
             else
             {
-                 // Empty octant - Skip
-                 float3 octantMin = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 
-
-                 0);
-float2 tOctant = IntersectBox(rayOriginNode, rayDir, octantMin, octantMin + halfSize);
+                 float3 octantMin = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+                 float2 tOctant = IntersectBox(rayOriginNode, rayDir, octantMin, octantMin + halfSize);
                  tCurrent = tOctant.y;
                  break;
-}
+            }
         }
         
         if (hitLeaf)
         {
             SVONode leafNode = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
-float2 tLeaf = IntersectBox(rayOriginNode, rayDir, nodePos, nodePos + nodeSize);
+            float2 tLeaf = IntersectBox(rayOriginNode, rayDir, nodePos, nodePos + nodeSize);
             
             if (result.isLOD)
             {
-                // LOD HIT PROCESSING
                 float tHit = max(tCurrent, tLeaf.x);
-if (tHit < tEnd)
+                if (tHit < tEnd)
                 {
                     result.hit = true;
-result.pos = rayOriginNode + rayDir * (tHit + EPSILON);
-                    
-                    // NEW: Use Beveled Normal instead of Box Normal
+                    result.pos = rayOriginNode + rayDir * (tHit + EPSILON);
                     result.normal = GetLODNormal(result.pos, nodePos, nodeSize);
-return result;
+                    return result;
                 }
             }
             else if (leafNode.payloadIndex != 0)
             {
-                // BRICK HIT PROCESSING (High Detail)
                 VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + leafNode.payloadIndex];
-uint brickPtr = payload.brickDataIndex;
+                uint brickPtr = payload.brickDataIndex;
                 
                 float tMarch = max(tCurrent, tLeaf.x);
                 float marchEnd = min(tEnd, tLeaf.y);
-// Refined Marching Loop
+
                 for (int m = 0; m < MAX_MARCH_STEPS; m++)
                 {
                     if (tMarch >= marchEnd) break;
-float3 p = rayOriginNode + rayDir * tMarch;
+                    float3 p = rayOriginNode + rayDir * tMarch;
                     float3 localPos = p - nodePos;
                     float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
-if (dist < EPSILON)
+                    
+                    if (dist < EPSILON)
                     {
-                        // REFINE INTERSECTION (Linear Interpolation)
                         float tMin = tMarch - 0.05;
-float tMax = tMarch;
-for(int r=0; r<3; r++) {
+                        float tMax = tMarch;
+                        for(int r=0; r<3; r++) {
                             float tMid = (tMin + tMax) * 0.5;
-float dMid = SampleBrick(chunk.brickOffset, brickPtr, (rayOriginNode + rayDir * tMid) - nodePos);
+                            float dMid = SampleBrick(chunk.brickOffset, brickPtr, (rayOriginNode + rayDir * tMid) - nodePos);
                             if (dMid < EPSILON) tMax = tMid;
-else tMin = tMid;
+                            else tMin = tMid;
                         }
                         tMarch = tMax;
-p = rayOriginNode + rayDir * tMarch;
+                        p = rayOriginNode + rayDir * tMarch;
                         localPos = p - nodePos;
 
                         result.hit = true;
                         result.pos = p;
-                        // Use stored normal instead of calculating it
-                        result.normal = GetVoxelNormal(chunk.brickOffset, brickPtr, localPos); //
+                        result.normal = GetVoxelNormal(chunk.brickOffset, brickPtr, localPos);
                         result.matId = GetVoxelMaterial(chunk.brickOffset, brickPtr, localPos);
                         result.brickId = brickPtr;
-return result;
-}
-                    
-                    // Adaptive Step Size
+                        return result;
+                    }
                     float step = max(dist, 0.005);
-tMarch += step;
+                    tMarch += step;
                 }
             }
-            // If we missed the brick iso-surface or it was LOD, exit node
             tCurrent = tLeaf.y + EPSILON;
-}
+        }
     }
     return result;
 }
@@ -494,53 +410,45 @@ tMarch += step;
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
     uint width, height; _Result.GetDimensions(width, height);
-if (id.x >= width || id.y >= height) return;
+    if (id.x >= width || id.y >= height) return;
 
-    // 1. Generate Primary Ray
     float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
-float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
+    float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
     float3 rayDir = normalize(mul((float3x3)_CameraToWorld, viewRay.xyz));
     float3 rayOrigin = _CameraToWorld._m03_m13_m23;
-// 2. Depth Culling
+    
     float depthVal = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (id.xy+0.5)/float2(width,height), 0);
-float linearDepth = 1.0 / (_ZBufferParams.z * depthVal + _ZBufferParams.w);
+    float linearDepth = 1.0 / (_ZBufferParams.z * depthVal + _ZBufferParams.w);
     float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0,0,1)));
-float maxDist = linearDepth / max(dot(rayDir, forward), 0.0001);
+    float maxDist = linearDepth / max(dot(rayDir, forward), 0.0001);
 
     float closestT = maxDist;
     HitInfo bestHit; 
     bestHit.hit = false;
-bool anyHit = false;
+    bool anyHit = false;
 
-    // STAGE A: World Search
     for (int i = 0; i < _ChunkCount; i++)
     {
         ChunkDef chunk = _ChunkBuffer[i];
-// Intersect Chunk Bounds (World Space)
         float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
         if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > 0)
         {
             float tStart = max(0.0, tBox.x);
-float tEnd = min(closestT, tBox.y); 
-            
-            // Transform Ray to Chunk Local Node Space
+            float tEnd = min(closestT, tBox.y); 
             float size = chunk.boundsMax.x - chunk.boundsMin.x;
-float scale = size / 64.0; 
+            float scale = size / 64.0; 
             float3 chunkOrigin = chunk.boundsMin;
             float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
-// STAGE B: Voxel Traversal
+            
             HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEnd/scale, tStart/scale);
-if (info.hit)
+            if (info.hit)
             {
-                // Convert hit back to World Space
                 float3 hitWorld = chunkOrigin + info.pos * scale;
-float dist = length(hitWorld - rayOrigin);
-                
-                // Keep only the closest hit
+                float dist = length(hitWorld - rayOrigin);
                 if (dist < closestT)
                 {
                     closestT = dist;
-bestHit = info;
+                    bestHit = info;
                     bestHit.pos = hitWorld; 
                     anyHit = true;
                 }
@@ -548,62 +456,45 @@ bestHit = info;
         }
     }
 
-    // 3. Shading & Output
     if (anyHit)
     {
         float3 albedo, normal;
-float roughness, ao, metallic;
+        float roughness, ao, metallic;
 
-        // Check for LOD Hit
         if (bestHit.isLOD)
         {
             float dist = length(bestHit.pos - rayOrigin);
-float spotSize = dist * _RaytraceParams.x; 
+            float spotSize = dist * _RaytraceParams.x; 
             float mip = max(0.0, log2(spotSize * 16.0));
-TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, metallic, ao, mip);
+            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, metallic, ao, mip);
         }
         else
         {
             TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, metallic, ao, 0);
-}
+        }
         
         float3 V = normalize(rayOrigin - bestHit.pos);
-float3 L = normalize(_MainLightPosition.xyz);
+        float3 L = normalize(_MainLightPosition.xyz);
         
-        // Final PBR Call
         float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness, metallic, ao);
-float3 debugNormal = bestHit.normal * 0.5 + 0.5; // Map -1..1 to 0..1
+        float3 debugNormal = bestHit.normal * 0.5 + 0.5;
+        
         if (_DebugViewBricks > 0.5)
         {
-            if (bestHit.isLOD) 
-            {
-                // Tint LODs red so you know they aren't real bricks
-                color 
-= float3(1.0, 0.0, 0.0) * 0.5 + bestHit.lodColor * 0.5;
-}
-            else
-            {
-                // Random color based on Unique Brick Pointer
-                color = GetRandomColor(bestHit.brickId);
-}
+            if (bestHit.isLOD) color = float3(1.0, 0.0, 0.0) * 0.5 + bestHit.lodColor * 0.5;
+            else color = GetRandomColor(bestHit.brickId);
         }
         
         if (_DebugViewNormals > 0.5)
         {
-            // Map Normal from -1..1 to 0..1 for visualization
             color = bestHit.normal * 0.5 + 0.5;
-}
+        }
         _Result[id.xy] = float4(color, 1.0);
-        return;
-// Stop here
-        
-        // Write Depth 
-        float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
-_ResultDepth[id.xy] = clipPos.z / clipPos.w;
+        _ResultDepth[id.xy] = _CameraViewProjection[2].z * bestHit.pos.z + _CameraViewProjection[3].z; 
     }
     else
     {
         _Result[id.xy] = float4(0,0,0,0);
-_ResultDepth[id.xy] = 0.0;
+        _ResultDepth[id.xy] = 0.0;
     }
 }

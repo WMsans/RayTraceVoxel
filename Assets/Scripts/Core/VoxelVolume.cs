@@ -14,40 +14,31 @@ namespace VoxelEngine.Core
         public ComputeShader svoCompute;
         public int resolution = 64;
         
-        // Managed by Pool
         public SVOBufferManager BufferManager { get; private set; }
         private int _maxNodes;
         private int _maxBricks;
         
-        // Runtime State
         public Vector3 WorldOrigin { get; private set; }
         public float WorldSize { get; private set; }
         public Bounds WorldBounds => new Bounds(WorldOrigin + Vector3.one * WorldSize * 0.5f, Vector3.one * WorldSize);
 
-        // IVoxelStorage Implementation
         public GraphicsBuffer NodeBuffer => BufferManager?.NodeBuffer;
         public GraphicsBuffer PayloadBuffer => BufferManager?.PayloadBuffer;
-        public GraphicsBuffer BrickBuffer => BufferManager?.BrickBuffer;
-        public GraphicsBuffer BrickMaterialBuffer => BufferManager?.BrickMaterialBuffer;
-        public GraphicsBuffer BrickNormalBuffer => BufferManager?.BrickNormalBuffer;
+        public GraphicsBuffer BrickDataBuffer => BufferManager?.BrickDataBuffer; // Merged
         public GraphicsBuffer CounterBuffer => BufferManager?.CounterBuffer;
         
+        // Compat getters if needed, otherwise IVoxelStorage updated
+        public GraphicsBuffer BrickBuffer => null; 
+        public GraphicsBuffer BrickMaterialBuffer => null;
+        public GraphicsBuffer BrickNormalBuffer => null;
+
         public int Resolution => resolution;
         public int MaxNodes => _maxNodes;
         public int MaxBricks => _maxBricks;
         public bool IsReady => BufferManager != null;
 
-        // --- FIX: Register with the system so WorldManager can find us ---
-        private void OnEnable()
-        {
-            VoxelVolumeRegistry.Register(this);
-        }
-
-        private void OnDisable()
-        {
-            VoxelVolumeRegistry.Unregister(this);
-        }
-        // ----------------------------------------------------------------
+        private void OnEnable() { VoxelVolumeRegistry.Register(this); }
+        private void OnDisable() { VoxelVolumeRegistry.Unregister(this); }
 
         public void AssignMemorySlice(VoxelVolumePool pool, int nodeOffset, int payloadOffset, int brickOffset, int nodes, int bricks)
         {
@@ -57,7 +48,7 @@ namespace VoxelEngine.Core
             BufferManager = new SVOBufferManager(
                 pool.GlobalNodeBuffer, nodeOffset,
                 pool.GlobalPayloadBuffer, payloadOffset,
-                pool.GlobalBrickBuffer, pool.GlobalBrickMaterialBuffer, pool.GlobalBrickNormalBuffer, brickOffset
+                pool.GlobalBrickDataBuffer, brickOffset // Single Buffer
             );
         }
 
@@ -65,28 +56,20 @@ namespace VoxelEngine.Core
         {
             WorldOrigin = worldOrigin;
             WorldSize = size;
-
             BufferManager.ResetCounters();
-            this.gameObject.SetActive(true); // Triggers OnEnable -> Registry.Register
+            this.gameObject.SetActive(true);
             Regenerate();
         }
 
-        public void OnReturnToPool()
-        {
-            this.gameObject.SetActive(false); // Triggers OnDisable -> Registry.Unregister
-        }
+        public void OnReturnToPool() { this.gameObject.SetActive(false); }
 
-        // Renamed from Generate to Regenerate and made public for Phase 4 Update Loop
         public void Regenerate()
         {
             if (svoCompute == null || !IsReady) return;
-            
             BufferManager.ResetCounters(); 
-
             SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize);
         }
 
-        // Persistence (Simplified for now)
         public void Save(string filePath, Action<bool> onComplete = null) => VoxelDataSerializer.Save(this, filePath, onComplete);
         public void Load(string filePath) => VoxelDataSerializer.Load(this, filePath);
         
