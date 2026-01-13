@@ -64,32 +64,25 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
     }
     else if (obj.type == 2) // Mesh (Texture3D)
     {
-        // Check bounds (Local -0.5 to 0.5)
         if (all(abs(p) < 0.5))
         {
-            // Calculate UVW
-            float3 uvw = p + 0.5; // 0..1 range
-            
-            // Map Z to Atlas Slice
-            // uvw.z is 0..1 within the specific shape block.
-            // Global Z = (uvw.z + textureIndex) / ShapeCount
+            float3 uvw = p + 0.5;
             float shapeCount = _SDFAtlasParams.z;
             uvw.z = (uvw.z + (float)obj.textureIndex) / shapeCount;
             
-            // Sample Distance
             float val = _SDFAtlas.SampleLevel(sampler_LinearClamp, uvw, 0).r;
-            d = val * minScale;
+            float signedDist = val * 2.0 - 1.0; 
+            
+            d = signedDist * minScale;
 
-            // Gradient: Finite Difference (3 taps)
-            // We do this in Local Space then rotate
             float e = 0.01;
             float3 uvwX = uvw + float3(e, 0, 0);
             float3 uvwY = uvw + float3(0, e, 0);
-            float3 uvwZ = uvw + float3(0, 0, e/shapeCount); // Scale Z offset for atlas
+            float3 uvwZ = uvw + float3(0, 0, e/shapeCount);
 
-            float dX = _SDFAtlas.SampleLevel(sampler_LinearClamp, uvwX, 0).r * minScale;
-            float dY = _SDFAtlas.SampleLevel(sampler_LinearClamp, uvwY, 0).r * minScale;
-            float dZ = _SDFAtlas.SampleLevel(sampler_LinearClamp, uvwZ, 0).r * minScale;
+            float dX = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwX, 0).r * 2.0 - 1.0) * minScale;
+            float dY = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwY, 0).r * 2.0 - 1.0) * minScale;
+            float dZ = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwZ, 0).r * 2.0 - 1.0) * minScale;
             
             float3 localGrad = normalize(float3(dX - d, dY - d, dZ - d));
             gradient = normalize(RotateVector(localGrad, obj.rotation));
