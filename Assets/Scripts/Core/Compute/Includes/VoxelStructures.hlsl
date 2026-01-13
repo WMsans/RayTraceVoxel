@@ -75,7 +75,7 @@ struct SDFObject
     int operation;
     float blendFactor;
     int materialId;
-    int textureIndex;
+    int padUnused;
     float3 padding;
 };
 

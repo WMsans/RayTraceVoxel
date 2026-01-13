@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace VoxelEngine.Core.Data
 {
-    public enum SDFObjectType { Sphere = 0, Cube = 1, Mesh = 2 }
+    public enum SDFObjectType { Sphere = 0, Cube = 1 }
     public enum SDFOperation { Union = 0, Subtract = 1, Intersect = 2, SmoothUnion = 3 }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -74,12 +74,12 @@ namespace VoxelEngine.Core.Data
         public Vector3 boundsMax; 
         public float pad3;
         
-        public int type;      // 0=Sphere, 1=Cube, 2=Mesh
+        public int type;      // 0=Sphere, 1=Cube
         public int operation; // 0=Union, 1=Subtract, 2=Intersect, 3=Smooth
         public float blendFactor;
         public int materialId;
         
-        public int textureIndex; // Corresponds to the index in the SDFShapeManager list
+        public int padUnused; // Was textureIndex
         public Vector3 padding; 
     }
 

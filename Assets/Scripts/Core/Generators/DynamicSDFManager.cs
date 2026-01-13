@@ -116,8 +116,8 @@ namespace VoxelEngine.Core.Generators
             if (a.operation != b.operation) return false;
             if (Mathf.Abs(a.blendFactor - b.blendFactor) > 0.0001f) return false;
             if (a.materialId != b.materialId) return false;
-            if (a.textureIndex != b.textureIndex) return false;
-
+            // Texture index removed/unused
+            
             return true;
         }
 

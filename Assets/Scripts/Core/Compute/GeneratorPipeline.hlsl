@@ -9,15 +9,6 @@
 // --- Global Dynamic SDF Resources ---
 // These are bound by VoxelVolume or DynamicSDFManager
 StructuredBuffer<SDFObject> _SDFObjectBuffer;
-Texture3D<float> _SDFAtlas;
-SamplerState sampler_LinearClamp
-{
-    Filter = MIN_MAG_MIP_LINEAR;
-    AddressU = Clamp;
-    AddressV = Clamp;
-    AddressW = Clamp;
-};
-float4 _SDFAtlasParams; // x=Resolution, y=TotalDepth, z=ShapeCount, w=Unused
 
 // --- SDF Primitives ---
 
@@ -27,10 +18,6 @@ float sdBox(float3 p, float3 b)
     return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
 }
 
-// Evaluates a single SDF Object
-// Returns float4(distance, normal.x, normal.y, normal.z)
-// Note: Normal calculation for mesh is approximated or needs extra samples.
-// For now we assume analytical or up-vector for simple integration.
 float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
 {
     // 1. Transform to Local Space
@@ -64,36 +51,6 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
         else if (absP.y >= maxAxis - 1e-4) localNormal = float3(0, signP.y, 0);
         else localNormal = float3(0, 0, signP.z);
         gradient = normalize(RotateVector(localNormal, obj.rotation));
-    }
-    else if (obj.type == 2) // Mesh (Texture3D)
-    {
-        if (all(abs(p) < 0.5))
-        {
-            float3 uvw = p + 0.5;
-            float shapeCount = _SDFAtlasParams.z;
-            uvw.z = (uvw.z + (float)obj.textureIndex) / shapeCount;
-            
-            float val = _SDFAtlas.SampleLevel(sampler_LinearClamp, uvw, 0).r;
-            // No unpacking needed for RHalf/RFloat format
-            float signedDist = val;
-            d = signedDist * minScale;
-
-            float e = 0.01;
-            float3 uvwX = uvw + float3(e, 0, 0);
-            float3 uvwY = uvw + float3(0, e, 0);
-            float3 uvwZ = uvw + float3(0, 0, e/shapeCount);
-
-            float dX = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwX, 0).r) * minScale;
-            float dY = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwY, 0).r) * minScale;
-            float dZ = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwZ, 0).r) * minScale;
-            
-            // --- FIX: Prevent NaN from zero-length gradient at texture edges ---
-            float3 diff = float3(dX - d, dY - d, dZ - d);
-            float lenSq = dot(diff, diff);
-            float3 localGrad = (lenSq > 1.0e-12) ? normalize(diff) : float3(0, 1, 0);
-            
-            gradient = normalize(RotateVector(localGrad, obj.rotation));
-        }
     }
 
     return d;

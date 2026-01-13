@@ -32,16 +32,7 @@ namespace VoxelEngine.Core.Generators
                 shader.SetInt("_NumDynamicObjects", 0);
             }
             
-            var shapeManager = SDFShapeManager.Instance;
-            if (shapeManager != null && shapeManager.sdfAtlas != null)
-            {
-                shader.SetTexture(kernelBuild, "_SDFAtlas", shapeManager.sdfAtlas);
-                shader.SetVector("_SDFAtlasParams", new Vector4(
-                    shapeManager.targetResolution, 
-                    shapeManager.sdfAtlas.depth, 
-                    shapeManager.shapes.Count, 
-                    0));
-            }
+            // Removed SDFShapeManager usage
 
             shader.SetBuffer(kernelBuild, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
