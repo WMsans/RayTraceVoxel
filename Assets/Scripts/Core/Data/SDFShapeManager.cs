@@ -23,7 +23,7 @@ namespace VoxelEngine.Core.Data
         public int targetResolution = 32;
         
         // Use R8 (Unsigned 0..1) for best compatibility and size
-        public TextureFormat textureFormat = TextureFormat.R8; 
+        public TextureFormat textureFormat = TextureFormat.RHalf;
 
         public int GetShapeIndex(SDFShapeDefinition shape) => shapes.IndexOf(shape);
 
@@ -187,11 +187,10 @@ namespace VoxelEngine.Core.Data
                 
                 if (startOffset + pixelCount <= atlasPixels.Length)
                 {
-                    // MANUAL ENCODING: Map [-1, 1] to [0, 1]
                     for(int p = 0; p < pixelCount; p++)
                     {
                         float signedDist = srcPixels[p].r;
-                        float packed = signedDist * 0.5f + 0.5f; 
+                        float packed = signedDist; 
                         atlasPixels[startOffset + p] = new Color(packed, 0, 0, 0);
                     }
                 }

@@ -255,7 +255,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 459020857}
-  - component: {fileID: 459020859}
   - component: {fileID: 459020860}
   m_Layer: 0
   m_Name: BVH_Tester
@@ -263,7 +262,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &459020857
 Transform:
   m_ObjectHideFlags: 0
@@ -279,21 +278,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &459020859
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 459020856}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 57e37837a7e4d5f4dbaa793535aea611, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Generators.DynamicSDFManager
-  globalBoundsMargin: 100
-  rebuildEveryFrame: 1
-  drawDebugGizmos: 0
 --- !u!114 &459020860
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -538,6 +522,7 @@ GameObject:
   - component: {fileID: 681138559}
   - component: {fileID: 681138558}
   - component: {fileID: 681138557}
+  - component: {fileID: 681138560}
   m_Layer: 0
   m_Name: World
   m_TagString: Untagged
@@ -595,6 +580,21 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &681138560
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 681138556}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 57e37837a7e4d5f4dbaa793535aea611, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Generators.DynamicSDFManager
+  globalBoundsMargin: 100
+  rebuildEveryFrame: 1
+  drawDebugGizmos: 0
 --- !u!1 &888823811
 GameObject:
   m_ObjectHideFlags: 0

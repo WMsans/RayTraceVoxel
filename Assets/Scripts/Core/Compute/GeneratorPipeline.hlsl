@@ -71,7 +71,8 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
             uvw.z = (uvw.z + (float)obj.textureIndex) / shapeCount;
             
             float val = _SDFAtlas.SampleLevel(sampler_LinearClamp, uvw, 0).r;
-            float signedDist = val * 2.0 - 1.0; 
+            // No unpacking needed for RHalf/RFloat format
+            float signedDist = val; 
             
             d = signedDist * minScale;
 
@@ -80,10 +81,9 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
             float3 uvwY = uvw + float3(0, e, 0);
             float3 uvwZ = uvw + float3(0, 0, e/shapeCount);
 
-            float dX = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwX, 0).r * 2.0 - 1.0) * minScale;
-            float dY = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwY, 0).r * 2.0 - 1.0) * minScale;
-            float dZ = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwZ, 0).r * 2.0 - 1.0) * minScale;
-            
+            float dX = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwX, 0).r) * minScale;
+            float dY = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwY, 0).r) * minScale;
+            float dZ = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwZ, 0).r) * minScale;
             float3 localGrad = normalize(float3(dX - d, dY - d, dZ - d));
             gradient = normalize(RotateVector(localGrad, obj.rotation));
         }
