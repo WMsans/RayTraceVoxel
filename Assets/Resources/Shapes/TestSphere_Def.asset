@@ -13,6 +13,6 @@ MonoBehaviour:
   m_Name: TestSphere_Def
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Data.SDFShapeDefinition
   sourceMesh: {fileID: 0}
-  sdfTexture: {fileID: 11700000, guid: 1659e3996764c1e4fabbd2113333c185, type: 2}
+  sdfTexture: {fileID: 11700000, guid: 87658e7cea5fb564ab14647da944224a, type: 2}
   padding: 0.1
   resolution: 32

@@ -8,12 +8,12 @@ public class DebugSDFCreator
     public static void CreateTestSphere()
     {
         int resolution = 32;
-        Texture3D tex = new Texture3D(resolution, resolution, resolution, TextureFormat.RFloat, false);
+        Texture3D tex = new Texture3D(resolution, resolution, resolution, TextureFormat.RHalf, false);
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.filterMode = FilterMode.Trilinear;
 
         Color[] cols = new Color[resolution * resolution * resolution];
-        float radius = 0.4f; // 0.4 of the 0..1 UV space
+        float radius = 0.1f; // 0.4 of the 0..1 UV space
         Vector3 center = new Vector3(0.5f, 0.5f, 0.5f);
 
         for (int z = 0; z < resolution; z++)
