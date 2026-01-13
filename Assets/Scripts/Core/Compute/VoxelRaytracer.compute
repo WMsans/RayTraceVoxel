@@ -15,7 +15,13 @@ StructuredBuffer<ChunkDef> _ChunkBuffer;
 int _ChunkCount;
 
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
-Texture2D<float> _CameraDepthTexture; SamplerState sampler_CameraDepthTexture;
+Texture2D<float> _CameraDepthTexture; 
+SamplerState sampler_CameraDepthTexture
+{
+    Filter = MIN_MAG_MIP_POINT;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
 Texture2DArray _AlbedoTextureArray;
 Texture2DArray _NormalTextureArray;
 Texture2DArray _MaskTextureArray;

@@ -1,6 +1,6 @@
 %YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
---- !u!117 &-4199784195743673329
+--- !u!117 &-5939348210966364487
 Texture3D:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -49,8 +49,8 @@ MonoBehaviour:
   m_Name: VoxelShapeManager
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Data.SDFShapeManager
   shapes:
-  - {fileID: 11400000, guid: 9e16b6fa865fa7b4395d4e04240d7856, type: 2}
-  sdfAtlas: {fileID: -4199784195743673329}
+  - {fileID: 11400000, guid: 37ff6bd69db6afa4abf7278bc10e592f, type: 2}
+  sdfAtlas: {fileID: -5939348210966364487}
   meshSdfCompute: {fileID: 7200000, guid: 57f938ef70b738a469013fd4cc66b6ed, type: 3}
   targetResolution: 32
   textureFormat: 15

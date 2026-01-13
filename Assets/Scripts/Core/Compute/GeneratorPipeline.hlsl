@@ -10,7 +10,13 @@
 // These are bound by VoxelVolume or DynamicSDFManager
 StructuredBuffer<SDFObject> _SDFObjectBuffer;
 Texture3D<float> _SDFAtlas;
-SamplerState sampler_LinearClamp; 
+SamplerState sampler_LinearClamp
+{
+    Filter = MIN_MAG_MIP_LINEAR;
+    AddressU = Clamp;
+    AddressV = Clamp;
+    AddressW = Clamp;
+};
 float4 _SDFAtlasParams; // x=Resolution, y=TotalDepth, z=ShapeCount, w=Unused
 
 // --- SDF Primitives ---
@@ -36,7 +42,7 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
     float3 safeScale = max(abs(obj.scale), 0.001);
     float3 p = localPos / safeScale;
     float minScale = min(safeScale.x, min(safeScale.y, safeScale.z));
-    
+
     float d = 3.402823466e+38; 
     gradient = float3(0,1,0);
 
@@ -48,18 +54,15 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
     else if (obj.type == 1) // Cube
     {
         d = sdBox(p, float3(0.5, 0.5, 0.5)) * minScale;
-        
         // Analytical Cube Gradient (Local)
         float3 signP = sign(p);
         float3 absP = abs(p);
         float3 distToEdge = 0.5 - absP;
         float maxAxis = max(max(absP.x, absP.y), absP.z);
         float3 localNormal = float3(0,1,0);
-        
         if (absP.x >= maxAxis - 1e-4) localNormal = float3(signP.x, 0, 0);
         else if (absP.y >= maxAxis - 1e-4) localNormal = float3(0, signP.y, 0);
         else localNormal = float3(0, 0, signP.z);
-        
         gradient = normalize(RotateVector(localNormal, obj.rotation));
     }
     else if (obj.type == 2) // Mesh (Texture3D)
@@ -72,8 +75,7 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
             
             float val = _SDFAtlas.SampleLevel(sampler_LinearClamp, uvw, 0).r;
             // No unpacking needed for RHalf/RFloat format
-            float signedDist = val; 
-            
+            float signedDist = val;
             d = signedDist * minScale;
 
             float e = 0.01;
@@ -84,11 +86,16 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
             float dX = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwX, 0).r) * minScale;
             float dY = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwY, 0).r) * minScale;
             float dZ = (_SDFAtlas.SampleLevel(sampler_LinearClamp, uvwZ, 0).r) * minScale;
-            float3 localGrad = normalize(float3(dX - d, dY - d, dZ - d));
+            
+            // --- FIX: Prevent NaN from zero-length gradient at texture edges ---
+            float3 diff = float3(dX - d, dY - d, dZ - d);
+            float lenSq = dot(diff, diff);
+            float3 localGrad = (lenSq > 1.0e-12) ? normalize(diff) : float3(0, 1, 0);
+            
             gradient = normalize(RotateVector(localGrad, obj.rotation));
         }
     }
-    
+
     return d;
 }
 
@@ -106,7 +113,6 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
     for(int i = 0; i < activeCount; i++)
     {
         SDFObject obj = _SDFObjectBuffer[activeObjects[i]];
-        
         float3 objGradient;
         float d = EvaluateSDFObject(obj, worldPos, objGradient);
 
@@ -138,13 +144,13 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
             // Gradient blending approximation
             if (h2 > 0.5) ctx.gradient = subGradient;
             
-            // Material: If we subtract, we expose the "inside" of the subtractor? 
+            // Material: If we subtract, we expose the "inside" of the subtractor?
             // Usually we keep the original material or set to 0 (Air) if d is dominant.
             // If the resulting surface is defined by the subtractor, it's actually just 'Air' usually.
         }
         // Add other operations (Intersect, Paint) as needed
     }
-    
+
     return ctx;
 }
 
