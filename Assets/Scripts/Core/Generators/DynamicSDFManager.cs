@@ -25,6 +25,9 @@ namespace VoxelEngine.Core.Generators
         private List<Bounds> _debugDirtyRegions = new List<Bounds>();
         // ------------------------------
 
+        // OPTIMIZATION: Track if any data actually changed to avoid unnecessary BVH rebuilds
+        private bool _isDirty = false;
+
         // Helper struct for sorting
         private struct MortonEntry : IComparable<MortonEntry>
         {
@@ -58,7 +61,9 @@ namespace VoxelEngine.Core.Generators
         {
             _objects.Add(obj);
             AddDirtyRegion(obj);
+            _isDirty = true;
             RebuildBVH();
+            _isDirty = false; // Rebuilt immediately
         }
 
         public void ClearObjects()
@@ -69,6 +74,7 @@ namespace VoxelEngine.Core.Generators
             }
             
             _objects.Clear();
+            _isDirty = true;
             if (ObjectCount == 0) ReleaseBuffers();
         }
 
@@ -76,15 +82,43 @@ namespace VoxelEngine.Core.Generators
         {
             if (index >= 0 && index < _objects.Count)
             {
+                SDFObject oldObj = _objects[index];
+                
+                // OPTIMIZATION: Check if data actually changed.
+                // This prevents marking chunks as dirty (Red) when the object is static 
+                // but the update loop is still calling UpdateObject.
+                if (IsSame(oldObj, obj)) return;
+
                 // 1. Mark OLD region as dirty (to clear the artifact at previous position)
-                AddDirtyRegion(_objects[index]);
+                AddDirtyRegion(oldObj);
                 
                 // 2. Update Data
                 _objects[index] = obj;
                 
                 // 3. Mark NEW region as dirty (to draw at new position)
                 AddDirtyRegion(obj);
+
+                // 4. Mark flag for BVH rebuild
+                _isDirty = true;
             }
+        }
+
+        private bool IsSame(SDFObject a, SDFObject b)
+        {
+            if (a.position != b.position) return false;
+            if (a.rotation != b.rotation) return false;
+            if (a.scale != b.scale) return false;
+            if (a.boundsMin != b.boundsMin) return false;
+            if (a.boundsMax != b.boundsMax) return false;
+            
+            // Compare properties
+            if (a.type != b.type) return false;
+            if (a.operation != b.operation) return false;
+            if (Mathf.Abs(a.blendFactor - b.blendFactor) > 0.0001f) return false;
+            if (a.materialId != b.materialId) return false;
+            if (a.textureIndex != b.textureIndex) return false;
+
+            return true;
         }
 
         /// <summary>
@@ -121,9 +155,11 @@ namespace VoxelEngine.Core.Generators
 
         private void Update()
         {
-            if (rebuildEveryFrame && _objects.Count > 0)
+            // OPTIMIZATION: Only rebuild BVH if data actually changed
+            if (rebuildEveryFrame && _objects.Count > 0 && _isDirty)
             {
                 RebuildBVH();
+                _isDirty = false;
             }
         }
 
@@ -336,11 +372,11 @@ namespace VoxelEngine.Core.Generators
                 }
 
                 // Draw Dirty Regions (RED)
-                // Gizmos.color = new Color(1, 0, 0, 0.8f);
-                // foreach (var dirty in _debugDirtyRegions)
-                // {
-                //     Gizmos.DrawWireCube(dirty.center, dirty.size);
-                // }
+                Gizmos.color = new Color(1, 0, 0, 0.8f);
+                foreach (var dirty in _debugDirtyRegions)
+                {
+                    Gizmos.DrawWireCube(dirty.center, dirty.size);
+                }
 
                 if (_nodeCount > 0 && _bvhNodes != null)
                 {

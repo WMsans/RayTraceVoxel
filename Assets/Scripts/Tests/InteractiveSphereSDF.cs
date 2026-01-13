@@ -21,6 +21,14 @@ namespace VoxelEngine.Core.Testing
         [Header("Debug")]
         public int objectIndex = -1;
 
+        // --- OPTIMIZATION: Change Tracking ---
+        private Vector3 _lastPosition;
+        private Quaternion _lastRotation;
+        private float _lastRadius;
+        private float _lastBlendSmoothness;
+        private int _lastMaterialID;
+        private bool _isInitialized = false;
+
         private void OnEnable()
         {
             // Wait for Manager to exist
@@ -43,11 +51,42 @@ namespace VoxelEngine.Core.Testing
             // If we haven't registered yet (e.g. Manager initialized after this script), try again
             if (objectIndex == -1 || objectIndex >= DynamicSDFManager.Instance.ObjectCount)
             {
-                // Simple re-registration check
                 RegisterSphere();
             }
 
-            UpdateSphere();
+            // OPTIMIZATION: Only update the manager if the object has actually changed.
+            // This prevents the WorldManager from constantly regenerating chunks (Red Debug Boxes).
+            if (HasChanged())
+            {
+                UpdateSphere();
+                UpdateCache();
+            }
+        }
+
+        private bool HasChanged()
+        {
+            if (!_isInitialized) return true;
+
+            // Check Transform
+            if (transform.position != _lastPosition) return true;
+            if (transform.rotation != _lastRotation) return true; // Unity's Quaternion != handles epsilon comparison
+
+            // Check Properties
+            if (!Mathf.Approximately(radius, _lastRadius)) return true;
+            if (!Mathf.Approximately(blendSmoothness, _lastBlendSmoothness)) return true;
+            if (materialID != _lastMaterialID) return true;
+
+            return false;
+        }
+
+        private void UpdateCache()
+        {
+            _lastPosition = transform.position;
+            _lastRotation = transform.rotation;
+            _lastRadius = radius;
+            _lastBlendSmoothness = blendSmoothness;
+            _lastMaterialID = materialID;
+            _isInitialized = true;
         }
 
         private void RegisterSphere()
@@ -58,6 +97,8 @@ namespace VoxelEngine.Core.Testing
             
             SDFObject initialData = CreateSDFData();
             DynamicSDFManager.Instance.RegisterObject(initialData);
+            
+            UpdateCache(); // Ensure we don't immediately trigger an update next frame
         }
 
         private void UpdateSphere()
