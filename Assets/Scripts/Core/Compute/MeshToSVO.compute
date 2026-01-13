@@ -20,10 +20,10 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     if (id >= 4681) return;
     
     SVONode node;
-    node.payloadIndex = 0;
+    node.packedInfo = 0;
     node.topology = 0;
     node.lodColor = 0;
-    node.lodMaterial = 0; // Updated
+    // lodMaterial is now part of packedInfo (initialized to 0 above)
     uint level = 0;
     uint indexInLevel = id;
     if (id >= 585) { level = 4;
@@ -125,9 +125,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         _PayloadBuffer[payloadIndex] = payload;
         
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[nodeIndex].payloadIndex = payloadIndex;
+        
+        // Pack Payload (16 bits) and Material (8 bits)
+        uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
+        _NodeBuffer[nodeIndex].packedInfo = packed;
+        
         _NodeBuffer[nodeIndex].topology = 0;
-        _NodeBuffer[nodeIndex].lodMaterial = detectedMaterial; // Store LOD material
         
         if (voxelCount > 0)
             _NodeBuffer[nodeIndex].lodColor = PackColor(accumulatedColor / voxelCount);
@@ -137,9 +140,8 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     else
     {
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[nodeIndex].payloadIndex = 0;
+        _NodeBuffer[nodeIndex].packedInfo = 0;
         _NodeBuffer[nodeIndex].topology = 0;
         _NodeBuffer[nodeIndex].lodColor = 0;
-        _NodeBuffer[nodeIndex].lodMaterial = 0;
     }
 }

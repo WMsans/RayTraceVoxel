@@ -10,9 +10,8 @@ namespace VoxelEngine.Core.Data
     public struct SVONode
     {
         public uint topology; 
-        public uint payloadIndex;
         public uint lodColor;
-        public uint lodMaterial;
+        public uint packedInfo; // Packed: [Payload 16] [Material 8] [Flags 8]
         
         // --- Updated Constants ---
         public const int BRICK_SIZE = 4;        // Logical size (World space coverage relative to scale)

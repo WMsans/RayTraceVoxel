@@ -39,10 +39,9 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     if (id >= 4681) return;
     
     SVONode node;
-    node.payloadIndex = 0;
+    node.packedInfo = 0;
     node.topology = 0;
     node.lodColor = 0;
-    node.lodMaterial = 0;
     uint level = 0;
     uint indexInLevel = id;
     if (id >= 585) { level = 4; indexInLevel = id - 585; }
@@ -178,8 +177,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
         
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = payloadIndex;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = detectedMaterial;
+
+        // Pack Payload (16) | Material (8)
+        uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
+        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = packed;
         
         if (voxelCount > 0)
         {
@@ -195,9 +196,8 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     {
         // Empty Brick
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[_NodeOffset + nodeIndex].payloadIndex = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = 0;
     }
 }
 
@@ -227,7 +227,11 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
             acc.rgb += c.rgb;
             acc.a += c.a;
             count += 1.0;
-            if (child.lodMaterial != 0) maxMaterial = child.lodMaterial;
+            
+            // Unpack Material from child
+            uint childPayload, childMat;
+            UnpackNode(child, childPayload, childMat);
+            if (childMat != 0) maxMaterial = childMat;
         }
     }
 
@@ -236,11 +240,13 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
         float3 avgColor = acc.rgb / count;
         float nodeDensity = acc.a / 8.0;
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(avgColor, nodeDensity));
-        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = maxMaterial;
+        
+        // Pack Material back (Internal nodes have Payload=0)
+        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = (maxMaterial & 0xFF) << 16;
     }
     else
     {
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
     }
 }

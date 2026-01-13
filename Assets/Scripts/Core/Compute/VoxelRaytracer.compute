@@ -360,44 +360,50 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     return result;
                 }
             }
-            else if (leafNode.payloadIndex != 0)
+            else
             {
-                VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + leafNode.payloadIndex];
-                uint brickPtr = payload.brickDataIndex;
+                uint payloadIndex, matID;
+                UnpackNode(leafNode, payloadIndex, matID);
                 
-                float tMarch = max(tCurrent, tLeaf.x);
-                float marchEnd = min(tEnd, tLeaf.y);
-
-                for (int m = 0; m < MAX_MARCH_STEPS; m++)
+                if (payloadIndex != 0)
                 {
-                    if (tMarch >= marchEnd) break;
-                    float3 p = rayOriginNode + rayDir * tMarch;
-                    float3 localPos = p - nodePos;
-                    float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
-                    
-                    if (dist < EPSILON)
-                    {
-                        float tMin = tMarch - 0.05;
-                        float tMax = tMarch;
-                        for(int r=0; r<3; r++) {
-                            float tMid = (tMin + tMax) * 0.5;
-                            float dMid = SampleBrick(chunk.brickOffset, brickPtr, (rayOriginNode + rayDir * tMid) - nodePos);
-                            if (dMid < EPSILON) tMax = tMid;
-                            else tMin = tMid;
-                        }
-                        tMarch = tMax;
-                        p = rayOriginNode + rayDir * tMarch;
-                        localPos = p - nodePos;
+                    VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + payloadIndex];
+                    uint brickPtr = payload.brickDataIndex;
+                
+                    float tMarch = max(tCurrent, tLeaf.x);
+                    float marchEnd = min(tEnd, tLeaf.y);
 
-                        result.hit = true;
-                        result.pos = p;
-                        result.normal = GetVoxelNormal(chunk.brickOffset, brickPtr, localPos);
-                        result.matId = GetVoxelMaterial(chunk.brickOffset, brickPtr, localPos);
-                        result.brickId = brickPtr;
-                        return result;
+                    for (int m = 0; m < MAX_MARCH_STEPS; m++)
+                    {
+                        if (tMarch >= marchEnd) break;
+                        float3 p = rayOriginNode + rayDir * tMarch;
+                        float3 localPos = p - nodePos;
+                        float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
+                        
+                        if (dist < EPSILON)
+                        {
+                            float tMin = tMarch - 0.05;
+                            float tMax = tMarch;
+                            for(int r=0; r<3; r++) {
+                                float tMid = (tMin + tMax) * 0.5;
+                                float dMid = SampleBrick(chunk.brickOffset, brickPtr, (rayOriginNode + rayDir * tMid) - nodePos);
+                                if (dMid < EPSILON) tMax = tMid;
+                                else tMin = tMid;
+                            }
+                            tMarch = tMax;
+                            p = rayOriginNode + rayDir * tMarch;
+                            localPos = p - nodePos;
+
+                            result.hit = true;
+                            result.pos = p;
+                            result.normal = GetVoxelNormal(chunk.brickOffset, brickPtr, localPos);
+                            result.matId = GetVoxelMaterial(chunk.brickOffset, brickPtr, localPos);
+                            result.brickId = brickPtr;
+                            return result;
+                        }
+                        float step = max(dist, 0.005);
+                        tMarch += step;
                     }
-                    float step = max(dist, 0.005);
-                    tMarch += step;
                 }
             }
             tCurrent = tLeaf.y + EPSILON;

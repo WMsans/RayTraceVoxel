@@ -14,10 +14,16 @@
 struct SVONode 
 { 
     uint topology;
-    uint payloadIndex;
     uint lodColor; 
-    uint lodMaterial; 
+    uint packedInfo; // [Payload 16] [Material 8] [Unused 8]
 };
+
+// Helper to unpack node info
+void UnpackNode(SVONode node, out uint payloadIndex, out uint materialID)
+{
+    payloadIndex = node.packedInfo & 0xFFFF;
+    materialID = (node.packedInfo >> 16) & 0xFF;
+}
 
 struct VoxelPayload 
 { 
