@@ -38,13 +38,14 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     node.topology = 0;
     node.lodColor = 0;
     node.lodMaterial = 0;
+
     uint level = 0;
     uint indexInLevel = id;
     if (id >= 585) { level = 4; indexInLevel = id - 585; }
     else if (id >= 73) { level = 3; indexInLevel = id - 73; }
     else if (id >= 9) { level = 2; indexInLevel = id - 9; }
     else if (id >= 1) { level = 1; indexInLevel = id - 1; }
-    
+
     if (level < 4)
     {
         uint nextLevelOffset = 0;
@@ -52,6 +53,7 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
         if (level == 1) nextLevelOffset = 9;
         if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
+        
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
@@ -77,7 +79,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
     // 2. LBVH Traversal (Pre-pass)
     // Find all Dynamic Objects that intersect this brick
-    uint activeObjects[32]; // Fixed size array
+    uint activeObjects[32];
+    // FIX: Initialize array to avoid undefined behavior when passed to RunGeneratorPipeline
+    for(int i=0; i<32; i++) activeObjects[i] = 0;
+
     int activeCount = 0;
 
     // Fix: Only traverse if we actually have objects and a valid buffer
@@ -87,12 +92,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         int stackPtr = 0;
         stack[0] = 0; // Root
         stackPtr++;
-        
+
         while(stackPtr > 0 && activeCount < 32)
         {
             int nodeIdx = stack[--stackPtr];
-            
             LBVHNode node = _LBVHNodeBuffer[nodeIdx];
+            
             // AABB Intersection
             if (all(max(brickMin, node.boundsMin) <= min(brickMax, node.boundsMax)))
             {
@@ -119,10 +124,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     // 3. Evaluate SDF at Brick Center (Optimization)
     // Pass the active list to the generator
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, activeCount);
-    
+
     // Check if the brick is relevant (close to surface)
     // Radius of influence: ~3 voxels
-    float worldRadius = 3.0 * scale; 
+    float worldRadius = 3.0 * scale;
 
     if (centerCtx.sdf < worldRadius)
     {
@@ -145,7 +150,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
                     float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
-                    
+
                     // Run pipeline with the active object list
                     GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, activeCount);
                     float sdf = voxelCtx.sdf;
@@ -166,7 +171,8 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     {
                         if (sdf < 0) 
                         {
-                            float3 col = float3(1.0, 1.0, 1.0); // Could sample material color here
+                            float3 col = float3(1.0, 1.0, 1.0);
+                            // Could sample material color here
                             accumulatedColor += float4(col, 1.0);
                             voxelCount += 1.0;
                             detectedMaterial = mat;
@@ -220,6 +226,7 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     if (id >= _TargetLevelCount) return;
     uint nodeIndex = _TargetLevelOffset + id;
     SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+
     if (node.topology == 0)
     {
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
@@ -253,7 +260,7 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     }
     else
     {
-         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
-         _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        _NodeBuffer[_NodeOffset + nodeIndex].lodMaterial = 0;
     }
 }
