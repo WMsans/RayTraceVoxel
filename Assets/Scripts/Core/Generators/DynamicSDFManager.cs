@@ -331,11 +331,11 @@ namespace VoxelEngine.Core.Generators
                 }
 
                 // Draw Dirty Regions (RED)
-                Gizmos.color = new Color(1, 0, 0, 0.8f);
-                foreach (var dirty in _debugDirtyRegions)
-                {
-                    Gizmos.DrawWireCube(dirty.center, dirty.size);
-                }
+                // Gizmos.color = new Color(1, 0, 0, 0.8f);
+                // foreach (var dirty in _debugDirtyRegions)
+                // {
+                //     Gizmos.DrawWireCube(dirty.center, dirty.size);
+                // }
 
                 if (_nodeCount > 0 && _bvhNodes != null)
                 {

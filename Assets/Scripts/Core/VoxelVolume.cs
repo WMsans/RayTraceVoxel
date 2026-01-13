@@ -80,6 +80,9 @@ namespace VoxelEngine.Core
         public void Regenerate()
         {
             if (svoCompute == null || !IsReady) return;
+            
+            BufferManager.ResetCounters(); 
+
             SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize);
         }
 

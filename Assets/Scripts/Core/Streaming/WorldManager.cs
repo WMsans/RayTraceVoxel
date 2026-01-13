@@ -22,6 +22,9 @@ namespace VoxelEngine.Core.Streaming
         
         private WorldOctreeNode _rootNode;
         private VoxelVolumePool _pool;
+        
+        // --- ADDED: Debug List to visualize dirty chunks ---
+        private List<Bounds> _debugDirtyChunkBounds = new List<Bounds>();
 
         private void Start()
         {
@@ -55,11 +58,14 @@ namespace VoxelEngine.Core.Streaming
         /// </summary>
         private void ProcessDirtyRegions()
         {
+            // Clear visualization from previous frame
+            _debugDirtyChunkBounds.Clear();
+
             if (DynamicSDFManager.Instance == null) return;
 
             // 1. Get dirty regions (this clears the list in the manager)
             List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
-            Debug.Log(dirtyRegions.Count);
+            
             if (dirtyRegions == null || dirtyRegions.Count == 0) return;
 
             // 2. Get all currently active volumes
@@ -89,6 +95,8 @@ namespace VoxelEngine.Core.Streaming
             // 4. Trigger Regeneration
             foreach (var vol in volumesToUpdate)
             {
+                // Cache for visualization
+                _debugDirtyChunkBounds.Add(vol.WorldBounds);
                 vol.Regenerate();
             }
         }
@@ -169,9 +177,16 @@ namespace VoxelEngine.Core.Streaming
         // Debug Gizmos to visualize the octree
         private void OnDrawGizmos()
         {
-            if (drawDebugGizmos && _rootNode != null)
+            if (drawDebugGizmos)
             {
-                DrawNodeGizmos(_rootNode);
+                if (_rootNode != null) DrawNodeGizmos(_rootNode);
+
+                // --- ADDED: Draw Dirty Chunks (RED) ---
+                Gizmos.color = new Color(1, 0, 0, 0.8f); 
+                foreach (var b in _debugDirtyChunkBounds)
+                {
+                    Gizmos.DrawWireCube(b.center, b.size);
+                }
             }
         }
 
