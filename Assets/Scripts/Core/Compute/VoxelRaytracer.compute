@@ -14,6 +14,12 @@ StructuredBuffer<uint> _GlobalBrickDataBuffer;
 StructuredBuffer<ChunkDef> _ChunkBuffer;
 int _ChunkCount;
 
+StructuredBuffer<TLASCell> _TLASGridBuffer;
+StructuredBuffer<int> _TLASChunkIndexBuffer;
+float3 _TLASBoundsMin;
+float3 _TLASBoundsMax;
+int _TLASResolution;
+
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
 Texture2D<float> _CameraDepthTexture; 
 SamplerState sampler_CameraDepthTexture
@@ -439,32 +445,96 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     bestHit.hit = false;
     bool anyHit = false;
 
-    for (int i = 0; i < _ChunkCount; i++)
+    // --- TLAS TRAVERSAL ---
+    float2 tScene = IntersectBox(rayOrigin, rayDir, _TLASBoundsMin, _TLASBoundsMax);
+    
+    // Fallback if TLAS is empty or ray misses scene completely
+    if (tScene.x < tScene.y && tScene.y > 0)
     {
-        ChunkDef chunk = _ChunkBuffer[i];
-        float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
-        if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > 0)
+        float tCurrent = max(0.0, tScene.x);
+        float tMaxLimit = min(closestT, tScene.y);
+        
+        float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
+        float3 invDir = 1.0 / (rayDir + sign(rayDir) * 1e-6); 
+        
+        float3 startPos = rayOrigin + rayDir * (tCurrent + 1e-4) - _TLASBoundsMin;
+        int3 cellIdx = clamp(int3(startPos / cellSize), 0, _TLASResolution - 1);
+        
+        int3 step = int3(sign(rayDir));
+        float3 tDelta = abs(cellSize * invDir);
+        
+        float3 cellBoundMin = _TLASBoundsMin + float3(cellIdx) * cellSize;
+        float3 cellBoundMax = cellBoundMin + cellSize;
+        
+        float3 nextBoundary = float3(
+            rayDir.x > 0 ? cellBoundMax.x : cellBoundMin.x,
+            rayDir.y > 0 ? cellBoundMax.y : cellBoundMin.y,
+            rayDir.z > 0 ? cellBoundMax.z : cellBoundMin.z
+        );
+        
+        float3 tNext = (nextBoundary - rayOrigin) * invDir;
+        
+        int iter = 0;
+        int maxIter = _TLASResolution * 3;
+        
+        while (iter < maxIter && tCurrent < tMaxLimit)
         {
-            float tStart = max(0.0, tBox.x);
-            float tEnd = min(closestT, tBox.y); 
-            float size = chunk.boundsMax.x - chunk.boundsMin.x;
-            float scale = size / 64.0; 
-            float3 chunkOrigin = chunk.boundsMin;
-            float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
-            
-            HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEnd/scale, tStart/scale);
-            if (info.hit)
-            {
-                float3 hitWorld = chunkOrigin + info.pos * scale;
-                float dist = length(hitWorld - rayOrigin);
-                if (dist < closestT)
-                {
-                    closestT = dist;
-                    bestHit = info;
-                    bestHit.pos = hitWorld; 
-                    anyHit = true;
-                }
-            }
+             if (all(cellIdx >= 0) && all(cellIdx < _TLASResolution))
+             {
+                 uint flatIdx = cellIdx.z * _TLASResolution * _TLASResolution + cellIdx.y * _TLASResolution + cellIdx.x;
+                 TLASCell cell = _TLASGridBuffer[flatIdx];
+                 
+                 for (uint k = 0; k < cell.count; k++)
+                 {
+                     int chunkId = _TLASChunkIndexBuffer[cell.offset + k];
+                     ChunkDef chunk = _ChunkBuffer[chunkId];
+                     
+                     float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
+                     if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > tCurrent - 0.01) 
+                     {
+                        float tStartC = max(0.0, tBox.x);
+                        float tEndC = min(closestT, tBox.y);
+                        
+                        if (tBox.y > tCurrent) // Only check if we haven't passed it
+                        {
+                             float size = chunk.boundsMax.x - chunk.boundsMin.x;
+                             float scale = size / 64.0; 
+                             float3 chunkOrigin = chunk.boundsMin;
+                             float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
+                
+                             HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEndC/scale, tStartC/scale);
+                             if (info.hit)
+                             {
+                                 float3 hitWorld = chunkOrigin + info.pos * scale;
+                                 float dist = length(hitWorld - rayOrigin);
+                                 if (dist < closestT)
+                                 {
+                                     closestT = dist;
+                                     bestHit = info;
+                                     bestHit.pos = hitWorld; 
+                                     anyHit = true;
+                                 }
+                             }
+                        }
+                     }
+                 }
+             }
+             
+             float tExit = min(min(tNext.x, tNext.y), tNext.z);
+             if (closestT < tExit) break; 
+             
+             tCurrent = tExit;
+             if (tNext.x <= tNext.y && tNext.x <= tNext.z) {
+                 tNext.x += tDelta.x;
+                 cellIdx.x += step.x;
+             } else if (tNext.y <= tNext.z) {
+                 tNext.y += tDelta.y;
+                 cellIdx.y += step.y;
+             } else {
+                 tNext.z += tDelta.z;
+                 cellIdx.z += step.z;
+             }
+             iter++;
         }
     }
 

@@ -32,6 +32,14 @@ namespace VoxelEngine.Core.Streaming
         public GraphicsBuffer GlobalBrickDataBuffer { get; private set; }
         
         public GraphicsBuffer ChunkBuffer { get; private set; }
+
+        // --- TLAS Buffers ---
+        public GraphicsBuffer TLASGridBuffer { get; private set; }
+        public GraphicsBuffer TLASChunkIndexBuffer { get; private set; }
+        public Vector3 TLASBoundsMin { get; private set; }
+        public Vector3 TLASBoundsMax { get; private set; }
+        public int TLASResolution = 16;
+        
         private ChunkDef[] _chunkData;
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
@@ -62,6 +70,11 @@ namespace VoxelEngine.Core.Streaming
 
             _chunkData = new ChunkDef[poolSize];
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
+
+            // Initialize TLAS Buffers with dummy data
+            int tlasSize = TLASResolution * TLASResolution * TLASResolution;
+            TLASGridBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, tlasSize, 8); // 2 uints
+            TLASChunkIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1024, 4); // Initial size
         }
 
         private void InitializePool()
@@ -136,6 +149,135 @@ namespace VoxelEngine.Core.Streaming
             }
             VisibleChunkCount = writeIndex;
             if (poolSize > 0) ChunkBuffer.SetData(_chunkData);
+            
+            ComputeTLAS(writeIndex);
+        }
+
+        private void ComputeTLAS(int activeCount)
+        {
+            if (activeCount == 0) return;
+
+            // 1. Compute Scene Bounds
+            Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+
+            for (int i = 0; i < activeCount; i++)
+            {
+                min = Vector3.Min(min, _chunkData[i].boundsMin);
+                max = Vector3.Max(max, _chunkData[i].boundsMax);
+            }
+            
+            // Padding
+            min -= Vector3.one * 0.1f;
+            max += Vector3.one * 0.1f;
+            
+            TLASBoundsMin = min;
+            TLASBoundsMax = max;
+            
+            int res = TLASResolution;
+            int totalCells = res * res * res;
+            
+            // Check buffer size
+            if (TLASGridBuffer == null || TLASGridBuffer.count != totalCells)
+            {
+                TLASGridBuffer?.Release();
+                TLASGridBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalCells, 8);
+            }
+            
+            // Optimisation: use static arrays or pool these to avoid GC if frame rate is high
+            int[] cellCounts = new int[totalCells];
+            
+            Vector3 worldSize = max - min;
+            // Prevent division by zero
+            worldSize.x = Mathf.Max(worldSize.x, 0.001f);
+            worldSize.y = Mathf.Max(worldSize.y, 0.001f);
+            worldSize.z = Mathf.Max(worldSize.z, 0.001f);
+            
+            Vector3 cellSize = new Vector3(worldSize.x / res, worldSize.y / res, worldSize.z / res);
+            
+            // Pass 1: Count
+            for (int i = 0; i < activeCount; i++)
+            {
+                var c = _chunkData[i];
+                Vector3 minCellF = (c.boundsMin - min);
+                Vector3 maxCellF = (c.boundsMax - min);
+                
+                Vector3Int minCell = new Vector3Int(
+                    Mathf.Clamp((int)(minCellF.x / cellSize.x), 0, res - 1),
+                    Mathf.Clamp((int)(minCellF.y / cellSize.y), 0, res - 1),
+                    Mathf.Clamp((int)(minCellF.z / cellSize.z), 0, res - 1)
+                );
+                
+                Vector3Int maxCell = new Vector3Int(
+                    Mathf.Clamp((int)(maxCellF.x / cellSize.x), 0, res - 1),
+                    Mathf.Clamp((int)(maxCellF.y / cellSize.y), 0, res - 1),
+                    Mathf.Clamp((int)(maxCellF.z / cellSize.z), 0, res - 1)
+                );
+                
+                for (int z = minCell.z; z <= maxCell.z; z++)
+                for (int y = minCell.y; y <= maxCell.y; y++)
+                for (int x = minCell.x; x <= maxCell.x; x++)
+                {
+                    int idx = z * res * res + y * res + x;
+                    cellCounts[idx]++;
+                }
+            }
+            
+            // Prefix Sum
+            uint[] tlasCells = new uint[totalCells * 2]; // { offset, count }
+            int currentOffset = 0;
+            for (int i = 0; i < totalCells; i++)
+            {
+                tlasCells[i * 2] = (uint)currentOffset;
+                tlasCells[i * 2 + 1] = (uint)cellCounts[i];
+                currentOffset += cellCounts[i];
+            }
+            
+            int totalIndices = currentOffset;
+            int[] chunkIndices = new int[totalIndices];
+            
+            // Fill Offsets (temp array to track current write position)
+            int[] fillOffsets = new int[totalCells];
+            for (int i = 0; i < totalCells; i++) fillOffsets[i] = (int)tlasCells[i * 2];
+            
+            // Pass 2: Fill
+            for (int i = 0; i < activeCount; i++)
+            {
+                var c = _chunkData[i];
+                Vector3 minCellF = (c.boundsMin - min);
+                Vector3 maxCellF = (c.boundsMax - min);
+                
+                Vector3Int minCell = new Vector3Int(
+                    Mathf.Clamp((int)(minCellF.x / cellSize.x), 0, res - 1),
+                    Mathf.Clamp((int)(minCellF.y / cellSize.y), 0, res - 1),
+                    Mathf.Clamp((int)(minCellF.z / cellSize.z), 0, res - 1)
+                );
+                
+                Vector3Int maxCell = new Vector3Int(
+                    Mathf.Clamp((int)(maxCellF.x / cellSize.x), 0, res - 1),
+                    Mathf.Clamp((int)(maxCellF.y / cellSize.y), 0, res - 1),
+                    Mathf.Clamp((int)(maxCellF.z / cellSize.z), 0, res - 1)
+                );
+
+                for (int z = minCell.z; z <= maxCell.z; z++)
+                for (int y = minCell.y; y <= maxCell.y; y++)
+                for (int x = minCell.x; x <= maxCell.x; x++)
+                {
+                    int idx = z * res * res + y * res + x;
+                    chunkIndices[fillOffsets[idx]] = i;
+                    fillOffsets[idx]++;
+                }
+            }
+            
+            TLASGridBuffer.SetData(tlasCells);
+            
+            if (TLASChunkIndexBuffer == null || TLASChunkIndexBuffer.count < totalIndices)
+            {
+                TLASChunkIndexBuffer?.Release();
+                // Grow with some buffer to avoid frequent realloc
+                TLASChunkIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Mathf.Max(totalIndices, 1024) * 2, 4);
+            }
+            TLASChunkIndexBuffer.SetData(chunkIndices);
         }
 
         public int ActiveChunkCount => _activeVolumes.Count;
@@ -147,6 +289,8 @@ namespace VoxelEngine.Core.Streaming
             GlobalPayloadBuffer?.Release();
             GlobalBrickDataBuffer?.Release();
             ChunkBuffer?.Release();
+            TLASGridBuffer?.Release();
+            TLASChunkIndexBuffer?.Release();
         }
     }
 }

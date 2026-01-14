@@ -80,6 +80,13 @@ namespace VoxelEngine.Core.Rendering
             // --- FIX: Merged Buffer Params ---
             private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
             
+            // --- TLAS Params ---
+            private static readonly int _TLASGridBufferParams = Shader.PropertyToID("_TLASGridBuffer");
+            private static readonly int _TLASChunkIndexBufferParams = Shader.PropertyToID("_TLASChunkIndexBuffer");
+            private static readonly int _TLASBoundsMinParams = Shader.PropertyToID("_TLASBoundsMin");
+            private static readonly int _TLASBoundsMaxParams = Shader.PropertyToID("_TLASBoundsMax");
+            private static readonly int _TLASResolutionParams = Shader.PropertyToID("_TLASResolution");
+            
             private static readonly int _ChunkBufferParams = Shader.PropertyToID("_ChunkBuffer");
             private static readonly int _ChunkCountParams = Shader.PropertyToID("_ChunkCount");
             private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
@@ -140,6 +147,13 @@ namespace VoxelEngine.Core.Rendering
                 
                 // --- FIX: Merged Buffer ---
                 public GraphicsBuffer brickDataBuffer;
+                
+                // --- TLAS Data ---
+                public GraphicsBuffer tlasGridBuffer;
+                public GraphicsBuffer tlasChunkIndexBuffer;
+                public Vector3 tlasBoundsMin;
+                public Vector3 tlasBoundsMax;
+                public int tlasResolution;
                 
                 public GraphicsBuffer chunkBuffer;
                 public int chunkCount;
@@ -215,13 +229,15 @@ namespace VoxelEngine.Core.Rendering
                     var pool = VoxelVolumePool.Instance;
                     data.nodeBuffer = pool.GlobalNodeBuffer;
                     data.payloadBuffer = pool.GlobalPayloadBuffer;
-                    
-                    // --- FIX: Use GlobalBrickDataBuffer ---
                     data.brickDataBuffer = pool.GlobalBrickDataBuffer;
-                    
                     data.chunkBuffer = pool.ChunkBuffer;
-                    
                     data.chunkCount = pool.VisibleChunkCount;
+                    
+                    data.tlasGridBuffer = pool.TLASGridBuffer;
+                    data.tlasChunkIndexBuffer = pool.TLASChunkIndexBuffer;
+                    data.tlasBoundsMin = pool.TLASBoundsMin;
+                    data.tlasBoundsMax = pool.TLASBoundsMax;
+                    data.tlasResolution = pool.TLASResolution;
 
                     data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
                     if (_albedoHandle != null) data.albedoArray = renderGraph.ImportTexture(_albedoHandle);
@@ -254,12 +270,17 @@ namespace VoxelEngine.Core.Rendering
 
                         cmd.SetComputeBufferParam(cs, ker, _GlobalNodeBufferParams, pd.nodeBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalPayloadBufferParams, pd.payloadBuffer);
-                        
-                        // --- FIX: Set Single Buffer ---
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickDataBufferParams, pd.brickDataBuffer);
                         
                         cmd.SetComputeBufferParam(cs, ker, _ChunkBufferParams, pd.chunkBuffer);
                         cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount); 
+                        
+                        if (pd.tlasGridBuffer != null) cmd.SetComputeBufferParam(cs, ker, _TLASGridBufferParams, pd.tlasGridBuffer);
+                        if (pd.tlasChunkIndexBuffer != null) cmd.SetComputeBufferParam(cs, ker, _TLASChunkIndexBufferParams, pd.tlasChunkIndexBuffer);
+                        cmd.SetComputeVectorParam(cs, _TLASBoundsMinParams, pd.tlasBoundsMin);
+                        cmd.SetComputeVectorParam(cs, _TLASBoundsMaxParams, pd.tlasBoundsMax);
+                        cmd.SetComputeIntParam(cs, _TLASResolutionParams, pd.tlasResolution);
+                        
                         cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
                         
                         if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, _VoxelMaterialBufferParams, pd.materialBuffer);
