@@ -75,14 +75,14 @@ namespace VoxelEngine.Core.Editing
             _shader.SetBuffer(kernelAlloc, "_NodeBuffer", _storage.NodeBuffer);
             _shader.SetBuffer(kernelAlloc, "_CounterBuffer", _storage.CounterBuffer);
             _shader.SetBuffer(kernelAlloc, "_PayloadBuffer", _storage.PayloadBuffer);
-            _shader.SetBuffer(kernelAlloc, "_BrickBuffer", _storage.BrickBuffer);
-            _shader.SetBuffer(kernelAlloc, "_BrickMaterialBuffer", _storage.BrickMaterialBuffer);
+            
+            _shader.SetBuffer(kernelAlloc, "_BrickDataBuffer", _storage.BrickDataBuffer);
             
             // Buffers - Edit
             _shader.SetBuffer(kernelEdit, "_NodeBuffer", _storage.NodeBuffer);
             _shader.SetBuffer(kernelEdit, "_PayloadBuffer", _storage.PayloadBuffer);
-            _shader.SetBuffer(kernelEdit, "_BrickBuffer", _storage.BrickBuffer);
-            _shader.SetBuffer(kernelEdit, "_BrickMaterialBuffer", _storage.BrickMaterialBuffer);
+            
+            _shader.SetBuffer(kernelEdit, "_BrickDataBuffer", _storage.BrickDataBuffer);
 
             // 4. Dispatch AllocateNodes (8x8x8 threads per group -> 1 brick per thread)
             int totalBricksX = rangeX;

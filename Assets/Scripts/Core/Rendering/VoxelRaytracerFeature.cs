@@ -65,7 +65,7 @@ namespace VoxelEngine.Core.Rendering
             private ComputeShader _shader;
             private Material _compositeMaterial;
 
-            // Shader IDs...
+            // Shader IDs
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
             private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
             private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
@@ -76,9 +76,10 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
-            private static readonly int _GlobalBrickBufferParams = Shader.PropertyToID("_GlobalBrickBuffer");
-            private static readonly int _GlobalBrickMaterialBufferParams = Shader.PropertyToID("_GlobalBrickMaterialBuffer");
-            private static readonly int _GlobalBrickNormalBufferParams = Shader.PropertyToID("_GlobalBrickNormalBuffer"); //
+            
+            // --- FIX: Merged Buffer Params ---
+            private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
+            
             private static readonly int _ChunkBufferParams = Shader.PropertyToID("_ChunkBuffer");
             private static readonly int _ChunkCountParams = Shader.PropertyToID("_ChunkCount");
             private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
@@ -136,9 +137,10 @@ namespace VoxelEngine.Core.Rendering
                 public Vector4 raytraceParams; 
                 public GraphicsBuffer nodeBuffer;
                 public GraphicsBuffer payloadBuffer;
-                public GraphicsBuffer brickBuffer;
-                public GraphicsBuffer brickMaterialBuffer;
-                public GraphicsBuffer brickNormalBuffer; //
+                
+                // --- FIX: Merged Buffer ---
+                public GraphicsBuffer brickDataBuffer;
+                
                 public GraphicsBuffer chunkBuffer;
                 public int chunkCount;
                 public GraphicsBuffer materialBuffer;
@@ -213,9 +215,10 @@ namespace VoxelEngine.Core.Rendering
                     var pool = VoxelVolumePool.Instance;
                     data.nodeBuffer = pool.GlobalNodeBuffer;
                     data.payloadBuffer = pool.GlobalPayloadBuffer;
-                    data.brickBuffer = pool.GlobalBrickBuffer;
-                    data.brickMaterialBuffer = pool.GlobalBrickMaterialBuffer;
-                    data.brickNormalBuffer = pool.GlobalBrickNormalBuffer; //
+                    
+                    // --- FIX: Use GlobalBrickDataBuffer ---
+                    data.brickDataBuffer = pool.GlobalBrickDataBuffer;
+                    
                     data.chunkBuffer = pool.ChunkBuffer;
                     
                     data.chunkCount = pool.VisibleChunkCount;
@@ -251,9 +254,10 @@ namespace VoxelEngine.Core.Rendering
 
                         cmd.SetComputeBufferParam(cs, ker, _GlobalNodeBufferParams, pd.nodeBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalPayloadBufferParams, pd.payloadBuffer);
-                        cmd.SetComputeBufferParam(cs, ker, _GlobalBrickBufferParams, pd.brickBuffer);
-                        cmd.SetComputeBufferParam(cs, ker, _GlobalBrickMaterialBufferParams, pd.brickMaterialBuffer);
-                        cmd.SetComputeBufferParam(cs, ker, _GlobalBrickNormalBufferParams, pd.brickNormalBuffer); //
+                        
+                        // --- FIX: Set Single Buffer ---
+                        cmd.SetComputeBufferParam(cs, ker, _GlobalBrickDataBufferParams, pd.brickDataBuffer);
+                        
                         cmd.SetComputeBufferParam(cs, ker, _ChunkBufferParams, pd.chunkBuffer);
                         cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount); 
                         cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);

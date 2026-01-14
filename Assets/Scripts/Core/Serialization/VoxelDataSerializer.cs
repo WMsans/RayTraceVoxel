@@ -14,60 +14,44 @@ namespace VoxelEngine.Core.Serialization
         {
             if (volume == null || !volume.IsReady)
             {
-                Debug.LogError("VoxelVolume is not ready to save.");
                 onComplete?.Invoke(false);
                 return;
             }
 
             var counterBuffer = volume.CounterBuffer;
-            
             AsyncGPUReadback.Request(counterBuffer, (request) =>
             {
-                if (request.hasError)
-                {
-                    Debug.LogError("Failed to read counter buffer.");
-                    onComplete?.Invoke(false);
-                    return;
-                }
+                if (request.hasError) { onComplete?.Invoke(false); return; }
 
                 using (var data = request.GetData<uint>())
                 {
-                    if (data.Length < 3)
-                    {
-                        Debug.LogError("Counter buffer data invalid.");
-                        onComplete?.Invoke(false);
-                        return;
-                    }
-
                     int nodeCount = (int)data[0];
                     int payloadCount = (int)data[1];
-                    int brickFloatCount = (int)data[2]; // Total floats in use
+                    int brickVoxelCount = (int)data[2]; // Total voxels
 
-                    ReadDataBuffers(volume, filePath, nodeCount, payloadCount, brickFloatCount, onComplete);
+                    ReadDataBuffers(volume, filePath, nodeCount, payloadCount, brickVoxelCount, onComplete);
                 }
             });
         }
 
-        private static void ReadDataBuffers(VoxelVolume volume, string filePath, int nodeCount, int payloadCount, int brickFloatCount, Action<bool> onComplete)
+        private static void ReadDataBuffers(VoxelVolume volume, string filePath, int nodeCount, int payloadCount, int brickVoxelCount, Action<bool> onComplete)
         {
-            // We need to wait for 4 requests
-            int pendingRequests = 4;
+            // Now only 3 requests (Nodes, Payloads, BrickData)
+            int pendingRequests = 3; 
             bool failed = false;
 
             NativeArray<SVONode> nodes = default;
             NativeArray<VoxelPayload> payloads = default;
-            NativeArray<float> brickData = default;
-            NativeArray<uint> brickMaterials = default;
+            NativeArray<uint> brickData = default; // Packed Data
 
             void CheckComplete()
             {
                 if (failed) return;
-                
                 if (pendingRequests == 0)
                 {
                     try
                     {
-                        WriteFile(filePath, volume.Resolution, nodeCount, payloadCount, brickFloatCount, nodes, payloads, brickData, brickMaterials);
+                        WriteFile(filePath, volume.Resolution, nodeCount, payloadCount, brickVoxelCount, nodes, payloads, brickData);
                         onComplete?.Invoke(true);
                     }
                     catch (Exception e)
@@ -80,7 +64,6 @@ namespace VoxelEngine.Core.Serialization
                         if (nodes.IsCreated) nodes.Dispose();
                         if (payloads.IsCreated) payloads.Dispose();
                         if (brickData.IsCreated) brickData.Dispose();
-                        if (brickMaterials.IsCreated) brickMaterials.Dispose();
                     }
                 }
             }
@@ -90,98 +73,52 @@ namespace VoxelEngine.Core.Serialization
             {
                 AsyncGPUReadback.Request(volume.NodeBuffer, nodeCount * System.Runtime.InteropServices.Marshal.SizeOf<SVONode>(), 0, (req) =>
                 {
-                    if (req.hasError) { failed = true; Debug.LogError("Node readback error"); }
-                    else
-                    {
+                    if (req.hasError) failed = true;
+                    else {
                         var temp = new NativeArray<SVONode>(req.GetData<SVONode>().Length, Allocator.Persistent);
                         temp.CopyFrom(req.GetData<SVONode>());
                         nodes = temp;
                     }
-                    
-                    pendingRequests--;
-                    CheckComplete();
+                    pendingRequests--; CheckComplete();
                 });
             }
-            else
-            {
-                nodes = new NativeArray<SVONode>(0, Allocator.Persistent);
-                pendingRequests--;
-                CheckComplete();
-            }
+            else { nodes = new NativeArray<SVONode>(0, Allocator.Persistent); pendingRequests--; CheckComplete(); }
 
             // 2. Payloads
             if (payloadCount > 0)
             {
                 AsyncGPUReadback.Request(volume.PayloadBuffer, payloadCount * System.Runtime.InteropServices.Marshal.SizeOf<VoxelPayload>(), 0, (req) =>
                 {
-                    if (req.hasError) { failed = true; Debug.LogError("Payload readback error"); }
-                    else
-                    {
+                    if (req.hasError) failed = true;
+                    else {
                         var temp = new NativeArray<VoxelPayload>(req.GetData<VoxelPayload>().Length, Allocator.Persistent);
                         temp.CopyFrom(req.GetData<VoxelPayload>());
                         payloads = temp;
                     }
-                    pendingRequests--;
-                    CheckComplete();
+                    pendingRequests--; CheckComplete();
                 });
             }
-            else
-            {
-                payloads = new NativeArray<VoxelPayload>(0, Allocator.Persistent);
-                pendingRequests--;
-                CheckComplete();
-            }
+            else { payloads = new NativeArray<VoxelPayload>(0, Allocator.Persistent); pendingRequests--; CheckComplete(); }
 
-            // 3. Brick Data (Floats)
-            if (brickFloatCount > 0)
+            // 3. Brick Data (Packed UInts)
+            if (brickVoxelCount > 0)
             {
-                AsyncGPUReadback.Request(volume.BrickBuffer, brickFloatCount * sizeof(float), 0, (req) =>
+                AsyncGPUReadback.Request(volume.BrickDataBuffer, brickVoxelCount * sizeof(uint), 0, (req) =>
                 {
-                    if (req.hasError) { failed = true; Debug.LogError("Brick data readback error"); }
-                    else
-                    {
-                        var temp = new NativeArray<float>(req.GetData<float>().Length, Allocator.Persistent);
-                        temp.CopyFrom(req.GetData<float>());
-                        brickData = temp;
-                    }
-                    pendingRequests--;
-                    CheckComplete();
-                });
-            }
-            else
-            {
-                brickData = new NativeArray<float>(0, Allocator.Persistent);
-                pendingRequests--;
-                CheckComplete();
-            }
-
-            // 4. Brick Materials (Uints)
-            // Note: BrickMaterialBuffer has same count as BrickBuffer (per voxel)
-            if (brickFloatCount > 0)
-            {
-                AsyncGPUReadback.Request(volume.BrickMaterialBuffer, brickFloatCount * sizeof(uint), 0, (req) =>
-                {
-                    if (req.hasError) { failed = true; Debug.LogError("Brick material readback error"); }
-                    else
-                    {
+                    if (req.hasError) failed = true;
+                    else {
                         var temp = new NativeArray<uint>(req.GetData<uint>().Length, Allocator.Persistent);
                         temp.CopyFrom(req.GetData<uint>());
-                        brickMaterials = temp;
+                        brickData = temp;
                     }
-                    pendingRequests--;
-                    CheckComplete();
+                    pendingRequests--; CheckComplete();
                 });
             }
-            else
-            {
-                brickMaterials = new NativeArray<uint>(0, Allocator.Persistent);
-                pendingRequests--;
-                CheckComplete();
-            }
+            else { brickData = new NativeArray<uint>(0, Allocator.Persistent); pendingRequests--; CheckComplete(); }
         }
 
-        private static void WriteFile(string filePath, int resolution, int nodeCount, int payloadCount, int brickFloatCount,
-            NativeArray<SVONode> nodes, NativeArray<VoxelPayload> payloads, NativeArray<float> brickData, NativeArray<uint> brickMaterials)
+        private static void WriteFile(string filePath, int resolution, int nodeCount, int payloadCount, int brickVoxelCount,
+            NativeArray<SVONode> nodes, NativeArray<VoxelPayload> payloads, NativeArray<uint> brickData)
         {
             using (var fs = new FileStream(filePath, FileMode.Create))
             using (var writer = new BinaryWriter(fs))
@@ -193,41 +130,21 @@ namespace VoxelEngine.Core.Serialization
                     Resolution = resolution,
                     NodeCount = nodeCount,
                     PayloadCount = payloadCount,
-                    BrickFloatCount = brickFloatCount
+                    BrickDataCount = brickVoxelCount
                 };
                 header.Write(writer);
-
-                // Use a GZipStream for data
-                // We need to write the compressed data. 
-                // We can write to a MemoryStream first to compress, then write to file.
-                // Or wrap the file stream in GZipStream? 
-                // If we wrap the whole thing, the header is compressed too (harder to peek).
-                // Better to write header normally, then compressed blocks.
-                
-                // Block 1: Nodes
                 WriteCompressedBlock(writer, nodes);
-                
-                // Block 2: Payloads
                 WriteCompressedBlock(writer, payloads);
-                
-                // Block 3: Brick Data
                 WriteCompressedBlock(writer, brickData);
-                
-                // Block 4: Brick Materials
-                WriteCompressedBlock(writer, brickMaterials);
             }
-            
-            Debug.Log($"Saved voxel volume to {filePath}. Nodes: {nodeCount}, Payloads: {payloadCount}, Bricks: {brickFloatCount/64}");
         }
 
         private static void WriteCompressedBlock<T>(BinaryWriter writer, NativeArray<T> data) where T : struct
         {
-            // Convert NativeArray to byte array
             int size = data.Length * System.Runtime.InteropServices.Marshal.SizeOf<T>();
             byte[] bytes = new byte[size];
             NativeArray<byte>.Copy(data.Reinterpret<byte>(System.Runtime.InteropServices.Marshal.SizeOf<T>()), bytes, size);
 
-            // Compress
             using (var ms = new MemoryStream())
             {
                 using (var gzip = new GZipStream(ms, CompressionMode.Compress))
@@ -235,8 +152,6 @@ namespace VoxelEngine.Core.Serialization
                     gzip.Write(bytes, 0, bytes.Length);
                 }
                 byte[] compressed = ms.ToArray();
-                
-                // Write size of compressed block for easier reading
                 writer.Write(compressed.Length);
                 writer.Write(compressed);
             }
@@ -244,68 +159,31 @@ namespace VoxelEngine.Core.Serialization
 
         public static void Load(VoxelVolume volume, string filePath)
         {
-            if (!File.Exists(filePath))
-            {
-                Debug.LogError($"File not found: {filePath}");
-                return;
-            }
+            if (!File.Exists(filePath)) return;
 
             using (var fs = new FileStream(filePath, FileMode.Open))
             using (var reader = new BinaryReader(fs))
             {
                 var header = VoxelFileFormat.Header.Read(reader);
-                
-                if (header.Magic != VoxelFileFormat.MAGIC)
-                {
-                    Debug.LogError("Invalid file format.");
-                    return;
-                }
+                if (header.Magic != VoxelFileFormat.MAGIC) return;
 
-                // Ensure volume capacity
-                // We'll access private members via reflection or we need to expose a Reinitialize method on VoxelVolume/SVOBufferManager.
-                // For now, let's assume VoxelVolume has a Reinitialize method or we can just access buffers if they fit.
-                // But if the loaded file has more nodes than maxNodes, we must resize.
-                
-                // Let's implement a Resize/EnsureCapacity on VoxelVolume?
-                // Or just check strictly against current settings.
-                
-                if (header.NodeCount > volume.MaxNodes || header.BrickFloatCount / 64 > volume.MaxBricks)
-                {
-                     Debug.LogError($"Volume capacity too small. File: Nodes={header.NodeCount}, Bricks={header.BrickFloatCount/64}. Volume: Nodes={volume.MaxNodes}, Bricks={volume.MaxBricks}");
-                     return;
-                }
-
-                // Read and Decompress
-                
-                // Nodes
                 byte[] nodeBytes = ReadCompressedBlock(reader);
                 var nodes = BytesToNativeArray<SVONode>(nodeBytes, header.NodeCount);
                 volume.NodeBuffer.SetData(nodes);
                 nodes.Dispose();
 
-                // Payloads
                 byte[] payloadBytes = ReadCompressedBlock(reader);
                 var payloads = BytesToNativeArray<VoxelPayload>(payloadBytes, header.PayloadCount);
                 volume.PayloadBuffer.SetData(payloads);
                 payloads.Dispose();
 
-                // Brick Data
                 byte[] brickBytes = ReadCompressedBlock(reader);
-                var brickData = BytesToNativeArray<float>(brickBytes, header.BrickFloatCount);
-                volume.BrickBuffer.SetData(brickData);
+                var brickData = BytesToNativeArray<uint>(brickBytes, header.BrickDataCount);
+                volume.BrickDataBuffer.SetData(brickData);
                 brickData.Dispose();
 
-                // Brick Materials
-                byte[] matBytes = ReadCompressedBlock(reader);
-                var brickMats = BytesToNativeArray<uint>(matBytes, header.BrickFloatCount);
-                volume.BrickMaterialBuffer.SetData(brickMats);
-                brickMats.Dispose();
-
-                // Update Counters
-                // [0]=AllocatedNodes, [1]=AllocatedPayloads, [2]=AllocatedBricksPtr
-                volume.CounterBuffer.SetData(new uint[] { (uint)header.NodeCount, (uint)header.PayloadCount, (uint)header.BrickFloatCount });
-                
-                Debug.Log($"Loaded voxel volume from {filePath}");
+                // [0]=Nodes, [1]=Payloads, [2]=BrickVoxels
+                volume.CounterBuffer.SetData(new uint[] { (uint)header.NodeCount, (uint)header.PayloadCount, (uint)header.BrickDataCount });
             }
         }
 
@@ -313,7 +191,6 @@ namespace VoxelEngine.Core.Serialization
         {
             int size = reader.ReadInt32();
             byte[] compressed = reader.ReadBytes(size);
-            
             using (var ms = new MemoryStream(compressed))
             using (var gzip = new GZipStream(ms, CompressionMode.Decompress))
             using (var outMs = new MemoryStream())

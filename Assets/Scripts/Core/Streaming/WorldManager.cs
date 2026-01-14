@@ -1,4 +1,6 @@
 using UnityEngine;
+using System.Collections.Generic;
+using VoxelEngine.Core.Generators; // For DynamicSDFManager
 
 namespace VoxelEngine.Core.Streaming
 {
@@ -9,6 +11,7 @@ namespace VoxelEngine.Core.Streaming
         [Header("Configuration")]
         public int initialWorldSize = 1024;
         public int maxDepth = 4;
+        public bool drawDebugGizmos = false;
 
         [Header("LOD Settings")]
         public Transform viewer;
@@ -19,6 +22,9 @@ namespace VoxelEngine.Core.Streaming
         
         private WorldOctreeNode _rootNode;
         private VoxelVolumePool _pool;
+        
+        // --- ADDED: Debug List to visualize dirty chunks ---
+        private List<Bounds> _debugDirtyChunkBounds = new List<Bounds>();
 
         private void Start()
         {
@@ -37,10 +43,62 @@ namespace VoxelEngine.Core.Streaming
 
         private void Update()
         {
-            if (viewer == null) return;
+            if (viewer != null)
+            {
+                // Run the LOD Logic
+                UpdateNodeLOD(_rootNode, viewer.position);
+            }
+
+            // Phase 4: Process Cache Invalidation
+            ProcessDirtyRegions();
+        }
+
+        /// <summary>
+        /// Phase 4: Checks for dirty SDF regions and regenerates affected VoxelVolumes.
+        /// </summary>
+        private void ProcessDirtyRegions()
+        {
+            // Clear visualization from previous frame
+            _debugDirtyChunkBounds.Clear();
+
+            if (DynamicSDFManager.Instance == null) return;
+
+            // 1. Get dirty regions (this clears the list in the manager)
+            List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
             
-            // Run the LOD Logic
-            UpdateNodeLOD(_rootNode, viewer.position);
+            if (dirtyRegions == null || dirtyRegions.Count == 0) return;
+
+            // 2. Get all currently active volumes
+            var activeVolumes = VoxelVolumeRegistry.Volumes;
+            
+            // Optimization: Use a HashSet to avoid regenerating the same volume twice if it overlaps multiple dirty regions
+            HashSet<VoxelVolume> volumesToUpdate = new HashSet<VoxelVolume>();
+
+            // 3. Find Intersections
+            for (int i = 0; i < dirtyRegions.Count; i++)
+            {
+                Bounds dirty = dirtyRegions[i];
+                
+                // Brute-force check against active chunks (usually fast enough for <100 chunks)
+                for (int v = 0; v < activeVolumes.Count; v++)
+                {
+                    VoxelVolume vol = activeVolumes[v];
+                    if (!vol.gameObject.activeInHierarchy) continue;
+
+                    if (vol.WorldBounds.Intersects(dirty))
+                    {
+                        volumesToUpdate.Add(vol);
+                    }
+                }
+            }
+
+            // 4. Trigger Regeneration
+            foreach (var vol in volumesToUpdate)
+            {
+                // Cache for visualization
+                _debugDirtyChunkBounds.Add(vol.WorldBounds);
+                vol.Regenerate();
+            }
         }
 
         /// <summary>
@@ -119,9 +177,16 @@ namespace VoxelEngine.Core.Streaming
         // Debug Gizmos to visualize the octree
         private void OnDrawGizmos()
         {
-            if (_rootNode != null)
+            if (drawDebugGizmos)
             {
-                DrawNodeGizmos(_rootNode);
+                if (_rootNode != null) DrawNodeGizmos(_rootNode);
+
+                // --- ADDED: Draw Dirty Chunks (RED) ---
+                Gizmos.color = new Color(1, 0, 0, 0.8f); 
+                foreach (var b in _debugDirtyChunkBounds)
+                {
+                    Gizmos.DrawWireCube(b.center, b.size);
+                }
             }
         }
 

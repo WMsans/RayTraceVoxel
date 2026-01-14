@@ -6,9 +6,10 @@ namespace VoxelEngine.Core.Interfaces
     {
         GraphicsBuffer NodeBuffer { get; }
         GraphicsBuffer PayloadBuffer { get; }
-        GraphicsBuffer BrickBuffer { get; }
-        GraphicsBuffer BrickMaterialBuffer { get; }
-        GraphicsBuffer BrickNormalBuffer { get; }
+        
+        // Merged Buffer
+        GraphicsBuffer BrickDataBuffer { get; } 
+        
         GraphicsBuffer CounterBuffer { get; }
         
         int Resolution { get; }
