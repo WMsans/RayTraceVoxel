@@ -114,9 +114,53 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         }
     }
 
+    // [OPTIMIZATION] Early-Out for Terrain
+    float worldRadius = 3.0 * scale;
+
+    if (activeCount == 0)
+    {
+        // Sample terrain height at brick corners to estimate range
+        // We use the 4 corners of the brick's XZ footprint
+        float2 c1 = brickMin.xz;
+        float2 c2 = float2(brickMax.x, brickMin.z);
+        float2 c3 = float2(brickMin.x, brickMax.z);
+        float2 c4 = brickMax.xz;
+        
+        float h1 = GetHeight(c1);
+        float h2 = GetHeight(c2);
+        float h3 = GetHeight(c3);
+        float h4 = GetHeight(c4);
+        
+        float minH = min(min(h1, h2), min(h3, h4));
+        float maxH = max(max(h1, h2), max(h3, h4));
+        
+        // Terrain SDF is approx (y - height) * 0.5
+        // Surface band is where |y - height| * 0.5 < worldRadius
+        // So |y - height| < worldRadius * 2.0
+        
+        float boundMargin = worldRadius * 2.0; 
+        
+        // Check if Brick is completely above the surface band (Air)
+        // brickMin.y > maxTerrainHeight + margin
+        bool isFarAir = brickMin.y > (maxH + boundMargin);
+        
+        // Check if Brick is completely below the surface band (Deep Solid)
+        // brickMax.y < minTerrainHeight - margin
+        bool isDeepSolid = brickMax.y < (minH - boundMargin);
+        
+        if (isFarAir || isDeepSolid)
+        {
+             // Write Empty Node and Early Exit
+            uint nodeIndex = GetNodeIndex(4, id);
+            _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
+            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+            return;
+        }
+    }
+
     // 3. Evaluate SDF at Brick Center
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, activeCount);
-    float worldRadius = 3.0 * scale;
+
 
     if (centerCtx.sdf < worldRadius)
     {

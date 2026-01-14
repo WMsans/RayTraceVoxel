@@ -19,6 +19,7 @@ MonoBehaviour:
     injectionPoint: 400
     lodBias: 1
     useCameraFarPlane: 0
+    blueNoiseTexture: {fileID: 2800000, guid: abbd6cebc53adce8b9207a270ab231ee, type: 3}
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0

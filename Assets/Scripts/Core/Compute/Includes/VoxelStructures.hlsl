@@ -87,6 +87,13 @@ struct LBVHNode
     int rightChild;
 };
 
+// --- TLAS Structs ---
+struct TLASCell
+{
+    uint offset; // Start index in the ChunkIndexBuffer
+    uint count;  // Number of chunks
+};
+
 // --- Math Helpers ---
 
 float3 RotateVector(float3 v, float4 q)

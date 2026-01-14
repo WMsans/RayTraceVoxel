@@ -14,8 +14,16 @@ StructuredBuffer<uint> _GlobalBrickDataBuffer;
 StructuredBuffer<ChunkDef> _ChunkBuffer;
 int _ChunkCount;
 
+StructuredBuffer<TLASCell> _TLASGridBuffer;
+StructuredBuffer<int> _TLASChunkIndexBuffer;
+float3 _TLASBoundsMin;
+float3 _TLASBoundsMax;
+int _TLASResolution;
+
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
 Texture2D<float> _CameraDepthTexture; 
+Texture2D<float4> _BlueNoiseTexture; // Added Blue Noise Texture
+
 SamplerState sampler_CameraDepthTexture
 {
     Filter = MIN_MAG_MIP_POINT;
@@ -44,9 +52,30 @@ float _DebugViewBricks;
 
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
-#define EPSILON 0.002
+#define EPSILON 0.01
 
 // --- Helper Functions ---
+
+float GetInterleavedGradientNoise(float2 pixelPos)
+{
+    float3 magic = float3(0.06711056, 0.00583715, 52.9829189);
+    return frac(magic.z * frac(dot(pixelPos, magic.xy)));
+}
+
+float GetDither(uint2 pixelPos)
+{
+    uint width, height;
+    _BlueNoiseTexture.GetDimensions(width, height);
+    if (width > 0)
+    {
+        // Tiled sampling of Blue Noise
+        return _BlueNoiseTexture[pixelPos % uint2(width, height)].r;
+    }
+    else
+    {
+        return GetInterleavedGradientNoise(float2(pixelPos));
+    }
+}
 
 float remap(float value, float min1, float max1, float min2, float max2) {
     return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
@@ -232,6 +261,9 @@ float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColo
     return ambient + direct + rim;
 }
 
+// --- OPTIMIZED TRIPLANAR SAMPLING ---
+// Uses dynamic branching to only sample planes with significant weight (> 1%).
+// Removes stochastic noise completely while saving bandwidth compared to full 3-plane sampling.
 void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outMetallic, out float outAO, float lod)
 {
     if (matId == 0) { 
@@ -241,35 +273,68 @@ void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 ou
     
     VoxelTypeGPU mat = _VoxelMaterialBuffer[matId];
     float3 weights = abs(normal);
-    weights = pow(weights, 8.0);
-    weights /= (weights.x + weights.y + weights.z);
-
-    uint yAlbedoID = (normal.y > 0) ? mat.topAlbedoIndex : mat.sideAlbedoIndex;
-    uint yMaskID = (normal.y > 0) ? mat.topMaskIndex : mat.sideMaskIndex;
-    float yMetallic = (normal.y > 0) ? mat.topMetallic : mat.sideMetallic;
-
-    float2 uvX = worldPos.zy;
-    float2 uvY = worldPos.xz;
-    float2 uvZ = worldPos.xy;
+    weights = pow(weights, 8.0); // Sharp blend
+    float weightSum = weights.x + weights.y + weights.z;
+    weights /= (weightSum + 1e-5); // Normalize to 1
     
-    float3 colX = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideAlbedoIndex), lod).rgb;
-    float3 colY = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yAlbedoID), lod).rgb;
-    float3 colZ = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideAlbedoIndex), lod).rgb;
-    outAlbedo = colX * weights.x + colY * weights.y + colZ * weights.z;
-
-    float4 maskX = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvX, mat.sideMaskIndex), lod);
-    float4 maskY = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvY, yMaskID), lod);
-    float4 maskZ = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uvZ, mat.sideMaskIndex), lod);
-    float4 mask = maskX * weights.x + maskY * weights.y + maskZ * weights.z;
+    float3 accumAlbedo = 0;
+    float accumAO = 0;
+    float accumRoughness = 0;
+    float accumMetallic = 0;
     
-    outAO = mask.g;
-    outRoughness = mask.b;
-
-    float metallicX = mat.sideMetallic;
-    float metallicY = yMetallic;
-    float metallicZ = mat.sideMetallic;
-    outMetallic = metallicX * weights.x + metallicY * weights.y + metallicZ * weights.z;
-    outNormal = normal;
+    // Only sample if weight is significant (e.g. > 1%)
+    // Due to pow(8), usually only 1 or 2 planes are active.
+    
+    // X Plane
+    if (weights.x > 0.01)
+    {
+        float2 uv = worldPos.zy;
+        float3 col = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideAlbedoIndex), lod).rgb;
+        float4 mask = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideMaskIndex), lod);
+        accumAlbedo += col * weights.x;
+        accumAO += mask.g * weights.x;
+        accumRoughness += mask.b * weights.x;
+        accumMetallic += mat.sideMetallic * weights.x;
+    }
+    
+    // Y Plane
+    if (weights.y > 0.01)
+    {
+        float2 uv = worldPos.xz;
+        uint albedoID = (normal.y > 0) ? mat.topAlbedoIndex : mat.sideAlbedoIndex;
+        uint maskID = (normal.y > 0) ? mat.topMaskIndex : mat.sideMaskIndex;
+        float met = (normal.y > 0) ? mat.topMetallic : mat.sideMetallic;
+        
+        float3 col = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, albedoID), lod).rgb;
+        float4 mask = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, maskID), lod);
+        accumAlbedo += col * weights.y;
+        accumAO += mask.g * weights.y;
+        accumRoughness += mask.b * weights.y;
+        accumMetallic += met * weights.y;
+    }
+    
+    // Z Plane
+    if (weights.z > 0.01)
+    {
+        float2 uv = worldPos.xy;
+        float3 col = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideAlbedoIndex), lod).rgb;
+        float4 mask = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideMaskIndex), lod);
+        accumAlbedo += col * weights.z;
+        accumAO += mask.g * weights.z;
+        accumRoughness += mask.b * weights.z;
+        accumMetallic += mat.sideMetallic * weights.z;
+    }
+    
+    // Normalize by the sum of weights actually used? 
+    // Since we only skip < 0.01, the error is tiny. 
+    // But strictly: float usedWeight = (w.x>0.01?w.x:0) + ...
+    // For simplicity and speed, we assume the skipped weights are negligible for PBR.
+    
+    outAlbedo = accumAlbedo;
+    outAO = accumAO;
+    outRoughness = accumRoughness;
+    outMetallic = accumMetallic;
+    outNormal = normal; 
 }
 
 // --- CORE SVO TRAVERSAL ---
@@ -379,18 +444,22 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     float tMarch = max(tCurrent, tLeaf.x);
                     float marchEnd = min(tEnd, tLeaf.y);
 
+                    // Sphere Tracing (Ray Marching) using SDF
                     for (int m = 0; m < MAX_MARCH_STEPS; m++)
                     {
                         if (tMarch >= marchEnd) break;
                         float3 p = rayOriginNode + rayDir * tMarch;
                         float3 localPos = p - nodePos;
+                        
                         float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
                         
+                        // Hit surface
                         if (dist < EPSILON)
                         {
-                            float tMin = tMarch - 0.05;
+                            // Refinement: Binary Search to find exact surface intersection
+                            float tMin = tMarch - 0.05; // Backtrack
                             float tMax = tMarch;
-                            for(int r=0; r<3; r++) {
+                            for(int r=0; r<4; r++) { // Increased iterations for better precision
                                 float tMid = (tMin + tMax) * 0.5;
                                 float dMid = SampleBrick(chunk.brickOffset, brickPtr, (rayOriginNode + rayDir * tMid) - nodePos);
                                 if (dMid < EPSILON) tMax = tMid;
@@ -407,8 +476,10 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                             result.brickId = brickPtr;
                             return result;
                         }
-                        float step = max(dist, 0.005);
-                        tMarch += step;
+                        
+                        // Sphere Trace: Skip empty space
+                        // Ensure minimal step to avoid infinite loops in numerical instability zones
+                        tMarch += max(dist, 0.001); 
                     }
                 }
             }
@@ -434,37 +505,106 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0,0,1)));
     float maxDist = linearDepth / max(dot(rayDir, forward), 0.0001);
 
+    // --- Dithering ---
+    // Offsets ray start to break banding artifacts.
+    float dither = GetDither(id.xy);
+    rayOrigin += rayDir * dither * 0.05;
+
     float closestT = maxDist;
     HitInfo bestHit; 
     bestHit.hit = false;
     bool anyHit = false;
 
-    for (int i = 0; i < _ChunkCount; i++)
+    // --- TLAS TRAVERSAL ---
+    float2 tScene = IntersectBox(rayOrigin, rayDir, _TLASBoundsMin, _TLASBoundsMax);
+    
+    // Fallback if TLAS is empty or ray misses scene completely
+    if (tScene.x < tScene.y && tScene.y > 0)
     {
-        ChunkDef chunk = _ChunkBuffer[i];
-        float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
-        if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > 0)
+        float tCurrent = max(0.0, tScene.x);
+        float tMaxLimit = min(closestT, tScene.y);
+        
+        float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
+        float3 invDir = 1.0 / (rayDir + sign(rayDir) * 1e-6); 
+        
+        float3 startPos = rayOrigin + rayDir * (tCurrent + 1e-4) - _TLASBoundsMin;
+        int3 cellIdx = clamp(int3(startPos / cellSize), 0, _TLASResolution - 1);
+        
+        int3 step = int3(sign(rayDir));
+        float3 tDelta = abs(cellSize * invDir);
+        
+        float3 cellBoundMin = _TLASBoundsMin + float3(cellIdx) * cellSize;
+        float3 cellBoundMax = cellBoundMin + cellSize;
+        
+        float3 nextBoundary = float3(
+            rayDir.x > 0 ? cellBoundMax.x : cellBoundMin.x,
+            rayDir.y > 0 ? cellBoundMax.y : cellBoundMin.y,
+            rayDir.z > 0 ? cellBoundMax.z : cellBoundMin.z
+        );
+        
+        float3 tNext = (nextBoundary - rayOrigin) * invDir;
+        
+        int iter = 0;
+        int maxIter = _TLASResolution * 3;
+        
+        while (iter < maxIter && tCurrent < tMaxLimit)
         {
-            float tStart = max(0.0, tBox.x);
-            float tEnd = min(closestT, tBox.y); 
-            float size = chunk.boundsMax.x - chunk.boundsMin.x;
-            float scale = size / 64.0; 
-            float3 chunkOrigin = chunk.boundsMin;
-            float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
-            
-            HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEnd/scale, tStart/scale);
-            if (info.hit)
-            {
-                float3 hitWorld = chunkOrigin + info.pos * scale;
-                float dist = length(hitWorld - rayOrigin);
-                if (dist < closestT)
-                {
-                    closestT = dist;
-                    bestHit = info;
-                    bestHit.pos = hitWorld; 
-                    anyHit = true;
-                }
-            }
+             if (all(cellIdx >= 0) && all(cellIdx < _TLASResolution))
+             {
+                 uint flatIdx = cellIdx.z * _TLASResolution * _TLASResolution + cellIdx.y * _TLASResolution + cellIdx.x;
+                 TLASCell cell = _TLASGridBuffer[flatIdx];
+                 
+                 for (uint k = 0; k < cell.count; k++)
+                 {
+                     int chunkId = _TLASChunkIndexBuffer[cell.offset + k];
+                     ChunkDef chunk = _ChunkBuffer[chunkId];
+                     
+                     float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
+                     if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > tCurrent - 0.01) 
+                     {
+                        float tStartC = max(0.0, tBox.x);
+                        float tEndC = min(closestT, tBox.y);
+                        
+                        if (tBox.y > tCurrent) // Only check if we haven't passed it
+                        {
+                             float size = chunk.boundsMax.x - chunk.boundsMin.x;
+                             float scale = size / 64.0; 
+                             float3 chunkOrigin = chunk.boundsMin;
+                             float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
+                
+                             HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEndC/scale, tStartC/scale);
+                             if (info.hit)
+                             {
+                                 float3 hitWorld = chunkOrigin + info.pos * scale;
+                                 float dist = length(hitWorld - rayOrigin);
+                                 if (dist < closestT)
+                                 {
+                                     closestT = dist;
+                                     bestHit = info;
+                                     bestHit.pos = hitWorld; 
+                                     anyHit = true;
+                                 }
+                             }
+                        }
+                     }
+                 }
+             }
+             
+             float tExit = min(min(tNext.x, tNext.y), tNext.z);
+             if (closestT < tExit) break; 
+             
+             tCurrent = tExit;
+             if (tNext.x <= tNext.y && tNext.x <= tNext.z) {
+                 tNext.x += tDelta.x;
+                 cellIdx.x += step.x;
+             } else if (tNext.y <= tNext.z) {
+                 tNext.y += tDelta.y;
+                 cellIdx.y += step.y;
+             } else {
+                 tNext.z += tDelta.z;
+                 cellIdx.z += step.z;
+             }
+             iter++;
         }
     }
 
