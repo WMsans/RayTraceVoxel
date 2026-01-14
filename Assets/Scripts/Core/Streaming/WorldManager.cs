@@ -75,19 +75,19 @@ namespace VoxelEngine.Core.Streaming
             HashSet<VoxelVolume> volumesToUpdate = new HashSet<VoxelVolume>();
 
             // 3. Find Intersections
-            for (int i = 0; i < dirtyRegions.Count; i++)
+            // OPTIMIZATION: Loop through Active Volumes first. 
+            // If a volume intersects ANY dirty region, mark it and stop checking that volume.
+            for (int v = 0; v < activeVolumes.Count; v++)
             {
-                Bounds dirty = dirtyRegions[i];
-                
-                // Brute-force check against active chunks (usually fast enough for <100 chunks)
-                for (int v = 0; v < activeVolumes.Count; v++)
-                {
-                    VoxelVolume vol = activeVolumes[v];
-                    if (!vol.gameObject.activeInHierarchy) continue;
+                VoxelVolume vol = activeVolumes[v];
+                if (!vol.gameObject.activeInHierarchy) continue;
 
-                    if (vol.WorldBounds.Intersects(dirty))
+                for (int i = 0; i < dirtyRegions.Count; i++)
+                {
+                    if (vol.WorldBounds.Intersects(dirtyRegions[i]))
                     {
                         volumesToUpdate.Add(vol);
+                        break; // Stop checking other regions for this volume
                     }
                 }
             }
