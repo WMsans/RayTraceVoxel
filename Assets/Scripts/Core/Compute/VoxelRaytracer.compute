@@ -385,18 +385,22 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                     float tMarch = max(tCurrent, tLeaf.x);
                     float marchEnd = min(tEnd, tLeaf.y);
 
+                    // Sphere Tracing (Ray Marching) using SDF
                     for (int m = 0; m < MAX_MARCH_STEPS; m++)
                     {
                         if (tMarch >= marchEnd) break;
                         float3 p = rayOriginNode + rayDir * tMarch;
                         float3 localPos = p - nodePos;
+                        
                         float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
                         
+                        // Hit surface
                         if (dist < EPSILON)
                         {
-                            float tMin = tMarch - 0.05;
+                            // Refinement: Binary Search to find exact surface intersection
+                            float tMin = tMarch - 0.05; // Backtrack
                             float tMax = tMarch;
-                            for(int r=0; r<3; r++) {
+                            for(int r=0; r<4; r++) { // Increased iterations for better precision
                                 float tMid = (tMin + tMax) * 0.5;
                                 float dMid = SampleBrick(chunk.brickOffset, brickPtr, (rayOriginNode + rayDir * tMid) - nodePos);
                                 if (dMid < EPSILON) tMax = tMid;
@@ -413,8 +417,10 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                             result.brickId = brickPtr;
                             return result;
                         }
-                        float step = max(dist, 0.005);
-                        tMarch += step;
+                        
+                        // Sphere Trace: Skip empty space
+                        // Ensure minimal step to avoid infinite loops in numerical instability zones
+                        tMarch += max(dist, 0.001); 
                     }
                 }
             }
