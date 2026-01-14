@@ -29,6 +29,8 @@ namespace VoxelEngine.Core.Rendering
             [Tooltip("Render scale used when Quality Level is set to Custom.")]
             [Range(0.1f, 1.0f)]
             public float renderScale = 1.0f;
+            public int iterations = 128;
+            public int marchSteps = 64;
             
             [Header("LOD Settings")]
             [Tooltip("Multiplies the pixel size estimate. Higher values (10-100) force LODs to appear closer.")]
@@ -111,6 +113,8 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _FrameCountParams = Shader.PropertyToID("_FrameCount");
             private static readonly int _BlueNoiseTextureParams = Shader.PropertyToID("_BlueNoiseTexture");
             private static readonly int _MousePositionParams = Shader.PropertyToID("_MousePosition");
+            private static readonly int _MaxIterationsParams = Shader.PropertyToID("_MaxIterations");
+            private static readonly int _MaxMarchStepsParams = Shader.PropertyToID("_MaxMarchSteps");
 
             private RTHandle _albedoHandle;
             private RTHandle _normalHandle;
@@ -177,6 +181,8 @@ namespace VoxelEngine.Core.Rendering
                 public int frameCount;
                 public TextureHandle blueNoise;
                 public Vector2 mousePosition;
+                public int maxIterations;
+                public int maxMarchSteps;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -210,11 +216,26 @@ namespace VoxelEngine.Core.Rendering
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
                 float currentScale = 1.0f;
+                int iterations = 128;
+                int marchSteps = 64;
+
                 switch (_settings.qualityLevel)
                 {
-                    case QualityLevel.High: currentScale = 1.0f; break;
-                    case QualityLevel.Low: currentScale = 0.5f; break;
-                    case QualityLevel.Custom: currentScale = _settings.renderScale; break;
+                    case QualityLevel.High: 
+                        currentScale = 1.0f; 
+                        iterations = 128;
+                        marchSteps = 64;
+                        break;
+                    case QualityLevel.Low: 
+                        currentScale = 0.5f; 
+                        iterations = 64; // Reduced from 128
+                        marchSteps = 32; // Reduced from 64
+                        break;
+                    case QualityLevel.Custom: 
+                        currentScale = _settings.renderScale; 
+                        iterations = _settings.iterations;
+                        marchSteps = _settings.marchSteps;
+                        break;
                 }
 
                 int scaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * currentScale));
@@ -283,6 +304,8 @@ namespace VoxelEngine.Core.Rendering
                     data.mainLightColor = mainCol;
                     data.raytraceParams = new Vector4(finalSpread, 0, 0, 0); 
                     data.mousePosition = VoxelRaytracerFeature.MousePosition;
+                    data.maxIterations = iterations;
+                    data.maxMarchSteps = marchSteps;
 
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
@@ -311,6 +334,8 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeIntParam(cs, _TLASResolutionParams, pd.tlasResolution);
                         cmd.SetComputeIntParam(cs, _FrameCountParams, pd.frameCount);
                         cmd.SetComputeVectorParam(cs, _MousePositionParams, pd.mousePosition);
+                        cmd.SetComputeIntParam(cs, _MaxIterationsParams, pd.maxIterations);
+                        cmd.SetComputeIntParam(cs, _MaxMarchStepsParams, pd.maxMarchSteps);
                         
                         if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, _BlueNoiseTextureParams, pd.blueNoise);
 

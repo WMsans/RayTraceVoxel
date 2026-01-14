@@ -48,9 +48,9 @@ float _DebugNormalDelta;
 float _DebugViewNormals;
 float _DebugViewBricks;
 float4 _MousePosition; // Added Mouse Position
+int _MaxIterations;
+int _MaxMarchSteps;
 
-#define MAX_ITERATIONS 128
-#define MAX_MARCH_STEPS 64
 #define EPSILON 0.01
 
 // --- Helper Functions ---
@@ -355,13 +355,12 @@ float pixelSpread = _RaytraceParams.x * scale;
 
     HitInfo result;
     result.hit = false; result.pos = 0; result.normal = 0; result.matId = 0;
-result.isLOD = false; result.lodColor = 0; result.brickId = 0; 
+    result.isLOD = false; result.lodColor = 0; result.brickId = 0; 
     
-    while (tCurrent < tEnd && iter < MAX_ITERATIONS)
+    while (tCurrent < tEnd && iter < _MaxIterations)
     {
         iter++;
 float3 pos = rayOriginNode + rayDir * (tCurrent + EPSILON);
-
         uint nodeIndex = 0;
         float nodeSize = gridSz;
 float3 nodePos = float3(0,0,0);
@@ -439,7 +438,7 @@ uint brickPtr = payload.brickDataIndex;
                     float tMarch = max(tCurrent, tLeaf.x);
                     float marchEnd = min(tEnd, tLeaf.y);
 // Sphere Tracing (Ray Marching) using SDF
-                    for (int m = 0; m < MAX_MARCH_STEPS; m++)
+                    for (int m = 0; m < _MaxMarchSteps; m++)
                     {
                         if (tMarch >= marchEnd) break;
 float3 p = rayOriginNode + rayDir * tMarch;

@@ -19,6 +19,8 @@ MonoBehaviour:
     injectionPoint: 400
     qualityLevel: 2
     renderScale: 0.25
+    iterations: 64
+    marchSteps: 32
     lodBias: 1
     useCameraFarPlane: 0
     blueNoiseTexture: {fileID: 2800000, guid: abbd6cebc53adce8b9207a270ab231ee, type: 3}
