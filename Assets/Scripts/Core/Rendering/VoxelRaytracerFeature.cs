@@ -10,12 +10,25 @@ namespace VoxelEngine.Core.Rendering
 {
     public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
+        public enum QualityLevel
+        {
+            High,
+            Low,
+            Custom
+        }
+
         [System.Serializable]
         public class Settings
         {
             public ComputeShader raytraceShader;
             public Shader compositeShader;
             public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
+
+            [Header("Quality")]
+            public QualityLevel qualityLevel = QualityLevel.High;
+            [Tooltip("Render scale used when Quality Level is set to Custom.")]
+            [Range(0.1f, 1.0f)]
+            public float renderScale = 1.0f;
             
             [Header("LOD Settings")]
             [Tooltip("Multiplies the pixel size estimate. Higher values (10-100) force LODs to appear closer.")]
@@ -196,13 +209,24 @@ namespace VoxelEngine.Core.Rendering
                 var lightData = frameData.Get<UniversalLightData>();
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
-                TextureDesc colorDesc = new TextureDesc(cameraDesc.width, cameraDesc.height);
+                float currentScale = 1.0f;
+                switch (_settings.qualityLevel)
+                {
+                    case QualityLevel.High: currentScale = 1.0f; break;
+                    case QualityLevel.Low: currentScale = 0.5f; break;
+                    case QualityLevel.Custom: currentScale = _settings.renderScale; break;
+                }
+
+                int scaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * currentScale));
+                int scaledHeight = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.height * currentScale));
+
+                TextureDesc colorDesc = new TextureDesc(scaledWidth, scaledHeight);
                 colorDesc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat;
                 colorDesc.enableRandomWrite = true;
                 colorDesc.name = "VoxelRaytraceResult";
                 TextureHandle tempResult = renderGraph.CreateTexture(colorDesc);
 
-                TextureDesc depthDesc = new TextureDesc(cameraDesc.width, cameraDesc.height);
+                TextureDesc depthDesc = new TextureDesc(scaledWidth, scaledHeight);
                 depthDesc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat;
                 depthDesc.enableRandomWrite = true;
                 depthDesc.name = "VoxelRaytraceDepth";
@@ -216,7 +240,7 @@ namespace VoxelEngine.Core.Rendering
                 SetupLights(lightData, out var mainPos, out var mainCol);
 
                 float fov = cameraData.camera.fieldOfView;
-                float height = cameraDesc.height;
+                float height = cameraDesc.height; // Use original height for spread calculation to keep LOD consistent
                 float rawPixelSpread = Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * 2.0f / height;
                 float finalSpread = rawPixelSpread * _settings.lodBias;
 
@@ -248,7 +272,7 @@ namespace VoxelEngine.Core.Rendering
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
                     if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
 
-                    data.width = cameraDesc.width; data.height = cameraDesc.height;
+                    data.width = scaledWidth; data.height = scaledHeight;
                     data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                     data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
                     data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
