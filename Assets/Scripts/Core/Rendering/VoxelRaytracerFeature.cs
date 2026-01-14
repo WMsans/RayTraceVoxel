@@ -5,6 +5,7 @@ using UnityEngine.Rendering.RenderGraphModule;
 using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Streaming;
+using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Rendering
 {
@@ -18,7 +19,7 @@ namespace VoxelEngine.Core.Rendering
         {
             public ComputeShader raytraceShader;
             public Shader compositeShader;
-            public Shader fxaaShader; // New: FXAA Shader reference
+            public Shader fxaaShader;
             public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
 
             [Header("Quality")]
@@ -124,6 +125,11 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _MaxIterationsParams = Shader.PropertyToID("_MaxIterations");
             private static readonly int _MaxMarchStepsParams = Shader.PropertyToID("_MaxMarchSteps");
 
+            // --- Phase 2: Temporal Foundations IDs ---
+            private static readonly int _CameraViewProjectionParams = Shader.PropertyToID("_CameraViewProjection");
+            private static readonly int _PrevViewProjMatrixParams = Shader.PropertyToID("_PrevViewProjMatrix");
+            private static readonly int _MotionVectorTextureParams = Shader.PropertyToID("_MotionVectorTexture");
+
             // Composite & FXAA IDs
             private static readonly int _SharpnessParams = Shader.PropertyToID("_Sharpness");
             private static readonly int _MainTexParams = Shader.PropertyToID("_MainTex");
@@ -132,6 +138,9 @@ namespace VoxelEngine.Core.Rendering
             private RTHandle _normalHandle;
             private RTHandle _maskHandle;
             private RTHandle _blueNoiseHandle;
+
+            // Store previous matrices per camera to support Scene+Game views
+            private Dictionary<Camera, Matrix4x4> _prevMatrices = new Dictionary<Camera, Matrix4x4>();
 
             public VoxelRaytracerPass(Settings settings)
             {
@@ -166,15 +175,32 @@ namespace VoxelEngine.Core.Rendering
                 if (handle == null || handle.rt != texture) { handle?.Release(); handle = RTHandles.Alloc(texture); }
             }
 
+            // --- Halton Sequence Generator for Jitter ---
+            private float Halton(int index, int radix)
+            {
+                float result = 0f;
+                float fraction = 1f / radix;
+                while (index > 0)
+                {
+                    result += (index % radix) * fraction;
+                    index /= radix;
+                    fraction /= radix;
+                }
+                return result;
+            }
+
             private class PassData
             {
                 public ComputeShader computeShader;
                 public int kernel;
                 public TextureHandle targetColor;
                 public TextureHandle targetDepth;
+                public TextureHandle targetMotionVector; // Phase 2
                 public TextureHandle sourceDepth;
                 public Matrix4x4 cameraToWorld;
                 public Matrix4x4 cameraInverseProjection;
+                public Matrix4x4 viewProj; // Phase 2
+                public Matrix4x4 prevViewProj; // Phase 2
                 public Vector4 zBufferParams;
                 public int width; public int height;
                 public Vector4 mainLightPosition;
@@ -255,10 +281,35 @@ namespace VoxelEngine.Core.Rendering
                 depthDesc.name = "VoxelRaytraceDepth_LowRes";
                 TextureHandle lowResDepth = renderGraph.CreateTexture(depthDesc);
                 
-                // If FXAA is enabled, we need an intermediate High-Res buffer before writing to screen
+                // Phase 2: Motion Vectors (R16G16 Float)
+                TextureDesc mvDesc = new TextureDesc(scaledWidth, scaledHeight);
+                mvDesc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16_SFloat;
+                mvDesc.enableRandomWrite = true;
+                mvDesc.name = "VoxelMotionVectors";
+                TextureHandle motionVectorTex = renderGraph.CreateTexture(mvDesc);
+
+                // --- Jitter Calculation (Phase 2) ---
+                int frameIndex = Time.frameCount % 16;
+                // Halton (2, 3) shifted to [-0.5, 0.5]
+                float jitterX = (Halton(frameIndex + 1, 2) - 0.5f);
+                float jitterY = (Halton(frameIndex + 1, 3) - 0.5f);
+
+                // --- Matrix Logic (Phase 2) ---
+                var cam = cameraData.camera;
+                Matrix4x4 view = cam.worldToCameraMatrix;
+                Matrix4x4 proj = GL.GetGPUProjectionMatrix(cam.projectionMatrix, true);
+                Matrix4x4 viewProj = proj * view;
+
+                if (!_prevMatrices.TryGetValue(cam, out Matrix4x4 prevViewProj))
+                {
+                    prevViewProj = viewProj;
+                }
+                // Update for next frame
+                _prevMatrices[cam] = viewProj;
+
+                // FXAA Logic
                 TextureHandle compositeOutput;
                 bool useFXAA = _settings.enableFXAA && _fxaaMaterial != null;
-
                 if (useFXAA)
                 {
                     TextureDesc fullScreenDesc = new TextureDesc(cameraDesc.width, cameraDesc.height);
@@ -313,19 +364,27 @@ namespace VoxelEngine.Core.Rendering
                     data.width = scaledWidth; data.height = scaledHeight;
                     data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                     data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
+                    data.viewProj = viewProj; // Phase 2
+                    data.prevViewProj = prevViewProj; // Phase 2
+                    
                     data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
                     data.sourceDepth = resourceData.cameraDepthTexture;
                     data.targetColor = lowResResult;
                     data.targetDepth = lowResDepth;
+                    data.targetMotionVector = motionVectorTex; // Phase 2
+
                     data.mainLightPosition = mainPos;
                     data.mainLightColor = mainCol;
-                    data.raytraceParams = new Vector4(finalSpread, 0, 0, 0); 
+                    // Store Jitter in y/z components of RaytraceParams
+                    data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); 
+                    
                     data.mousePosition = VoxelRaytracerFeature.MousePosition;
                     data.maxIterations = iterations;
                     data.maxMarchSteps = marchSteps;
 
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
+                    builder.UseTexture(data.targetMotionVector, AccessFlags.Write); // Phase 2
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                     if (data.albedoArray.IsValid()) builder.UseTexture(data.albedoArray, AccessFlags.Read);
                     if (data.normalArray.IsValid()) builder.UseTexture(data.normalArray, AccessFlags.Read);
@@ -338,7 +397,6 @@ namespace VoxelEngine.Core.Rendering
                         var ker = pd.kernel;
                         var cmd = ctx.cmd;
                         
-                        // Bind Buffers
                         cmd.SetComputeBufferParam(cs, ker, _GlobalNodeBufferParams, pd.nodeBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalPayloadBufferParams, pd.payloadBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickDataBufferParams, pd.brickDataBuffer);
@@ -358,23 +416,27 @@ namespace VoxelEngine.Core.Rendering
                         if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, _BlueNoiseTextureParams, pd.blueNoise);
                         if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, _VoxelMaterialBufferParams, pd.materialBuffer);
                         
-                        // Bind Textures
                         if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _AlbedoTextureArrayParams, pd.albedoArray);
                         if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _NormalTextureArrayParams, pd.normalArray);
                         if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _MaskTextureArrayParams, pd.maskArray);
 
-                        // Bind Camera & Lights
                         cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, pd.cameraToWorld);
                         cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, pd.cameraInverseProjection);
+                        // Phase 2: Matrices
+                        cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, pd.viewProj);
+                        cmd.SetComputeMatrixParam(cs, _PrevViewProjMatrixParams, pd.prevViewProj);
+                        
                         cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams);
                         cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth);
                         cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor);
                         cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth);
+                        // Phase 2: Motion Vectors
+                        cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
+                        
                         cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition);
                         cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor);
                         cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams);
                         
-                        // Picking
                         cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
 
                         int groupsX = Mathf.CeilToInt(pd.width / 8.0f);
@@ -395,12 +457,9 @@ namespace VoxelEngine.Core.Rendering
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
                     
-                    // If FXAA is on, we write to intermediate. If off, we write to Screen.
                     if (useFXAA)
                     {
                         builder.SetRenderAttachment(compositeOutput, 0, AccessFlags.Write);
-                        // NOTE: We don't write depth here if FXAA is coming next, 
-                        // effectively we just care about color for FXAA.
                     }
                     else
                     {
@@ -433,13 +492,9 @@ namespace VoxelEngine.Core.Rendering
                         builder.UseTexture(fxaaData.source, AccessFlags.Read);
                         builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
                         builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.Write); 
-                        // Note: Depth write might be redundant here if Composite didn't write it, 
-                        // but usually we want valid depth in the final buffer. 
-                        // Since we aren't sampling depth in FXAA, we just pass through or rely on existing depth.
 
                         builder.SetRenderFunc((FXAAPassData fData, RasterGraphContext context) =>
                         {
-                            // Blit the upscaled image through the FXAA shader to the screen
                             Blitter.BlitTexture(context.cmd, fData.source, new Vector4(1, 1, 0, 0), fData.material, 0);
                         });
                     }
