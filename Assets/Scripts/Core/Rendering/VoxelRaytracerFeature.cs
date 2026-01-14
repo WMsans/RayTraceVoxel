@@ -33,7 +33,8 @@ namespace VoxelEngine.Core.Rendering
         public Settings settings = new Settings();
         private VoxelRaytracerPass _pass;
         private Material _compositeMaterial;
-        
+
+        public static Vector2 MousePosition;
         public static GraphicsBuffer RaycastHitBuffer;
 
         public override void Create()
@@ -79,17 +80,12 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
-            
-            // --- FIX: Merged Buffer Params ---
             private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
-            
-            // --- TLAS Params ---
             private static readonly int _TLASGridBufferParams = Shader.PropertyToID("_TLASGridBuffer");
             private static readonly int _TLASChunkIndexBufferParams = Shader.PropertyToID("_TLASChunkIndexBuffer");
             private static readonly int _TLASBoundsMinParams = Shader.PropertyToID("_TLASBoundsMin");
             private static readonly int _TLASBoundsMaxParams = Shader.PropertyToID("_TLASBoundsMax");
             private static readonly int _TLASResolutionParams = Shader.PropertyToID("_TLASResolution");
-            
             private static readonly int _ChunkBufferParams = Shader.PropertyToID("_ChunkBuffer");
             private static readonly int _ChunkCountParams = Shader.PropertyToID("_ChunkCount");
             private static readonly int _VoxelMaterialBufferParams = Shader.PropertyToID("_VoxelMaterialBuffer");
@@ -101,6 +97,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _RaycastBufferParams = Shader.PropertyToID("_RaycastBuffer");
             private static readonly int _FrameCountParams = Shader.PropertyToID("_FrameCount");
             private static readonly int _BlueNoiseTextureParams = Shader.PropertyToID("_BlueNoiseTexture");
+            private static readonly int _MousePositionParams = Shader.PropertyToID("_MousePosition");
 
             private RTHandle _albedoHandle;
             private RTHandle _normalHandle;
@@ -166,6 +163,7 @@ namespace VoxelEngine.Core.Rendering
                 public TextureHandle maskArray;
                 public int frameCount;
                 public TextureHandle blueNoise;
+                public Vector2 mousePosition;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -260,6 +258,7 @@ namespace VoxelEngine.Core.Rendering
                     data.mainLightPosition = mainPos;
                     data.mainLightColor = mainCol;
                     data.raytraceParams = new Vector4(finalSpread, 0, 0, 0); 
+                    data.mousePosition = VoxelRaytracerFeature.MousePosition;
 
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
@@ -287,6 +286,7 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeVectorParam(cs, _TLASBoundsMaxParams, pd.tlasBoundsMax);
                         cmd.SetComputeIntParam(cs, _TLASResolutionParams, pd.tlasResolution);
                         cmd.SetComputeIntParam(cs, _FrameCountParams, pd.frameCount);
+                        cmd.SetComputeVectorParam(cs, _MousePositionParams, pd.mousePosition);
                         
                         if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, _BlueNoiseTextureParams, pd.blueNoise);
 
