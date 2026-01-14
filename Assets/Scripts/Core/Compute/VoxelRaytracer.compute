@@ -504,7 +504,7 @@ float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0,0,1)));
 rayOrigin += rayDir * dither * 0.05;
 
     float closestT = maxDist;
-    HitInfo bestHit; 
+    HitInfo bestHit = (HitInfo)0; 
     bestHit.hit = false;
     bool anyHit = false;
 // --- TLAS TRAVERSAL ---
