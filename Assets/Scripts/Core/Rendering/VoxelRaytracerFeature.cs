@@ -25,6 +25,9 @@ namespace VoxelEngine.Core.Rendering
             [Header("Culling")]
             [Tooltip("If true, chunks beyond the Camera's Far Clip Plane will be hidden. Disable this to see distant voxel terrain.")]
             public bool useCameraFarPlane = false; 
+
+            [Header("Dithering")]
+            public Texture2D blueNoiseTexture;
         }
 
         public Settings settings = new Settings();
@@ -96,10 +99,13 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _MainLightPositionParams = Shader.PropertyToID("_MainLightPosition");
             private static readonly int _MainLightColorParams = Shader.PropertyToID("_MainLightColor");
             private static readonly int _RaycastBufferParams = Shader.PropertyToID("_RaycastBuffer");
+            private static readonly int _FrameCountParams = Shader.PropertyToID("_FrameCount");
+            private static readonly int _BlueNoiseTextureParams = Shader.PropertyToID("_BlueNoiseTexture");
 
             private RTHandle _albedoHandle;
             private RTHandle _normalHandle;
             private RTHandle _maskHandle;
+            private RTHandle _blueNoiseHandle;
 
             public VoxelRaytracerPass(Settings settings)
             {
@@ -116,6 +122,7 @@ namespace VoxelEngine.Core.Rendering
                 _albedoHandle?.Release(); 
                 _normalHandle?.Release(); 
                 _maskHandle?.Release();
+                _blueNoiseHandle?.Release();
                 if (VoxelRaytracerFeature.RaycastHitBuffer != null)
                 {
                     VoxelRaytracerFeature.RaycastHitBuffer.Release();
@@ -144,17 +151,12 @@ namespace VoxelEngine.Core.Rendering
                 public Vector4 raytraceParams; 
                 public GraphicsBuffer nodeBuffer;
                 public GraphicsBuffer payloadBuffer;
-                
-                // --- FIX: Merged Buffer ---
                 public GraphicsBuffer brickDataBuffer;
-                
-                // --- TLAS Data ---
                 public GraphicsBuffer tlasGridBuffer;
                 public GraphicsBuffer tlasChunkIndexBuffer;
                 public Vector3 tlasBoundsMin;
                 public Vector3 tlasBoundsMax;
                 public int tlasResolution;
-                
                 public GraphicsBuffer chunkBuffer;
                 public int chunkCount;
                 public GraphicsBuffer materialBuffer;
@@ -162,6 +164,8 @@ namespace VoxelEngine.Core.Rendering
                 public TextureHandle albedoArray;
                 public TextureHandle normalArray;
                 public TextureHandle maskArray;
+                public int frameCount;
+                public TextureHandle blueNoise;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -209,6 +213,7 @@ namespace VoxelEngine.Core.Rendering
                 CheckTextureHandle(ref _albedoHandle, VoxelDefinitionManager.Instance.albedoTextureArray);
                 CheckTextureHandle(ref _normalHandle, VoxelDefinitionManager.Instance.normalTextureArray);
                 CheckTextureHandle(ref _maskHandle, VoxelDefinitionManager.Instance.maskTextureArray);
+                CheckTextureHandle(ref _blueNoiseHandle, _settings.blueNoiseTexture);
 
                 SetupLights(lightData, out var mainPos, out var mainCol);
 
@@ -232,17 +237,18 @@ namespace VoxelEngine.Core.Rendering
                     data.brickDataBuffer = pool.GlobalBrickDataBuffer;
                     data.chunkBuffer = pool.ChunkBuffer;
                     data.chunkCount = pool.VisibleChunkCount;
-                    
                     data.tlasGridBuffer = pool.TLASGridBuffer;
                     data.tlasChunkIndexBuffer = pool.TLASChunkIndexBuffer;
                     data.tlasBoundsMin = pool.TLASBoundsMin;
                     data.tlasBoundsMax = pool.TLASBoundsMax;
                     data.tlasResolution = pool.TLASResolution;
+                    data.frameCount = Time.frameCount;
 
                     data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
                     if (_albedoHandle != null) data.albedoArray = renderGraph.ImportTexture(_albedoHandle);
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
+                    if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
 
                     data.width = cameraDesc.width; data.height = cameraDesc.height;
                     data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
@@ -261,6 +267,7 @@ namespace VoxelEngine.Core.Rendering
                     if (data.albedoArray.IsValid()) builder.UseTexture(data.albedoArray, AccessFlags.Read);
                     if (data.normalArray.IsValid()) builder.UseTexture(data.normalArray, AccessFlags.Read);
                     if (data.maskArray.IsValid()) builder.UseTexture(data.maskArray, AccessFlags.Read);
+                    if (data.blueNoise.IsValid()) builder.UseTexture(data.blueNoise, AccessFlags.Read);
 
                     builder.SetRenderFunc((PassData pd, ComputeGraphContext ctx) =>
                     {
@@ -271,7 +278,6 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeBufferParam(cs, ker, _GlobalNodeBufferParams, pd.nodeBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalPayloadBufferParams, pd.payloadBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickDataBufferParams, pd.brickDataBuffer);
-                        
                         cmd.SetComputeBufferParam(cs, ker, _ChunkBufferParams, pd.chunkBuffer);
                         cmd.SetComputeIntParam(cs, _ChunkCountParams, pd.chunkCount); 
                         
@@ -280,9 +286,11 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeVectorParam(cs, _TLASBoundsMinParams, pd.tlasBoundsMin);
                         cmd.SetComputeVectorParam(cs, _TLASBoundsMaxParams, pd.tlasBoundsMax);
                         cmd.SetComputeIntParam(cs, _TLASResolutionParams, pd.tlasResolution);
+                        cmd.SetComputeIntParam(cs, _FrameCountParams, pd.frameCount);
                         
+                        if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, _BlueNoiseTextureParams, pd.blueNoise);
+
                         cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
-                        
                         if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, _VoxelMaterialBufferParams, pd.materialBuffer);
                         if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _AlbedoTextureArrayParams, pd.albedoArray);
                         if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _NormalTextureArrayParams, pd.normalArray);

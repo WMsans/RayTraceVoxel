@@ -22,6 +22,8 @@ int _TLASResolution;
 
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
 Texture2D<float> _CameraDepthTexture; 
+Texture2D<float4> _BlueNoiseTexture; // Added Blue Noise Texture
+
 SamplerState sampler_CameraDepthTexture
 {
     Filter = MIN_MAG_MIP_POINT;
@@ -50,9 +52,30 @@ float _DebugViewBricks;
 
 #define MAX_ITERATIONS 128
 #define MAX_MARCH_STEPS 64
-#define EPSILON 0.002
+#define EPSILON 0.01
 
 // --- Helper Functions ---
+
+float GetInterleavedGradientNoise(float2 pixelPos)
+{
+    float3 magic = float3(0.06711056, 0.00583715, 52.9829189);
+    return frac(magic.z * frac(dot(pixelPos, magic.xy)));
+}
+
+float GetDither(uint2 pixelPos)
+{
+    uint width, height;
+    _BlueNoiseTexture.GetDimensions(width, height);
+    if (width > 0)
+    {
+        // Tiled sampling of Blue Noise
+        return _BlueNoiseTexture[pixelPos % uint2(width, height)].r;
+    }
+    else
+    {
+        return GetInterleavedGradientNoise(float2(pixelPos));
+    }
+}
 
 float remap(float value, float min1, float max1, float min2, float max2) {
     return min2 + (value - min1) * (max2 - min2) / (max1 - min1);
@@ -481,6 +504,11 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float linearDepth = 1.0 / (_ZBufferParams.z * depthVal + _ZBufferParams.w);
     float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0,0,1)));
     float maxDist = linearDepth / max(dot(rayDir, forward), 0.0001);
+
+    // --- Dithering ---
+    // Offsets ray start to break banding artifacts.
+    float dither = GetDither(id.xy);
+    rayOrigin += rayDir * dither * 0.05;
 
     float closestT = maxDist;
     HitInfo bestHit; 
