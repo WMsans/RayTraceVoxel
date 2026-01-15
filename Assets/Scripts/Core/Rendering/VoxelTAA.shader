@@ -2,7 +2,7 @@ Shader "Hidden/VoxelTAA"
 {
     Properties
     {
-        _BlitTexture ("Current Frame", 2D) = "black" {} // Renamed from _MainTex
+        _BlitTexture ("Current Frame", 2D) = "black" {} 
         _HistoryTex ("History Frame", 2D) = "black" {}
         _MotionVectorTexture ("Motion Vectors", 2D) = "black" {}
         _Blend ("Blend Factor", Range(0, 1)) = 0.9
@@ -19,16 +19,15 @@ Shader "Hidden/VoxelTAA"
             HLSLPROGRAM
             #pragma vertex Vert
             #pragma fragment Frag
-            
+          
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
 
-            // [FIX] Use _BlitTexture to match Blitter.BlitTexture binding
             TEXTURE2D(_BlitTexture);            SAMPLER(sampler_BlitTexture);
             TEXTURE2D(_HistoryTex);             SAMPLER(sampler_HistoryTex);
             TEXTURE2D(_MotionVectorTexture);    SAMPLER(sampler_MotionVectorTexture);
 
-            float4 _BlitTexture_TexelSize; // x=1/w, y=1/h, z=w, w=h
+            float4 _BlitTexture_TexelSize; 
             float _Blend;
 
             struct Varyings
@@ -45,7 +44,6 @@ Shader "Hidden/VoxelTAA"
                 return output;
             }
 
-            // 3x3 Neighborhood Clamping to prevent ghosting
             float3 ClipHistory(float3 history, float3 current, float2 uv)
             {
                 float3 minColor = float3(1000, 1000, 1000);
@@ -57,44 +55,39 @@ Shader "Hidden/VoxelTAA"
                     for(int y = -1; y <= 1; y++)
                     {
                         float2 offset = float2(x, y) * _BlitTexture_TexelSize.xy;
-                        // [FIX] Sample _BlitTexture
                         float3 neighbor = SAMPLE_TEXTURE2D(_BlitTexture, sampler_BlitTexture, uv + offset).rgb;
                         minColor = min(minColor, neighbor);
                         maxColor = max(maxColor, neighbor);
                     }
                 }
-
-                // Clamp history to the range of the current neighborhood
                 return clamp(history, minColor, maxColor);
             }
 
             float4 Frag(Varyings input) : SV_Target
             {
                 float2 uv = input.uv;
-
-                // 1. Sample Current Frame (Jittered)
-                // [FIX] Sample _BlitTexture
-                float3 colorCurrent = SAMPLE_TEXTURE2D(_BlitTexture, sampler_BlitTexture, uv).rgb;
-
-                // 2. Read Motion Vector
+                // [FIX] Sample RGBA to get alpha
+                float4 colorCurrent = SAMPLE_TEXTURE2D(_BlitTexture, sampler_BlitTexture, uv);
+                
                 float2 motion = SAMPLE_TEXTURE2D(_MotionVectorTexture, sampler_MotionVectorTexture, uv).xy;
                 float2 prevUV = uv - motion;
 
-                // 3. Sample History (Reprojection)
                 if (any(prevUV < 0.0) || any(prevUV > 1.0))
                 {
-                    return float4(colorCurrent, 1.0);
+                    return colorCurrent;
                 }
                 
-                float3 colorHistory = SAMPLE_TEXTURE2D(_HistoryTex, sampler_HistoryTex, prevUV).rgb;
-
-                // 4. Neighborhood Clamping (Anti-Ghosting)
-                colorHistory = ClipHistory(colorHistory, colorCurrent, uv);
-
-                // 5. Blending
-                float3 result = lerp(colorCurrent, colorHistory, _Blend);
-
-                return float4(result, 1.0);
+                // [FIX] Sample RGBA from history
+                float4 colorHistory = SAMPLE_TEXTURE2D(_HistoryTex, sampler_HistoryTex, prevUV);
+                
+                // Anti-Ghosting on RGB
+                float3 clippedHistoryRGB = ClipHistory(colorHistory.rgb, colorCurrent.rgb, uv);
+                
+                // Blending
+                float3 resultRGB = lerp(colorCurrent.rgb, clippedHistoryRGB, _Blend);
+                float resultAlpha = lerp(colorCurrent.a, colorHistory.a, _Blend);
+                
+                return float4(resultRGB, resultAlpha);
             }
             ENDHLSL
         }
