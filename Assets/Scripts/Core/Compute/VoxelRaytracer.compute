@@ -21,6 +21,7 @@ int _TLASResolution;
 StructuredBuffer<VoxelTypeGPU> _VoxelMaterialBuffer;
 Texture2D<float> _CameraDepthTexture; 
 Texture2D<float4> _BlueNoiseTexture;
+Texture2D<float4> _SourceTex;
 
 SamplerState sampler_CameraDepthTexture
 {
@@ -362,10 +363,23 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     }
     else
     {
-        _Result[id.xy] = float4(0,0,0,0);
+        float2 sampleUV = uv * 0.5 + 0.5;
+        float4 skyColor = _SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0);
+        _Result[id.xy] = float4(skyColor.rgb, 1.0);
         _ResultDepth[id.xy] = 0.0;
-        // No motion for sky/miss
-        _MotionVectorTexture[id.xy] = float2(0, 0);
+
+        // Calculate Motion Vector for Sky (Far Plane)
+        float3 farPos = rayOrigin + rayDir * 1000.0;
+        float4 clipPos = mul(_CameraViewProjection, float4(farPos, 1.0));
+        float4 prevClipPos = mul(_PrevViewProjMatrix, float4(farPos, 1.0));
+        
+        float2 ndc = clipPos.xy / clipPos.w;
+        float2 prevNdc = prevClipPos.xy / prevClipPos.w;
+        
+        float2 currentUV = ndc * 0.5 + 0.5;
+        float2 prevUV = prevNdc * 0.5 + 0.5;
+        
+        _MotionVectorTexture[id.xy] = currentUV - prevUV;
     }
     
     if (all(id.xy == (uint2)_MousePosition))

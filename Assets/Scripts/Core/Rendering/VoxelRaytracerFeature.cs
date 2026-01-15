@@ -136,6 +136,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _CameraViewProjectionParams = Shader.PropertyToID("_CameraViewProjection");
             private static readonly int _PrevViewProjMatrixParams = Shader.PropertyToID("_PrevViewProjMatrix");
             private static readonly int _MotionVectorTextureParams = Shader.PropertyToID("_MotionVectorTexture");
+            private static readonly int _SourceTexParams = Shader.PropertyToID("_SourceTex");
 
             private static readonly int _SharpnessParams = Shader.PropertyToID("_Sharpness");
             private static readonly int _MainTexParams = Shader.PropertyToID("_MainTex");
@@ -217,6 +218,7 @@ namespace VoxelEngine.Core.Rendering
                 public TextureHandle targetDepth;
                 public TextureHandle targetMotionVector; 
                 public TextureHandle sourceDepth;
+                public TextureHandle sourceColor;
                 public Matrix4x4 cameraToWorld;
                 public Matrix4x4 cameraInverseProjection;
                 public Matrix4x4 viewProj; 
@@ -404,6 +406,7 @@ namespace VoxelEngine.Core.Rendering
                     
                     data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
                     data.sourceDepth = resourceData.cameraDepthTexture;
+                    data.sourceColor = resourceData.activeColorTexture;
                     data.targetColor = lowResResult;
                     data.targetDepth = lowResDepth;
                     data.targetMotionVector = motionVectorTex; 
@@ -420,6 +423,7 @@ namespace VoxelEngine.Core.Rendering
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
                     builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
+                    builder.UseTexture(data.sourceColor, AccessFlags.Read);
                     if (data.albedoArray.IsValid()) builder.UseTexture(data.albedoArray, AccessFlags.Read);
                     if (data.normalArray.IsValid()) builder.UseTexture(data.normalArray, AccessFlags.Read);
                     if (data.maskArray.IsValid()) builder.UseTexture(data.maskArray, AccessFlags.Read);
@@ -461,6 +465,7 @@ namespace VoxelEngine.Core.Rendering
                         
                         cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams);
                         cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth);
+                        cmd.SetComputeTextureParam(cs, ker, _SourceTexParams, pd.sourceColor);
                         cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor);
                         cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth);
                         cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
