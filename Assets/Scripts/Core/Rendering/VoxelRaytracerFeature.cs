@@ -18,6 +18,7 @@ namespace VoxelEngine.Core.Rendering
         public class Settings
         {
             public ComputeShader raytraceShader;
+            public Shader taaShader; // Added Phase 3
             public Shader compositeShader;
             public Shader fxaaShader;
             public RenderPassEvent injectionPoint = RenderPassEvent.AfterRenderingSkybox;
@@ -34,6 +35,8 @@ namespace VoxelEngine.Core.Rendering
             public UpscalingMode upscalingMode = UpscalingMode.SpatialFSR;
             [Range(0.0f, 1.0f)] public float sharpness = 0.5f;
             public bool enableFXAA = true;
+            public bool enableTAA = true; // Added Phase 3
+            [Range(0.0f, 1.0f)] public float taaBlend = 0.93f; // Added Phase 3
             
             [Header("LOD Settings")]
             [Tooltip("Multiplies the pixel size estimate. Higher values (10-100) force LODs to appear closer.")]
@@ -51,6 +54,7 @@ namespace VoxelEngine.Core.Rendering
         private VoxelRaytracerPass _pass;
         private Material _compositeMaterial;
         private Material _fxaaMaterial;
+        private Material _taaMaterial; // Added Phase 3
 
         public static Vector2 MousePosition;
         public static GraphicsBuffer RaycastHitBuffer;
@@ -66,6 +70,10 @@ namespace VoxelEngine.Core.Rendering
 
             if (settings.fxaaShader != null)
                 _fxaaMaterial = new Material(settings.fxaaShader);
+
+            // Phase 3: TAA Material
+            if (settings.taaShader != null)
+                _taaMaterial = new Material(settings.taaShader);
         }
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -75,7 +83,7 @@ namespace VoxelEngine.Core.Rendering
 
             // Update settings live
             _pass.UpdateSettings(settings);
-            _pass.Setup(_compositeMaterial, _fxaaMaterial);
+            _pass.Setup(_compositeMaterial, _fxaaMaterial, _taaMaterial);
             renderer.EnqueuePass(_pass);
         }
 
@@ -83,6 +91,7 @@ namespace VoxelEngine.Core.Rendering
         {
             CoreUtils.Destroy(_compositeMaterial);
             CoreUtils.Destroy(_fxaaMaterial);
+            CoreUtils.Destroy(_taaMaterial);
             _pass?.Dispose();
         }
 
@@ -92,6 +101,7 @@ namespace VoxelEngine.Core.Rendering
             private ComputeShader _shader;
             private Material _compositeMaterial;
             private Material _fxaaMaterial;
+            private Material _taaMaterial;
 
             // Shader IDs
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
@@ -134,10 +144,23 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _SharpnessParams = Shader.PropertyToID("_Sharpness");
             private static readonly int _MainTexParams = Shader.PropertyToID("_MainTex");
 
+            // Phase 3: TAA IDs
+            private static readonly int _HistoryTexParams = Shader.PropertyToID("_HistoryTex");
+            private static readonly int _BlendParams = Shader.PropertyToID("_Blend");
+
             private RTHandle _albedoHandle;
             private RTHandle _normalHandle;
             private RTHandle _maskHandle;
             private RTHandle _blueNoiseHandle;
+
+            // Phase 3: History Buffers (Ping Pong)
+            // We use a dictionary to support Scene View + Game View independently
+            class CameraHistory
+            {
+                public RTHandle[] historyTextures = new RTHandle[2];
+                public int currentIndex = 0;
+            }
+            private Dictionary<Camera, CameraHistory> _cameraHistory = new Dictionary<Camera, CameraHistory>();
 
             // Store previous matrices per camera to support Scene+Game views
             private Dictionary<Camera, Matrix4x4> _prevMatrices = new Dictionary<Camera, Matrix4x4>();
@@ -150,10 +173,11 @@ namespace VoxelEngine.Core.Rendering
             }
 
             public void UpdateSettings(Settings newSettings) { _settings = newSettings; }
-            public void Setup(Material composite, Material fxaa) 
+            public void Setup(Material composite, Material fxaa, Material taa) 
             { 
                 _compositeMaterial = composite; 
                 _fxaaMaterial = fxaa;
+                _taaMaterial = taa;
             }
 
             public void Dispose()
@@ -167,6 +191,14 @@ namespace VoxelEngine.Core.Rendering
                     VoxelRaytracerFeature.RaycastHitBuffer.Release();
                     VoxelRaytracerFeature.RaycastHitBuffer = null;
                 }
+                
+                // Release History
+                foreach(var kvp in _cameraHistory)
+                {
+                    kvp.Value.historyTextures[0]?.Release();
+                    kvp.Value.historyTextures[1]?.Release();
+                }
+                _cameraHistory.Clear();
             }            
             
             private void CheckTextureHandle(ref RTHandle handle, Texture texture)
@@ -175,7 +207,6 @@ namespace VoxelEngine.Core.Rendering
                 if (handle == null || handle.rt != texture) { handle?.Release(); handle = RTHandles.Alloc(texture); }
             }
 
-            // --- Halton Sequence Generator for Jitter ---
             private float Halton(int index, int radix)
             {
                 float result = 0f;
@@ -195,12 +226,12 @@ namespace VoxelEngine.Core.Rendering
                 public int kernel;
                 public TextureHandle targetColor;
                 public TextureHandle targetDepth;
-                public TextureHandle targetMotionVector; // Phase 2
+                public TextureHandle targetMotionVector; 
                 public TextureHandle sourceDepth;
                 public Matrix4x4 cameraToWorld;
                 public Matrix4x4 cameraInverseProjection;
-                public Matrix4x4 viewProj; // Phase 2
-                public Matrix4x4 prevViewProj; // Phase 2
+                public Matrix4x4 viewProj; 
+                public Matrix4x4 prevViewProj; 
                 public Vector4 zBufferParams;
                 public int width; public int height;
                 public Vector4 mainLightPosition;
@@ -281,20 +312,24 @@ namespace VoxelEngine.Core.Rendering
                 depthDesc.name = "VoxelRaytraceDepth_LowRes";
                 TextureHandle lowResDepth = renderGraph.CreateTexture(depthDesc);
                 
-                // Phase 2: Motion Vectors (R16G16 Float)
+                // Motion Vectors (R16G16 Float)
                 TextureDesc mvDesc = new TextureDesc(scaledWidth, scaledHeight);
                 mvDesc.colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16_SFloat;
                 mvDesc.enableRandomWrite = true;
                 mvDesc.name = "VoxelMotionVectors";
                 TextureHandle motionVectorTex = renderGraph.CreateTexture(mvDesc);
 
-                // --- Jitter Calculation (Phase 2) ---
+                // --- Jitter Calculation ---
+                // Halton sequence for sub-pixel jitter
                 int frameIndex = Time.frameCount % 16;
-                // Halton (2, 3) shifted to [-0.5, 0.5]
                 float jitterX = (Halton(frameIndex + 1, 2) - 0.5f);
                 float jitterY = (Halton(frameIndex + 1, 3) - 0.5f);
+                
+                // If TAA is disabled, we shouldn't jitter to avoid shaking image
+                bool useTAA = _settings.enableTAA && _taaMaterial != null;
+                if (!useTAA) { jitterX = 0; jitterY = 0; }
 
-                // --- Matrix Logic (Phase 2) ---
+                // --- Matrix Logic ---
                 var cam = cameraData.camera;
                 Matrix4x4 view = cam.worldToCameraMatrix;
                 Matrix4x4 proj = GL.GetGPUProjectionMatrix(cam.projectionMatrix, true);
@@ -304,8 +339,39 @@ namespace VoxelEngine.Core.Rendering
                 {
                     prevViewProj = viewProj;
                 }
-                // Update for next frame
                 _prevMatrices[cam] = viewProj;
+
+                // --- History Buffer Management ---
+                TextureHandle historyRead = TextureHandle.nullHandle;
+                TextureHandle historyWrite = TextureHandle.nullHandle;
+                
+                if (useTAA)
+                {
+                    if (!_cameraHistory.TryGetValue(cam, out CameraHistory hist))
+                    {
+                        hist = new CameraHistory();
+                        _cameraHistory[cam] = hist;
+                    }
+                    
+                    // Allocate Persistent History Textures if needed
+                    for(int i=0; i<2; i++)
+                    {
+                        if (hist.historyTextures[i] == null || hist.historyTextures[i].rt.width != scaledWidth || hist.historyTextures[i].rt.height != scaledHeight)
+                        {
+                            hist.historyTextures[i]?.Release();
+                            hist.historyTextures[i] = RTHandles.Alloc(scaledWidth, scaledHeight, colorFormat: UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat, name: $"VoxelHistory_{i}");
+                        }
+                    }
+                    
+                    // Import into RenderGraph
+                    int readIdx = hist.currentIndex;
+                    int writeIdx = (hist.currentIndex + 1) % 2;
+                    
+                    historyRead = renderGraph.ImportTexture(hist.historyTextures[readIdx]);
+                    historyWrite = renderGraph.ImportTexture(hist.historyTextures[writeIdx]);
+                    
+                    hist.currentIndex = writeIdx; // Swap for next frame
+                }
 
                 // FXAA Logic
                 TextureHandle compositeOutput;
@@ -364,18 +430,17 @@ namespace VoxelEngine.Core.Rendering
                     data.width = scaledWidth; data.height = scaledHeight;
                     data.cameraToWorld = cameraData.camera.cameraToWorldMatrix;
                     data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse;
-                    data.viewProj = viewProj; // Phase 2
-                    data.prevViewProj = prevViewProj; // Phase 2
+                    data.viewProj = viewProj;
+                    data.prevViewProj = prevViewProj;
                     
                     data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID);
                     data.sourceDepth = resourceData.cameraDepthTexture;
                     data.targetColor = lowResResult;
                     data.targetDepth = lowResDepth;
-                    data.targetMotionVector = motionVectorTex; // Phase 2
+                    data.targetMotionVector = motionVectorTex; 
 
                     data.mainLightPosition = mainPos;
                     data.mainLightColor = mainCol;
-                    // Store Jitter in y/z components of RaytraceParams
                     data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); 
                     
                     data.mousePosition = VoxelRaytracerFeature.MousePosition;
@@ -384,7 +449,7 @@ namespace VoxelEngine.Core.Rendering
 
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
-                    builder.UseTexture(data.targetMotionVector, AccessFlags.Write); // Phase 2
+                    builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                     if (data.albedoArray.IsValid()) builder.UseTexture(data.albedoArray, AccessFlags.Read);
                     if (data.normalArray.IsValid()) builder.UseTexture(data.normalArray, AccessFlags.Read);
@@ -422,7 +487,6 @@ namespace VoxelEngine.Core.Rendering
 
                         cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, pd.cameraToWorld);
                         cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, pd.cameraInverseProjection);
-                        // Phase 2: Matrices
                         cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, pd.viewProj);
                         cmd.SetComputeMatrixParam(cs, _PrevViewProjMatrixParams, pd.prevViewProj);
                         
@@ -430,7 +494,6 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth);
                         cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor);
                         cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth);
-                        // Phase 2: Motion Vectors
                         cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
                         
                         cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition);
@@ -445,10 +508,43 @@ namespace VoxelEngine.Core.Rendering
                     });
                 }
                 
-                // --- 2. Composite (Upscale) Pass ---
+                // --- 2. TAA Pass (Phase 3) ---
+                TextureHandle compositeSource = lowResResult; 
+
+                if (useTAA)
+                {
+                    using (var builder = renderGraph.AddRasterRenderPass<TAAPassData>("Voxel TAA", out var taaData))
+                    {
+                        taaData.source = lowResResult;
+                        taaData.history = historyRead;
+                        taaData.motion = motionVectorTex;
+                        taaData.destination = historyWrite; // We render into the History buffer for the next frame
+                        taaData.material = _taaMaterial;
+                        taaData.blend = _settings.taaBlend;
+
+                        builder.UseTexture(taaData.source, AccessFlags.Read);
+                        builder.UseTexture(taaData.history, AccessFlags.Read);
+                        builder.UseTexture(taaData.motion, AccessFlags.Read);
+                        builder.SetRenderAttachment(taaData.destination, 0, AccessFlags.Write);
+
+                        builder.SetRenderFunc((TAAPassData tData, RasterGraphContext context) =>
+                        {
+                            tData.material.SetTexture(_HistoryTexParams, tData.history);
+                            tData.material.SetTexture(_MotionVectorTextureParams, tData.motion);
+                            tData.material.SetFloat(_BlendParams, tData.blend);
+                            
+                            // Blitter usually handles _MainTex, but we are explicit
+                            Blitter.BlitTexture(context.cmd, tData.source, new Vector4(1, 1, 0, 0), tData.material, 0);
+                        });
+                    }
+                    // The output of TAA becomes the source for Composite
+                    compositeSource = historyWrite;
+                }
+
+                // --- 3. Composite (Upscale) Pass ---
                 using (var builder = renderGraph.AddRasterRenderPass<CompositePassData>("Composite & Upscale", out var compData))
                 {
-                    compData.source = lowResResult;
+                    compData.source = compositeSource; // Use TAA result
                     compData.depthSource = lowResDepth;
                     compData.material = _compositeMaterial;
                     compData.useFSR = (_settings.upscalingMode == UpscalingMode.SpatialFSR);
@@ -481,7 +577,7 @@ namespace VoxelEngine.Core.Rendering
                     });
                 }
 
-                // --- 3. FXAA Pass (Optional) ---
+                // --- 4. FXAA Pass (Optional) ---
                 if (useFXAA)
                 {
                     using (var builder = renderGraph.AddRasterRenderPass<FXAAPassData>("FXAA Pass", out var fxaaData))
@@ -533,6 +629,16 @@ namespace VoxelEngine.Core.Rendering
             {
                 public TextureHandle source;
                 public Material material;
+            }
+
+            private class TAAPassData
+            {
+                public TextureHandle source;
+                public TextureHandle history;
+                public TextureHandle motion;
+                public TextureHandle destination;
+                public Material material;
+                public float blend;
             }
         }
     }
