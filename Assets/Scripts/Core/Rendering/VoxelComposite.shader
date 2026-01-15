@@ -8,7 +8,7 @@ Shader "Hidden/VoxelComposite"
     SubShader
     {
         Tags { "RenderType"="Overlay" "RenderPipeline" = "UniversalPipeline" }
-        ZTest Always
+        ZTest LEqual
         ZWrite On
         Cull Off
         Blend SrcAlpha OneMinusSrcAlpha

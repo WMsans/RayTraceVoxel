@@ -342,6 +342,10 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         // --- Phase 2: Calculate Motion Vector ---
         // Transform current world position to Clip Space
         float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
+        
+        // Previous: _ResultDepth[id.xy] = _CameraViewProjection[2].z * bestHit.pos.z + _CameraViewProjection[3].z;
+        _ResultDepth[id.xy] = clipPos.z / clipPos.w;
+
         // Transform current world position to Previous Frame Clip Space
         float4 prevClipPos = mul(_PrevViewProjMatrix, float4(bestHit.pos, 1.0));
 
