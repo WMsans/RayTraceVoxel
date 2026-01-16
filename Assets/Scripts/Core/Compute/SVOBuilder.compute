@@ -32,7 +32,6 @@ uint _PayloadOffset;
 uint _BrickOffset;
 int _NumDynamicObjects;
 int _SavedEditCount;
-int _ChunkDepth;
 
 // Mipmapping Uniforms (Moved here to fix 'undeclared identifier' error)
 uint _TargetLevelOffset;
@@ -302,10 +301,6 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
 void ApplySavedEdits(uint id : SV_DispatchThreadID)
 {
     if (id >= (uint)_SavedEditCount) return;
-
-    // Filter by LOD: If this chunk is not at the highest resolution (leaf), 
-    // do not apply high-res edits directly to avoid blocky artifacts.
-    if (_ChunkDepth < 4) return;
 
     // 1. Unpack Local Brick Coordinates (x | y<<8 | z<<16)
     uint packedLoc = _SavedBrickIndices[id];
