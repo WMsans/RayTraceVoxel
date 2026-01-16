@@ -31,14 +31,12 @@ namespace VoxelEngine.Core.Editing
 
         private void OnEnable()
         {
-            _input.Player.Enable();
-            _input.UI.Enable();
+            _input.Player.Attack.Enable();
         }
 
         private void OnDisable()
         {
-            _input.Player.Disable();
-            _input.UI.Disable();
+            _input.Player.Attack.Disable();
         }
 
         private void Update()

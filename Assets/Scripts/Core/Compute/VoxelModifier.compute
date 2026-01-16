@@ -10,16 +10,20 @@ RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<uint> _BrickDataBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
-
 // --- Uniforms ---
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
 float _GridSize;
 int _MaxBricks;
 
-float3 _BrushPosition;
-float3 _BrushBounds;
-float _BrushRadius;
+// Offsets for Global Buffers
+int _NodeOffset;
+int _PayloadOffset;
+int _BrickOffset;
+
+float3 _BrushPosition; // In Voxel Coordinates
+float3 _BrushBounds;   // In Voxel Coordinates
+float _BrushRadius;    // In Voxel Coordinates
 int _BrushMaterialId;
 int _BrushOp; // 0=Add, 1=Subtract, 2=Paint
 float _Smoothness;
@@ -29,18 +33,6 @@ float _Smoothness;
 // Returns -1 if not found or not leaf
 int GetLeafNodeIndex(int3 gridPos)
 {
-    // Bricks are 4x4x4. Grid size is resolution.
-    // Normalized position in 0..1 range? No, we use integer traversing logic similar to GetNodeIndex
-    // But GetNodeIndex assumes we are building. Here we traverse.
-    
-    // Simplified: Just use the spatial hashing if we assume fully dense or know the structure.
-    // For now, we assume the CPU has setup the structure or we are only editing existing bricks.
-    // To support sparse editing, we'd need complex allocation logic here.
-    
-    // Current workaround: Reconstruct node index from grid position
-    // This works ONLY if the structure matches the SVOBuilder pattern (Morton/Octree index).
-    // The safest way is to assume the CPU only asks for valid regions or we check existence.
-    
     uint level = 4;
     uint index = GetNodeIndex(level, (uint3)gridPos); // From VoxelStructures.hlsl
     return index;
@@ -49,8 +41,7 @@ int GetLeafNodeIndex(int3 gridPos)
 [numthreads(8, 8, 8)]
 void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
 {
-    // Placeholder: Real allocation requires atomic SVO building. 
-    // For Phase 2, we assume we are editing existing terrain.
+    // Placeholder for sparse allocation logic
 }
 
 [numthreads(4, 4, 4)]
@@ -62,18 +53,17 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
     
     // Find the node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
-    SVONode node = _NodeBuffer[nodeIndex];
     
+    // [FIX] Apply NodeOffset
+    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
     
     if (payloadIdx == 0) return; // No brick allocated here
     
-    VoxelPayload payload = _PayloadBuffer[payloadIdx];
+    // [FIX] Apply PayloadOffset
+    VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
     uint brickPtr = payload.brickDataIndex;
-    
-    float scale = 1.0; // Assume 1.0 for local editing context or pass uniform
-    float brickSizeWorld = BRICK_SIZE * scale; // 4.0
     
     // Iterate over voxels in the brick (6x6x6)
     for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
@@ -82,38 +72,30 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
         {
             for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
             {
-                uint voxelIdx = brickPtr + z*36 + y*6 + x;
+                // [FIX] Apply BrickOffset
+                uint voxelIdx = _BrickOffset + brickPtr + z*36 + y*6 + x;
                 uint packed = _BrickDataBuffer[voxelIdx];
                 
-                float sdf; float3 norm; uint mat;
+                float sdf;
+                float3 norm; uint mat;
                 UnpackVoxelData(packed, sdf, norm, mat);
                 
-                // Calculate World Position of this voxel
-                // We need the world origin of the chunk or volume.
-                // Simplified: Calculate relative to brush
-                // We don't have ChunkOrigin here easily.
-                // Hack: We can deduce it if we know the grid logic or pass it.
-                // BETTER: Pass WorldOrigin to shader.
-                // Assuming _GridSize implies the volume spans 0.._GridSize in local space?
-                // Let's rely on _BrushPosition being in the same space as the voxels.
-                
-                // Reconstruct voxel position
-                int3 voxelOffset = int3(x,y,z) - int3(1,1,1); // Padding
+                // Reconstruct voxel position (Local to Volume in Voxel Units)
+                int3 voxelOffset = int3(x,y,z) - int3(1,1,1); // Padding offset
                 float3 voxelPosLocal = (float3)brickIdx * 4.0 + (float3)voxelOffset;
-                
+
                 // --- SDF Logic ---
+                // _BrushPosition is now in Voxel Units
                 float dist = length(voxelPosLocal - _BrushPosition) - _BrushRadius;
-                
-                if (_BrushOp == 0) // Add
+
+                if (_BrushOp == 0) // Add (Union)
                 {
-                    // Smooth Union
                     float h = clamp( 0.5 + 0.5 * (sdf - dist) / _Smoothness, 0.0, 1.0 );
                     sdf = lerp( sdf, dist, h ) - _Smoothness * h * (1.0 - h);
                     if (h < 0.5) mat = _BrushMaterialId;
                 }
                 else if (_BrushOp == 1) // Subtract
                 {
-                    // Smooth Subtract: Max(sdf, -dist)
                      float h = clamp( 0.5 - 0.5 * (sdf + dist) / _Smoothness, 0.0, 1.0 );
                      sdf = lerp( sdf, -dist, h ) + _Smoothness * h * (1.0 - h);
                 }
@@ -134,7 +116,5 @@ void AllocateNodesCube(uint3 id : SV_DispatchThreadID) {}
 [numthreads(4, 4, 4)]
 void EditVoxelsCube(uint3 id : SV_DispatchThreadID) 
 {
-    // TODO: Cube modifier
-    // Similar implementation for Cube shape if needed
-    // ...
+    // TODO: Cube logic would go here
 }
