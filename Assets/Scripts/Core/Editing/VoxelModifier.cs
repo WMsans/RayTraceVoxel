@@ -154,8 +154,10 @@ namespace VoxelEngine.Core.Editing
                                 // Calculate Global Key: VolOrigin + LocalBrickIdx
                                 Vector3Int globalKey = volOriginBrick + info.brickIdx;
                                 
-                                // Issue Readback for the specific slice (216 uints)
-                                int byteOffset = (int)info.brickPtr * 4;
+                                // [FIX] Issue Readback for the specific slice (216 uints)
+                                // We must OFFSET by the Volume's start in the Global Buffer
+                                int globalBrickPtr = vol.BufferManager.BrickDataOffset + (int)info.brickPtr;
+                                int byteOffset = globalBrickPtr * 4;
                                 int byteSize = SVONode.BRICK_VOXEL_COUNT * 4;
 
                                 // We must capture 'vol' but verify it's still valid

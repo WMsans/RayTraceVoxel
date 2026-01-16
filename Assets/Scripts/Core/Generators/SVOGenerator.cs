@@ -1,6 +1,7 @@
 using UnityEngine;
 using VoxelEngine.Core.Buffers;
 using VoxelEngine.Core.Data;
+using VoxelEngine.Core.Editing; // Added for Phase 4
 
 namespace VoxelEngine.Core.Generators
 {
@@ -54,6 +55,78 @@ namespace VoxelEngine.Core.Generators
             int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 4.0f);
             
             shader.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
+
+            // --- Phase 4: Apply Saved Edits ---
+            var editManager = VoxelEditManager.Instance;
+            if (editManager != null)
+            {
+                // 1. Determine Chunk Bounds (World Space)
+                Bounds chunkBounds = new Bounds(chunkOrigin + Vector3.one * (chunkSize * 0.5f), Vector3.one * chunkSize);
+                
+                // 2. Retrieve Relevant Edits
+                var edits = editManager.GetEditsInChunk(chunkBounds);
+                
+                if (edits != null && edits.Count > 0)
+                {
+                    int editCount = edits.Count;
+                    
+                    // 3. Prepare Arrays for Upload
+                    // Index Buffer: 1 uint per edit (Packed Local Coordinate)
+                    // Data Buffer: 216 uints per edit (Raw Voxel Data)
+                    uint[] savedIndices = new uint[editCount];
+                    uint[] savedData = new uint[editCount * 216];
+                    
+                    Vector3Int chunkBaseIdx = editManager.GetGlobalBrickIndex(chunkOrigin);
+                    
+                    for (int i = 0; i < editCount; i++)
+                    {
+                        var kvp = edits[i];
+                        Vector3Int globalIdx = kvp.Key;
+                        Vector3Int localIdx = globalIdx - chunkBaseIdx;
+                        
+                        // Pack Local Coordinate: x | y<<8 | z<<16
+                        // Ensure bounds safety (0-255)
+                        uint packedLoc = (uint)((localIdx.x & 0xFF) | ((localIdx.y & 0xFF) << 8) | ((localIdx.z & 0xFF) << 16));
+                        savedIndices[i] = packedLoc;
+                        
+                        // Flatten Data
+                        if (kvp.Value.data != null && kvp.Value.data.Length == 216)
+                        {
+                            System.Array.Copy(kvp.Value.data, 0, savedData, i * 216, 216);
+                        }
+                    }
+                    
+                    // 4. Create Temporary Buffers
+                    ComputeBuffer indicesBuffer = new ComputeBuffer(editCount, 4);
+                    ComputeBuffer dataBuffer = new ComputeBuffer(savedData.Length, 4);
+                    
+                    indicesBuffer.SetData(savedIndices);
+                    dataBuffer.SetData(savedData);
+                    
+                    // 5. Dispatch Kernel
+                    int kernelEdit = shader.FindKernel("ApplySavedEdits");
+                    shader.SetBuffer(kernelEdit, "_NodeBuffer", buffers.NodeBuffer);
+                    shader.SetBuffer(kernelEdit, "_PayloadBuffer", buffers.PayloadBuffer);
+                    shader.SetBuffer(kernelEdit, "_BrickDataBuffer", buffers.BrickDataBuffer);
+                    shader.SetBuffer(kernelEdit, "_CounterBuffer", buffers.CounterBuffer);
+                    
+                    shader.SetBuffer(kernelEdit, "_SavedBrickIndices", indicesBuffer);
+                    shader.SetBuffer(kernelEdit, "_SavedBrickData", dataBuffer);
+                    
+                    shader.SetInt("_NodeOffset", buffers.NodeOffset);
+                    shader.SetInt("_PayloadOffset", buffers.PayloadOffset);
+                    shader.SetInt("_BrickOffset", buffers.BrickDataOffset);
+                    shader.SetInt("_SavedEditCount", editCount);
+                    
+                    int editGroups = Mathf.CeilToInt(editCount / 64.0f);
+                    shader.Dispatch(kernelEdit, editGroups, 1, 1);
+                    
+                    // 6. Cleanup
+                    indicesBuffer.Release();
+                    dataBuffer.Release();
+                }
+            }
+            // ----------------------------------
 
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);
