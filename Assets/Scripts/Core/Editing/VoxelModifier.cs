@@ -53,8 +53,15 @@ namespace VoxelEngine.Core.Editing
             min = Vector3.Max(min, Vector3.zero);
             max = Vector3.Min(max, new Vector3(vol.Resolution, vol.Resolution, vol.Resolution));
 
+            // 1. Prevent invalid execution if brush is effectively outside bounds or inverted
+            if (min.x >= max.x || min.y >= max.y || min.z >= max.z) return;
+
             Vector3Int minBrickId = Vector3Int.FloorToInt(min / brickSize);
-            Vector3Int maxBrickId = Vector3Int.FloorToInt(max / brickSize);
+            
+            // 2. Fix: Subtract epsilon from max to treat it as an exclusive upper bound.
+            // If max is 64.0, (64.0 - eps) / 4 = 15.99 -> Index 15.
+            // This prevents Index 16, which wraps to 0 in the shader's Morton encoding.
+            Vector3Int maxBrickId = Vector3Int.FloorToInt((max - Vector3.one * 0.001f) / brickSize);
 
             // Calculate Dispatch Range
             int rangeX = Mathf.Max(1, maxBrickId.x - minBrickId.x + 1);
