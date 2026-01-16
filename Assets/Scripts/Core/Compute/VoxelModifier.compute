@@ -140,18 +140,29 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
                 
                 // --- SDF Logic ---
                 // _BrushPosition is now in Voxel Units
-                float dist = length(voxelPosLocal - _BrushPosition) - _BrushRadius;
+                float3 diff = voxelPosLocal - _BrushPosition;
+                float distRaw = length(diff);
+                float dist = distRaw - _BrushRadius;
                 
+                // Calculate gradient (normal) for the sphere
+                float3 sphereNormal = (distRaw > 1e-5) ? diff / distRaw : float3(0,1,0);
+
                 if (_BrushOp == 0) // Add (Union)
                 {
                     float h = clamp( 0.5 + 0.5 * (sdf - dist) / _Smoothness, 0.0, 1.0 );
                     sdf = lerp( sdf, dist, h ) - _Smoothness * h * (1.0 - h);
-                    if (h < 0.5) mat = _BrushMaterialId;
+                    
+                    norm = normalize(lerp(norm, sphereNormal, h));
+
+                    if (h > 0.5) mat = _BrushMaterialId;
                 }
                 else if (_BrushOp == 1) // Subtract
                 {
                      float h = clamp( 0.5 - 0.5 * (sdf + dist) / _Smoothness, 0.0, 1.0 );
                      sdf = lerp( sdf, -dist, h ) + _Smoothness * h * (1.0 - h);
+                     
+                     // Optional: Blend normal for subtract (inverted sphere normal)
+                     norm = normalize(lerp(norm, -sphereNormal, h));
                 }
                 else if (_BrushOp == 2) // Paint
                 {
