@@ -10,6 +10,7 @@ RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<uint> _BrickDataBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
+
 // --- Uniforms ---
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
@@ -41,7 +42,61 @@ int GetLeafNodeIndex(int3 gridPos)
 [numthreads(8, 8, 8)]
 void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
 {
-    // Placeholder for sparse allocation logic
+    int3 brickIdx = _MinBrickIndex + (int3)id;
+    if (any(brickIdx > _MaxBrickIndex)) return;
+
+    // 1. Check Intersection with Brush
+    // Calculate Brick Center in Voxel Coords (Bricks are 4x4x4)
+    float3 brickCenter = (float3)brickIdx * 4.0 + 2.0;
+    
+    // Conservative radius check: Brick Radius (~3.5) + Brush Radius
+    float dist = length(brickCenter - _BrushPosition);
+    if (dist > (_BrushRadius + 4.0)) return;
+
+    // 2. Get Node
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    // Apply NodeOffset
+    uint globalNodeIndex = _NodeOffset + nodeIndex;
+    SVONode node = _NodeBuffer[globalNodeIndex];
+    
+    // 3. Check if Empty (Payload Index == 0)
+    uint existingPayload = node.packedInfo & 0xFFFF;
+    
+    if (existingPayload == 0)
+    {
+        // 4. Allocate New Resources
+        uint newPayloadIdx;
+        InterlockedAdd(_CounterBuffer[1], 1, newPayloadIdx);
+        newPayloadIdx += 1; // 1-based index (0 is null)
+
+        uint newBrickVoxelPtr;
+        InterlockedAdd(_CounterBuffer[2], 216, newBrickVoxelPtr);
+        
+        // Safety Check: Prevent overwriting if pool is full
+        if ((newBrickVoxelPtr + 216) > ((uint)_MaxBricks * 216)) return;
+
+        // 5. Initialize Payload
+        VoxelPayload pl;
+        pl.brickDataIndex = newBrickVoxelPtr;
+        _PayloadBuffer[_PayloadOffset + newPayloadIdx] = pl;
+        
+        // 6. Initialize Brick Data to "Air"
+        // We must fill the new 4x4x4 block with safe default values 
+        // so the edit kernel can blend correctly.
+        // MAX_SDF_RANGE (4.0) represents empty space. 
+        // Normal Up (0,1,0), Material 0.
+        uint packedAir = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
+        
+        for (uint i = 0; i < 216; i++)
+        {
+            _BrickDataBuffer[_BrickOffset + newBrickVoxelPtr + i] = packedAir;
+        }
+        
+        // 7. Link Node to New Payload
+        // Preserve existing upper bits (though usually 0 for empty nodes)
+        uint newPackedInfo = (newPayloadIdx & 0xFFFF) | (node.packedInfo & 0xFFFF0000);
+        _NodeBuffer[globalNodeIndex].packedInfo = newPackedInfo;
+    }
 }
 
 [numthreads(4, 4, 4)]
@@ -53,13 +108,12 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
     
     // Find the node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
-    
     // [FIX] Apply NodeOffset
     SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
     
-    if (payloadIdx == 0) return; // No brick allocated here
+    if (payloadIdx == 0) return; // Should be allocated now if intersecting
     
     // [FIX] Apply PayloadOffset
     VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
@@ -83,11 +137,11 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
                 // Reconstruct voxel position (Local to Volume in Voxel Units)
                 int3 voxelOffset = int3(x,y,z) - int3(1,1,1); // Padding offset
                 float3 voxelPosLocal = (float3)brickIdx * 4.0 + (float3)voxelOffset;
-
+                
                 // --- SDF Logic ---
                 // _BrushPosition is now in Voxel Units
                 float dist = length(voxelPosLocal - _BrushPosition) - _BrushRadius;
-
+                
                 if (_BrushOp == 0) // Add (Union)
                 {
                     float h = clamp( 0.5 + 0.5 * (sdf - dist) / _Smoothness, 0.0, 1.0 );
@@ -111,7 +165,10 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 8)]
-void AllocateNodesCube(uint3 id : SV_DispatchThreadID) {}
+void AllocateNodesCube(uint3 id : SV_DispatchThreadID) 
+{
+    // TODO: Cube logic similar to Sphere
+}
 
 [numthreads(4, 4, 4)]
 void EditVoxelsCube(uint3 id : SV_DispatchThreadID) 
