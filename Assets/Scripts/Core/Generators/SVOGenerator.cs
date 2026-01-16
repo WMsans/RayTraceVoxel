@@ -7,7 +7,7 @@ namespace VoxelEngine.Core.Generators
 {
     public static class SVOGenerator
     {
-        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize)
+        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize, int depth)
         {
             if (shader == null || buffers == null) return;
             
@@ -50,6 +50,7 @@ namespace VoxelEngine.Core.Generators
             shader.SetInt("_GridSize", resolution); 
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
             shader.SetFloat("_ChunkWorldSize", chunkSize);
+            shader.SetInt("_ChunkDepth", depth);
 
             int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
             int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 4.0f);
@@ -117,6 +118,7 @@ namespace VoxelEngine.Core.Generators
                     shader.SetInt("_PayloadOffset", buffers.PayloadOffset);
                     shader.SetInt("_BrickOffset", buffers.BrickDataOffset);
                     shader.SetInt("_SavedEditCount", editCount);
+                    shader.SetInt("_ChunkDepth", depth);
                     
                     int editGroups = Mathf.CeilToInt(editCount / 64.0f);
                     shader.Dispatch(kernelEdit, editGroups, 1, 1);

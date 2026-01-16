@@ -26,7 +26,7 @@ public class TestGlobalDispatch : MonoBehaviour
                 Vector3 pos = new Vector3(x * (size + separation), 0, z * (size + separation));
                 
                 // Get Volume (Auto-activates and Generates SDF)
-                pool.GetVolume(pos, size);
+                pool.GetVolume(pos, size, 4);
             }
         }
         

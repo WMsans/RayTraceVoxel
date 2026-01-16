@@ -13,6 +13,7 @@ namespace VoxelEngine.Core
         [Header("Settings")]
         public ComputeShader svoCompute;
         public int resolution = 64;
+        public int depth = 4;
         
         public SVOBufferManager BufferManager { get; private set; }
         private int _maxNodes;
@@ -20,6 +21,7 @@ namespace VoxelEngine.Core
         
         public Vector3 WorldOrigin { get; private set; }
         public float WorldSize { get; private set; }
+        public int Depth => depth;
         public Bounds WorldBounds => new Bounds(WorldOrigin + Vector3.one * WorldSize * 0.5f, Vector3.one * WorldSize);
 
         public GraphicsBuffer NodeBuffer => BufferManager?.NodeBuffer;
@@ -52,10 +54,11 @@ namespace VoxelEngine.Core
             );
         }
 
-        public void OnPullFromPool(Vector3 worldOrigin, float size)
+        public void OnPullFromPool(Vector3 worldOrigin, float size, int depth)
         {
             WorldOrigin = worldOrigin;
             WorldSize = size;
+            this.depth = depth;
             BufferManager.ResetCounters();
             this.gameObject.SetActive(true);
             Regenerate();
@@ -67,7 +70,7 @@ namespace VoxelEngine.Core
         {
             if (svoCompute == null || !IsReady) return;
             BufferManager.ResetCounters(); 
-            SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize);
+            SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize, Depth);
         }
 
         public void Save(string filePath, Action<bool> onComplete = null) => VoxelDataSerializer.Save(this, filePath, onComplete);

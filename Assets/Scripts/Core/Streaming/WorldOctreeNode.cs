@@ -84,7 +84,7 @@ namespace VoxelEngine.Core.Streaming
             Vector3 minCorner = Center - (Vector3.one * Size * 0.5f);
             
             // Request from Pool
-            ActiveVolume = VoxelVolumePool.Instance.GetVolume(minCorner, Size);
+            ActiveVolume = VoxelVolumePool.Instance.GetVolume(minCorner, Size, Depth);
             
             if (ActiveVolume != null)
             {
