@@ -32,6 +32,37 @@ namespace VoxelEngine.Core.Editing
             VoxelVolume vol = _storage as VoxelVolume;
             if (vol == null) return;
 
+            // 1. Check Scale Match
+            // We can only edit volumes that match the global voxel size (LOD 0)
+            float volVoxelSize = vol.WorldSize / vol.Resolution;
+            float globalVoxelSize = VoxelEditManager.Instance.voxelSize;
+            
+            if (!Mathf.Approximately(volVoxelSize, globalVoxelSize))
+            {
+                // Debug.LogWarning($"[VoxelModifier] Skipped edit on LOD Chunk (Size: {volVoxelSize} vs Global: {globalVoxelSize})");
+                return;
+            }
+
+            // 2. Check Alignment
+            // The Volume must align to the Global Brick Grid for the keys to match
+            float brickWorldSize = SVONode.BRICK_SIZE * globalVoxelSize;
+            if (vol.WorldOrigin.x % brickWorldSize != 0 || 
+                vol.WorldOrigin.y % brickWorldSize != 0 || 
+                vol.WorldOrigin.z % brickWorldSize != 0)
+            {
+                // Allow for small floating point errors
+                float epsilon = 0.01f;
+                bool alignedX = Mathf.Abs(vol.WorldOrigin.x % brickWorldSize) < epsilon || Mathf.Abs(vol.WorldOrigin.x % brickWorldSize - brickWorldSize) < epsilon;
+                bool alignedY = Mathf.Abs(vol.WorldOrigin.y % brickWorldSize) < epsilon || Mathf.Abs(vol.WorldOrigin.y % brickWorldSize - brickWorldSize) < epsilon;
+                bool alignedZ = Mathf.Abs(vol.WorldOrigin.z % brickWorldSize) < epsilon || Mathf.Abs(vol.WorldOrigin.z % brickWorldSize - brickWorldSize) < epsilon;
+
+                if (!alignedX || !alignedY || !alignedZ)
+                {
+                    // Debug.LogWarning($"[VoxelModifier] Skipped edit on Misaligned Chunk {vol.WorldOrigin}");
+                    return;
+                }
+            }
+
             // Calculate Scale: Voxel Units / World Units
             float worldToVoxelScale = (float)vol.Resolution / vol.WorldSize;
 
@@ -48,7 +79,7 @@ namespace VoxelEngine.Core.Editing
                 aabb.extents = brushBoundsVoxel * 0.5f;
 
             // 2. Determine Brick Indices (Bricks are 4x4x4 Voxels)
-            float brickSize = SVONode.BRICK_SIZE; // 4.0
+            float brickVoxelSize = SVONode.BRICK_SIZE; // 4.0
             
             Vector3 min = aabb.min;
             Vector3 max = aabb.max;
@@ -60,8 +91,8 @@ namespace VoxelEngine.Core.Editing
             // 1. Prevent invalid execution if brush is effectively outside bounds or inverted
             if (min.x >= max.x || min.y >= max.y || min.z >= max.z) return;
 
-            Vector3Int minBrickId = Vector3Int.FloorToInt(min / brickSize);
-            Vector3Int maxBrickId = Vector3Int.FloorToInt((max - Vector3.one * 0.001f) / brickSize);
+            Vector3Int minBrickId = Vector3Int.FloorToInt(min / brickVoxelSize);
+            Vector3Int maxBrickId = Vector3Int.FloorToInt((max - Vector3.one * 0.001f) / brickVoxelSize);
 
             // Calculate Dispatch Range
             int rangeX = Mathf.Max(1, maxBrickId.x - minBrickId.x + 1);
