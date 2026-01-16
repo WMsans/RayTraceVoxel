@@ -128,7 +128,31 @@ namespace VoxelEngine.Core.Generators
                     dataBuffer.Release();
                 }
             }
-            // ----------------------------------
+
+            // --- Phase 4b: Stitch Brick Borders ---
+            // Run this if we applied edits OR just generally to fix procedural seams (if wanted, but critical for edits)
+            // It's safe to run always, but optimized to only run if we have neighbors.
+            // For now, run always to ensure robustness.
+            
+            // Dispatch over Brick Grid (Resolution / 4)
+            int numBricks = resolution / 4; // e.g. 64/4 = 16
+            // Kernel size is [4, 4, 4], so groups needed = 16/4 = 4
+            int stitchGroups = Mathf.CeilToInt(numBricks / 4.0f);
+            
+            int kernelStitch = shader.FindKernel("StitchBrickBorders");
+            // Set Buffers (Node, Payload, BrickData are needed)
+            shader.SetBuffer(kernelStitch, "_NodeBuffer", buffers.NodeBuffer);
+            shader.SetBuffer(kernelStitch, "_PayloadBuffer", buffers.PayloadBuffer);
+            shader.SetBuffer(kernelStitch, "_BrickDataBuffer", buffers.BrickDataBuffer);
+            
+            shader.SetInt("_NodeOffset", buffers.NodeOffset);
+            shader.SetInt("_PayloadOffset", buffers.PayloadOffset);
+            shader.SetInt("_BrickOffset", buffers.BrickDataOffset);
+            shader.SetInt("_GridSize", resolution);
+            shader.SetInt("_ChunkDepth", depth);
+
+            shader.Dispatch(kernelStitch, stitchGroups, stitchGroups, stitchGroups);
+            // --------------------------------------
 
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);
