@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Interfaces;
 
@@ -8,6 +9,14 @@ namespace VoxelEngine.Core.Editing
     {
         private ComputeShader _shader;
         private IVoxelStorage _storage;
+
+        // Structure matching the Compute Shader
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        struct ModifiedBrickInfo
+        {
+            public Vector3Int brickIdx;
+            public uint brickPtr;
+        }
 
         public VoxelModifier(ComputeShader shader, IVoxelStorage storage)
         {
@@ -24,11 +33,6 @@ namespace VoxelEngine.Core.Editing
             if (vol == null) return;
 
             // Calculate Scale: Voxel Units / World Units
-            // If WorldSize=1024, Res=64 -> Scale = 0.0625. (1 Meter = 0.0625 Voxels)
-            // Wait, standard SVO: Res=64, Size=1024. 
-            // 1 Voxel = 16 Meters.
-            // If Brush is at 16m, it is at Voxel 1.
-            // So VoxelPos = WorldPos * (Res / Size).
             float worldToVoxelScale = (float)vol.Resolution / vol.WorldSize;
 
             // Convert Brush to Voxel Space
@@ -57,10 +61,6 @@ namespace VoxelEngine.Core.Editing
             if (min.x >= max.x || min.y >= max.y || min.z >= max.z) return;
 
             Vector3Int minBrickId = Vector3Int.FloorToInt(min / brickSize);
-            
-            // 2. Fix: Subtract epsilon from max to treat it as an exclusive upper bound.
-            // If max is 64.0, (64.0 - eps) / 4 = 15.99 -> Index 15.
-            // This prevents Index 16, which wraps to 0 in the shader's Morton encoding.
             Vector3Int maxBrickId = Vector3Int.FloorToInt((max - Vector3.one * 0.001f) / brickSize);
 
             // Calculate Dispatch Range
@@ -112,18 +112,78 @@ namespace VoxelEngine.Core.Editing
             _shader.SetBuffer(kernelEdit, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelEdit, "_BrickDataBuffer", vol.BrickDataBuffer);
 
-            // 4. Dispatch
-            // Allocate: 1 thread per brick (8x8x8 group size -> 512 threads)
-            // We need enough groups to cover [rangeX * rangeY * rangeZ] bricks? 
-            // Actually the kernel likely expects 3D dispatch logic.
-            // AllocateNodesSphere is currently empty, but for safety dispatch matching layout:
-            _shader.Dispatch(kernelAlloc, Mathf.CeilToInt(rangeX / 8.0f), Mathf.CeilToInt(rangeY / 8.0f), Mathf.CeilToInt(rangeZ / 8.0f));
+            // --- Phase 3: Bake Setup (Mod Log) ---
+            int maxModBricks = rangeX * rangeY * rangeZ;
+            ComputeBuffer appendBuffer = new ComputeBuffer(maxModBricks, 16, ComputeBufferType.Append);
+            appendBuffer.SetCounterValue(0);
+            _shader.SetBuffer(kernelEdit, "_OutModifiedBricks", appendBuffer);
 
-            // Edit: 1 group per brick? Or logic inside handles it?
-            // Kernel is [numthreads(4, 4, 4)]. This is 64 threads.
-            // The logic inside uses `_MinBrickIndex + id`.
-            // So we dispatch the number of bricks we want to cover directly.
+            // 4. Dispatch
+            _shader.Dispatch(kernelAlloc, Mathf.CeilToInt(rangeX / 8.0f), Mathf.CeilToInt(rangeY / 8.0f), Mathf.CeilToInt(rangeZ / 8.0f));
             _shader.Dispatch(kernelEdit, rangeX, rangeY, rangeZ);
+
+            // --- Phase 3: Async Readback ---
+            // We need a counter buffer to know how many bricks were modified
+            ComputeBuffer countBuffer = new ComputeBuffer(1, 4, ComputeBufferType.IndirectArguments);
+            ComputeBuffer.CopyCount(appendBuffer, countBuffer, 0);
+
+            // Calculate Volume Global Origin in Brick Coordinates (for Global indexing)
+            Vector3Int volOriginBrick = VoxelEditManager.Instance.GetGlobalBrickIndex(vol.WorldOrigin);
+
+            // 1. Request Count
+            AsyncGPUReadback.Request(countBuffer, (reqCount) => 
+            {
+                if (reqCount.hasError) { countBuffer.Dispose(); appendBuffer.Dispose(); return; }
+                
+                int count = reqCount.GetData<int>()[0];
+
+                if (count > 0)
+                {
+                    // 2. Request Modified Brick List
+                    AsyncGPUReadback.Request(appendBuffer, count * 16, 0, (reqList) => 
+                    {
+                        if (!reqList.hasError)
+                        {
+                            var list = reqList.GetData<ModifiedBrickInfo>();
+                            
+                            // 3. Request Actual Brick Data
+                            for (int i = 0; i < list.Length; i++)
+                            {
+                                ModifiedBrickInfo info = list[i];
+                                
+                                // Calculate Global Key: VolOrigin + LocalBrickIdx
+                                Vector3Int globalKey = volOriginBrick + info.brickIdx;
+                                
+                                // Issue Readback for the specific slice (216 uints)
+                                int byteOffset = (int)info.brickPtr * 4;
+                                int byteSize = SVONode.BRICK_VOXEL_COUNT * 4;
+
+                                // We must capture 'vol' but verify it's still valid
+                                if (vol != null && vol.BrickDataBuffer != null)
+                                {
+                                    AsyncGPUReadback.Request(vol.BrickDataBuffer, byteSize, byteOffset, (reqData) => 
+                                    {
+                                        if (!reqData.hasError)
+                                        {
+                                            uint[] data = reqData.GetData<uint>().ToArray();
+                                            VoxelEditManager.Instance.StoreBrick(globalKey, data);
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                        
+                        // Clean up
+                        countBuffer.Dispose();
+                        appendBuffer.Dispose();
+                    });
+                }
+                else
+                {
+                    countBuffer.Dispose();
+                    appendBuffer.Dispose();
+                }
+            });
         }
     }
 }

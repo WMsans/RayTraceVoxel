@@ -11,6 +11,15 @@ RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<uint> _BrickDataBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
 
+// --- Phase 3: Modification Log ---
+struct ModifiedBrickInfo
+{
+    int3 brickIdx; // 12 bytes
+    uint brickPtr; // 4 bytes
+};
+// Append buffer to track modified bricks (16 bytes stride)
+AppendStructuredBuffer<ModifiedBrickInfo> _OutModifiedBricks;
+
 // --- Uniforms ---
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
@@ -48,7 +57,6 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
     // 1. Check Intersection with Brush
     // Calculate Brick Center in Voxel Coords (Bricks are 4x4x4)
     float3 brickCenter = (float3)brickIdx * 4.0 + 2.0;
-    
     // Conservative radius check: Brick Radius (~3.5) + Brush Radius
     float dist = length(brickCenter - _BrushPosition);
     if (dist > (_BrushRadius + 4.0)) return;
@@ -58,10 +66,8 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
     // Apply NodeOffset
     uint globalNodeIndex = _NodeOffset + nodeIndex;
     SVONode node = _NodeBuffer[globalNodeIndex];
-    
     // 3. Check if Empty (Payload Index == 0)
     uint existingPayload = node.packedInfo & 0xFFFF;
-    
     if (existingPayload == 0)
     {
         // 4. Allocate New Resources
@@ -74,7 +80,6 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
         
         // Safety Check: Prevent overwriting if pool is full
         if ((newBrickVoxelPtr + 216) > ((uint)_MaxBricks * 216)) return;
-
         // 5. Initialize Payload
         VoxelPayload pl;
         pl.brickDataIndex = newBrickVoxelPtr;
@@ -86,7 +91,6 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
         // MAX_SDF_RANGE (4.0) represents empty space. 
         // Normal Up (0,1,0), Material 0.
         uint packedAir = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
-        
         for (uint i = 0; i < 216; i++)
         {
             _BrickDataBuffer[_BrickOffset + newBrickVoxelPtr + i] = packedAir;
@@ -94,7 +98,8 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
         
         // 7. Link Node to New Payload
         // Preserve existing upper bits (though usually 0 for empty nodes)
-        uint newPackedInfo = (newPayloadIdx & 0xFFFF) | (node.packedInfo & 0xFFFF0000);
+        uint newPackedInfo = (newPayloadIdx & 0xFFFF) |
+        (node.packedInfo & 0xFFFF0000);
         _NodeBuffer[globalNodeIndex].packedInfo = newPackedInfo;
     }
 }
@@ -108,14 +113,12 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
     
     // Find the node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
-    // [FIX] Apply NodeOffset
+
     SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
-    
     if (payloadIdx == 0) return; // Should be allocated now if intersecting
     
-    // [FIX] Apply PayloadOffset
     VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
     uint brickPtr = payload.brickDataIndex;
     
@@ -126,26 +129,24 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
         {
             for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
             {
-                // [FIX] Apply BrickOffset
                 uint voxelIdx = _BrickOffset + brickPtr + z*36 + y*6 + x;
                 uint packed = _BrickDataBuffer[voxelIdx];
                 
                 float sdf;
                 float3 norm; uint mat;
                 UnpackVoxelData(packed, sdf, norm, mat);
-                
                 // Reconstruct voxel position (Local to Volume in Voxel Units)
-                int3 voxelOffset = int3(x,y,z) - int3(1,1,1); // Padding offset
+                int3 voxelOffset = int3(x,y,z) - int3(1,1,1);
+                // Padding offset
                 float3 voxelPosLocal = (float3)brickIdx * 4.0 + (float3)voxelOffset;
-                
                 // --- SDF Logic ---
                 // _BrushPosition is now in Voxel Units
                 float3 diff = voxelPosLocal - _BrushPosition;
                 float distRaw = length(diff);
                 float dist = distRaw - _BrushRadius;
-                
                 // Calculate gradient (normal) for the sphere
-                float3 sphereNormal = (distRaw > 1e-5) ? diff / distRaw : float3(0,1,0);
+                float3 sphereNormal = (distRaw > 1e-5) ?
+                diff / distRaw : float3(0,1,0);
 
                 if (_BrushOp == 0) // Add (Union)
                 {
@@ -153,16 +154,14 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
                     sdf = lerp( sdf, dist, h ) - _Smoothness * h * (1.0 - h);
                     
                     norm = normalize(lerp(norm, sphereNormal, h));
-
                     if (h > 0.5) mat = _BrushMaterialId;
                 }
                 else if (_BrushOp == 1) // Subtract
                 {
-                     float h = clamp( 0.5 - 0.5 * (sdf + dist) / _Smoothness, 0.0, 1.0 );
-                     sdf = lerp( sdf, -dist, h ) + _Smoothness * h * (1.0 - h);
-                     
-                     // Optional: Blend normal for subtract (inverted sphere normal)
-                     norm = normalize(lerp(norm, -sphereNormal, h));
+                    float h = clamp( 0.5 - 0.5 * (sdf + dist) / _Smoothness, 0.0, 1.0 );
+                    sdf = lerp( sdf, -dist, h ) + _Smoothness * h * (1.0 - h);
+
+                    norm = normalize(lerp(norm, -sphereNormal, h));
                 }
                 else if (_BrushOp == 2) // Paint
                 {
@@ -173,6 +172,13 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
             }
         }
     }
+
+    // --- Phase 3: Record Modified Brick ---
+    // Since we processed this brick, we add it to the list for CPU readback
+    ModifiedBrickInfo info;
+    info.brickIdx = brickIdx;
+    info.brickPtr = brickPtr;
+    _OutModifiedBricks.Append(info);
 }
 
 [numthreads(8, 8, 8)]
