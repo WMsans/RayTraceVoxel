@@ -2,7 +2,6 @@
 #pragma kernel BuildBricks
 #pragma kernel PropagateLOD 
 #pragma kernel ApplySavedEdits
-#pragma kernel StitchBrickBorders
 
 #include "./Includes/VoxelStructures.hlsl"
 #include "./GeneratorPipeline.hlsl"
@@ -24,7 +23,7 @@ StructuredBuffer<int> _SDFObjectIndexBuffer;
 StructuredBuffer<uint> _SavedBrickData;      // Flattened data (216 ints per brick)
 StructuredBuffer<uint> _SavedBrickIndices;   // Packed Local Coordinates (x | y<<8 | z<<16)
 
-// --- Global Uniforms ---
+// --- Global Uniforms (Moved to Top) ---
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
@@ -35,7 +34,7 @@ int _NumDynamicObjects;
 int _SavedEditCount;
 int _ChunkDepth;
 
-// Mipmapping Uniforms
+// Mipmapping Uniforms (Moved here to fix 'undeclared identifier' error)
 uint _TargetLevelOffset;
 uint _TargetLevelCount;
 
@@ -142,10 +141,18 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         float minH = min(min(h1, h2), min(h3, h4));
         float maxH = max(max(h1, h2), max(h3, h4));
         
+        // Terrain SDF is approx (y - height) * 0.5
+        // Surface band is where |y - height|
+        // * 0.5 < worldRadius
+        // So |y - height|
+        // < worldRadius * 2.0
+        
         float boundMargin = worldRadius * 2.0;
         // Check if Brick is completely above the surface band (Air)
+        // brickMin.y > maxTerrainHeight + margin
         bool isFarAir = brickMin.y > (maxH + boundMargin);
         // Check if Brick is completely below the surface band (Deep Solid)
+        // brickMax.y < minTerrainHeight - margin
         bool isDeepSolid = brickMax.y < (minH - boundMargin);
         if (isFarAir || isDeepSolid)
         {
@@ -185,6 +192,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1;
                     // [OPTIMIZATION] Pack Data
+                    // Normal, SDF, and Material are packed into a single uint
                     uint packedData = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
                     uint idx = _BrickOffset + brickPtr + (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x);
                     _BrickDataBuffer[idx] = packedData;
@@ -197,6 +205,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     {
                         if (sdf < 0) 
                         {
+                        
                              float3 col = float3(1.0, 1.0, 1.0);
                              accumulatedColor += float4(col, 1.0);
                              voxelCount += 1.0;
@@ -216,6 +225,8 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
         uint nodeIndex = GetNodeIndex(4, id);
 
+        // Pack Payload (16) |
+        // Material (8)
         uint packed = (payloadIndex & 0xFFFF) |
         ((detectedMaterial & 0xFF) << 16);
         _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = packed;
@@ -292,11 +303,15 @@ void ApplySavedEdits(uint id : SV_DispatchThreadID)
 {
     if (id >= (uint)_SavedEditCount) return;
 
+    // Filter by LOD: If this chunk is not at the highest resolution (leaf), 
+    // do not apply high-res edits directly to avoid blocky artifacts.
     if (_ChunkDepth < 4) return;
 
+    // 1. Unpack Local Brick Coordinates (x | y<<8 | z<<16)
     uint packedLoc = _SavedBrickIndices[id];
     uint3 localBrickIdx = uint3(packedLoc & 0xFF, (packedLoc >> 8) & 0xFF, (packedLoc >> 16) & 0xFF);
 
+    // 2. Find the Leaf Node
     uint nodeIndex = GetNodeIndex(4, localBrickIdx);
     uint globalNodeIdx = _NodeOffset + nodeIndex;
     SVONode node = _NodeBuffer[globalNodeIdx];
@@ -304,6 +319,7 @@ void ApplySavedEdits(uint id : SV_DispatchThreadID)
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
 
+    // 3. Ensure Allocation (If procedural pass skipped it)
     if (payloadIdx == 0)
     {
         InterlockedAdd(_CounterBuffer[1], 1, payloadIdx);
@@ -312,15 +328,20 @@ void ApplySavedEdits(uint id : SV_DispatchThreadID)
         uint brickPtr;
         InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
 
+        // Update Payload Buffer
         VoxelPayload pl;
         pl.brickDataIndex = brickPtr;
         _PayloadBuffer[_PayloadOffset + payloadIdx] = pl;
 
+        // Update Node (Preserve topology bits if any)
+        // Set Payload and clear Material (will be set by loop below)
         _NodeBuffer[globalNodeIdx].packedInfo = (payloadIdx & 0xFFFF) | (node.packedInfo & 0xFFFF0000);
         
+        // Refresh node local
         node = _NodeBuffer[globalNodeIdx];
     }
 
+    // 4. Overwrite Data & Calculate LOD stats
     VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
     uint brickPtr = payload.brickDataIndex;
     uint srcOffset = id * BRICK_VOXEL_COUNT;
@@ -335,11 +356,14 @@ void ApplySavedEdits(uint id : SV_DispatchThreadID)
         uint data = _SavedBrickData[srcOffset + i];
         _BrickDataBuffer[dstBase + i] = data;
 
+        // Re-calculate LOD info for this brick since we modified it
+        // Map linear index 'i' to x,y,z
         uint z = i / 36;
         uint rem = i % 36;
         uint y = rem / 6;
         uint x = rem % 6;
 
+        // Check inner 4x4x4
         if (x >= BRICK_PADDING && x < BRICK_STORAGE_SIZE - BRICK_PADDING &&
             y >= BRICK_PADDING && y < BRICK_STORAGE_SIZE - BRICK_PADDING &&
             z >= BRICK_PADDING && z < BRICK_STORAGE_SIZE - BRICK_PADDING)
@@ -348,110 +372,24 @@ void ApplySavedEdits(uint id : SV_DispatchThreadID)
              UnpackVoxelData(data, sdf, n, m);
              if (sdf < 0)
              {
-                 accumulatedColor += float4(1,1,1,1);
+                 accumulatedColor += float4(1,1,1,1); // Assuming white albedo for now
                  voxelCount += 1.0;
                  detectedMaterial = m;
              }
         }
     }
 
+    // 5. Update Leaf Node LOD
     if (voxelCount > 0)
     {
         float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
         _NodeBuffer[globalNodeIdx].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
+        // Update Material ID in packed info
         uint currentPacked = _NodeBuffer[globalNodeIdx].packedInfo;
         _NodeBuffer[globalNodeIdx].packedInfo = (currentPacked & 0xFFFF00FF) | ((detectedMaterial & 0xFF) << 16);
     }
     else
     {
         _NodeBuffer[globalNodeIdx].lodColor = 0;
-    }
-}
-
-[numthreads(4, 4, 4)]
-void StitchBrickBorders(uint3 id : SV_DispatchThreadID)
-{
-    uint bricksPerAxis = _GridSize / BRICK_SIZE;
-    if (any(id >= bricksPerAxis)) return;
-
-    uint currentNodeIdx = GetNodeIndex(4, id);
-    uint globalNodeIdx = _NodeOffset + currentNodeIdx;
-    SVONode currentNode = _NodeBuffer[globalNodeIdx];
-    
-    uint payloadIdx, matID;
-    UnpackNode(currentNode, payloadIdx, matID);
-    
-    if (payloadIdx == 0) return;
-    
-    VoxelPayload currentPayload = _PayloadBuffer[_PayloadOffset + payloadIdx];
-    uint currentBrickPtr = currentPayload.brickDataIndex;
-
-    int3 directions[6] = {
-        int3(-1, 0, 0), int3(1, 0, 0),
-        int3(0, -1, 0), int3(0, 1, 0),
-        int3(0, 0, -1), int3(0, 0, 1)
-    };
-
-    for(int i=0; i<6; i++) {
-        int3 dir = directions[i];
-        int3 neighborPos = (int3)id + dir;
-        
-        if (any(neighborPos < 0) || any(neighborPos >= (int)bricksPerAxis)) continue; 
-        
-        uint neighborNodeIdx = GetNodeIndex(4, (uint3)neighborPos);
-        SVONode neighborNode = _NodeBuffer[_NodeOffset + neighborNodeIdx];
-        
-        uint nPayloadIdx, nMatID;
-        UnpackNode(neighborNode, nPayloadIdx, nMatID);
-        
-        if (nPayloadIdx == 0) continue; 
-        
-        VoxelPayload nPayload = _PayloadBuffer[_PayloadOffset + nPayloadIdx];
-        uint nBrickPtr = nPayload.brickDataIndex;
-        
-        for (uint u = 1; u <= 4; u++)
-        {
-            for (uint v = 1; v <= 4; v++)
-            {
-                uint3 srcPos = 0;
-                uint3 dstPos = 0;
-
-                if (dir.x == -1) 
-                {
-                    srcPos = uint3(4, u, v);
-                    dstPos = uint3(0, u, v);
-                }
-                else if (dir.x == 1) 
-                {
-                    srcPos = uint3(1, u, v);
-                    dstPos = uint3(5, u, v);
-                }
-                else if (dir.y == -1) 
-                {
-                    srcPos = uint3(u, 4, v);
-                    dstPos = uint3(u, 0, v);
-                }
-                else if (dir.y == 1) 
-                {
-                    srcPos = uint3(u, 1, v);
-                    dstPos = uint3(u, 5, v);
-                }
-                else if (dir.z == -1) 
-                {
-                    srcPos = uint3(u, v, 4);
-                    dstPos = uint3(u, v, 0);
-                }
-                else if (dir.z == 1) 
-                {
-                    srcPos = uint3(u, v, 1);
-                    dstPos = uint3(u, v, 5);
-                }
-                
-                uint srcIdx = _BrickOffset + nBrickPtr + (srcPos.z * 36 + srcPos.y * 6 + srcPos.x);
-                uint dstIdx = _BrickOffset + currentBrickPtr + (dstPos.z * 36 + dstPos.y * 6 + dstPos.x);
-                
-                _BrickDataBuffer[dstIdx] = _BrickDataBuffer[srcIdx];
-            }
-        }
     }
 }
