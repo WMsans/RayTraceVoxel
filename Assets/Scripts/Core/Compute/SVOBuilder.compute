@@ -2,7 +2,6 @@
 #pragma kernel BuildBricks
 #pragma kernel PropagateLOD 
 #pragma kernel ApplySavedEdits
-#pragma kernel ApplyDownsampledEdits 
 
 #include "./Includes/VoxelStructures.hlsl"
 #include "./GeneratorPipeline.hlsl"
@@ -10,35 +9,21 @@
 // --- Global Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
+// [OPTIMIZATION] Merged Buffer (Replaces BrickBuffer, MaterialBuffer, NormalBuffer)
 RWStructuredBuffer<uint> _BrickDataBuffer; 
+
 RWStructuredBuffer<uint> _CounterBuffer;
 
 // Dynamic SDF Buffers
 StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
 StructuredBuffer<int> _SDFObjectIndexBuffer;
+// _SDFObjectBuffer is defined in GeneratorPipeline.hlsl
 
-// --- Saved Edits Buffers ---
-StructuredBuffer<uint> _SavedBrickData;
-StructuredBuffer<uint> _SavedBrickIndices;
+// --- Saved Edits Buffers (Phase 4) ---
+StructuredBuffer<uint> _SavedBrickData;      // Flattened data (216 ints per brick)
+StructuredBuffer<uint> _SavedBrickIndices;   // Packed Local Coordinates (x | y<<8 | z<<16)
 
-// --- Downsampling Buffers (New) ---
-struct DownsampleTargetInfo
-{
-    uint targetBrickIdx; // Packed Local Coord (x | y<<8 | z<<16)
-    int metaStartIndex;  // Index into _SourceBrickMeta
-    int sourceCount;     // How many source bricks contribute
-};
-
-struct SourceBrickMeta
-{
-    uint relativeOffset; // Packed x,y,z (0..scale-1)
-    int dataIndex;       // Index into _SavedBrickData
-};
-
-StructuredBuffer<DownsampleTargetInfo> _DownsampleTargets;
-StructuredBuffer<SourceBrickMeta> _SourceBrickMeta;
-
-// --- Global Uniforms ---
+// --- Global Uniforms (Moved to Top) ---
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
@@ -47,9 +32,8 @@ uint _PayloadOffset;
 uint _BrickOffset;
 int _NumDynamicObjects;
 int _SavedEditCount;
-int _DownsampleJobCount; // New
-int _DownsampleScale;    // New (e.g. 2, 4)
 
+// Mipmapping Uniforms (Moved here to fix 'undeclared identifier' error)
 uint _TargetLevelOffset;
 uint _TargetLevelCount;
 
@@ -402,216 +386,5 @@ void ApplySavedEdits(uint id : SV_DispatchThreadID)
     else
     {
         _NodeBuffer[globalNodeIdx].lodColor = 0;
-    }
-}
-
-uint3 Unpack3(uint packed)
-{
-    return uint3(packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF);
-}
-
-[numthreads(6, 6, 6)]
-void ApplyDownsampledEdits(uint3 groupID : SV_GroupID, uint3 groupThreadID : SV_GroupThreadID)
-{
-    // 1. Identify Job and Target Brick
-    int jobIndex = groupID.x;
-    if (jobIndex >= _DownsampleJobCount) return;
-
-    DownsampleTargetInfo job = _DownsampleTargets[jobIndex];
-    uint3 targetBrickLoc = Unpack3(job.targetBrickIdx);
-
-    // 2. Get Target Brick Data Pointer
-    // We need to find the node and payload to get the pointer.
-    // NOTE: BuildBricks should have already allocated this brick and generated procedural terrain.
-    uint nodeIndex = GetNodeIndex(4, targetBrickLoc);
-    uint globalNodeIdx = _NodeOffset + nodeIndex;
-    SVONode node = _NodeBuffer[globalNodeIdx];
-    
-    uint payloadIdx, matID;
-    UnpackNode(node, payloadIdx, matID);
-    
-    // If procedural generation skipped this brick (e.g. Empty Air), we must allocate it now
-    if (payloadIdx == 0)
-    {
-        InterlockedAdd(_CounterBuffer[1], 1, payloadIdx);
-        payloadIdx += 1;
-        uint newBrickPtr;
-        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, newBrickPtr);
-        
-        VoxelPayload pl;
-        pl.brickDataIndex = newBrickPtr;
-        _PayloadBuffer[_PayloadOffset + payloadIdx] = pl;
-        
-        // Update Node
-        _NodeBuffer[globalNodeIdx].packedInfo = (payloadIdx & 0xFFFF) | (node.packedInfo & 0xFFFF0000);
-        
-        // Initialize new brick to Air (safest default before overwrite)
-        uint packedAir = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
-        for(int k=0; k<BRICK_VOXEL_COUNT; k++) _BrickDataBuffer[_BrickOffset + newBrickPtr + k] = packedAir;
-    }
-    
-    VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
-    uint brickPtr = payload.brickDataIndex;
-
-    // 3. Current Voxel Processing (Low Res Voxel)
-    uint3 voxelPos = groupThreadID; // 0..5, 0..5, 0..5 (includes padding)
-    
-    // Valid check: The brick is 6x6x6, we launched 6x6x6 threads.
-    if (any(voxelPos >= BRICK_STORAGE_SIZE)) return;
-
-    // 4. Accumulators for Downsampling
-    float accSDF = 0;
-    float3 accNormal = 0;
-    float density = 0;
-    float samples = 0;
-    
-    // Material Voting (Simplification: Track max frequency or dominant)
-    // Here we just take the material of the closest surface found in source
-    uint dominantMat = 0;
-    float minAbsSDF = 10000.0; 
-
-    // 5. Loop through High-Res Source Voxels
-    // A single voxel in this Low-Res brick corresponds to a block of 'Scale' size in High-Res
-    // However, we must handle the PADDING logic. 
-    // The Source Data is stored as Bricks (4x4x4 + padding).
-    // Mapping: LowResVoxel -> [Scale x Scale x Scale] block of HighResVoxels.
-    
-    // Inner loop: Iterate over the sub-voxels that make up this low-res voxel
-    for (int sz = 0; sz < _DownsampleScale; sz++)
-    {
-        for (int sy = 0; sy < _DownsampleScale; sy++)
-        {
-            for (int sx = 0; sx < _DownsampleScale; sx++)
-            {
-                // Virtual Source Coordinate (Relative to Target Brick * Scale)
-                // Note: We subtract padding to align the logical 4x4x4 cores, then add it back
-                int3 logicalPos = (int3)voxelPos - BRICK_PADDING; // -1 .. 4
-                int3 virtualSrcPos = logicalPos * _DownsampleScale + int3(sx, sy, sz); 
-                
-                // Now map virtualSrcPos to Source Bricks
-                // We need to handle the case where virtualSrcPos crosses brick boundaries
-                // Source Brick logic: 
-                //   RelBrickIndex = floor(virtualSrcPos / 4)
-                //   VoxelInBrick  = virtualSrcPos % 4
-                
-                // Shift to positive domain for division
-                int3 offsetPos = virtualSrcPos + 1000 * 4; 
-                int3 srcBrickRel = (offsetPos / 4) - 1000;
-                int3 srcVoxelIdx = offsetPos % 4;
-
-                // Adjust for Padding in the source storage (indices 1..4 are data)
-                srcVoxelIdx += BRICK_PADDING; 
-
-                // Find the specific Source Brick containing this voxel
-                int foundDataIndex = -1;
-                
-                // Linear search through the source bricks assigned to this job
-                // (Usually max 8 bricks for Scale=2, so fast enough)
-                for (int m = 0; m < job.sourceCount; m++)
-                {
-                    SourceBrickMeta meta = _SourceBrickMeta[job.metaStartIndex + m];
-                    uint3 metaRel = Unpack3(meta.relativeOffset);
-                    
-                    if (all(metaRel == (uint3)srcBrickRel))
-                    {
-                        foundDataIndex = meta.dataIndex;
-                        break;
-                    }
-                }
-
-                if (foundDataIndex != -1)
-                {
-                    // Sample Data
-                    uint srcIdx = foundDataIndex * BRICK_VOXEL_COUNT + 
-                                  (srcVoxelIdx.z * 36 + srcVoxelIdx.y * 6 + srcVoxelIdx.x);
-                                  
-                    uint val = _SavedBrickData[srcIdx];
-                    
-                    float s; float3 n; uint mat;
-                    UnpackVoxelData(val, s, n, mat);
-                    
-                    accSDF += s;
-                    accNormal += n;
-                    samples += 1.0;
-                    
-                    if (s < 0) density += 1.0;
-                    
-                    if (abs(s) < minAbsSDF)
-                    {
-                        minAbsSDF = abs(s);
-                        dominantMat = mat;
-                    }
-                }
-                else
-                {
-                    // If source brick is missing, assume it's unedited (or Procedural)
-                    // For correctness, we should sample procedural here, but that's expensive.
-                    // We assume edits are sparse; if missing, we contribute "Neutral" or skip?
-                    // We skip, effectively averaging only known edits.
-                }
-            }
-        }
-    }
-
-    // 6. Write Result
-    if (samples > 0)
-    {
-        float avgSDF = accSDF / samples;
-        float3 avgNormal = normalize(accNormal + 1e-5); // Prevent NaN
-        
-        // Conflict Resolution / Blending
-        uint targetIdx = _BrickOffset + brickPtr + (voxelPos.z * 36 + voxelPos.y * 6 + voxelPos.x);
-        uint existingPacked = _BrickDataBuffer[targetIdx];
-        
-        float existingSDF; float3 existingNorm; uint existingMat;
-        UnpackVoxelData(existingPacked, existingSDF, existingNorm, existingMat);
-        
-        // LOGIC: Overwrite if the edit significantly changes the SDF (Dominant Edit)
-        // Since SavedData represents the "Truth" at LOD0 (Terrain + Edit), we largely trust it.
-        // However, to avoid blocky artifacts at boundaries, we check if the Downsampled SDF
-        // contradicts the Procedural SDF (e.g. Sign Flip) or is a strong surface.
-        
-        bool signFlip = (existingSDF > 0 && avgSDF < 0) || (existingSDF < 0 && avgSDF > 0);
-        float delta = abs(existingSDF - avgSDF);
-        
-        // If the downsampled average is very different from procedural, we write it.
-        if (signFlip || delta > 0.5)
-        {
-            // Rescale SDF for the current LOD level?
-            // PackVoxelData expects World Space SDF / Scale ? 
-            // The buffers store normalized SDF.
-            // SavedData was packed with Scale=1. This target is Scale=N.
-            // We averaged the World SDFs. Now we pack for current scale.
-            
-            // Note: PackVoxelData takes (sdf, ...). 
-            // In BuildBricks: PackVoxelData(sdf / scale, ...).
-            // So we must divide by _DownsampleScale (relative to chunk size? No, relative to Voxel Size).
-            // Actually _DownsampleScale is the ratio.
-            
-            // Correction: The stored SDF in SavedData was packed as (TrueSDF / 1.0).
-            // UnpackVoxelData returns the TrueSDF.
-            // We averaged TrueSDFs.
-            // Now we pack into a buffer where SDFs are expected to be (TrueSDF / CurrentScale).
-            // The chunk logic uses 'scale' based on _ChunkWorldSize / _GridSize.
-            // We can approximate this by dividing avgSDF by the downsample scale factor compared to LOD0.
-            
-            // But BuildBricks uses `scale` variable. We need that here.
-            // `_DownsampleScale` is passed from C#.
-            // Let's assume we need to normalize:
-            
-            _BrickDataBuffer[targetIdx] = PackVoxelData(avgSDF / (float)_DownsampleScale, avgNormal, dominantMat);
-            
-            // Update Node LOD Color if this is an inner voxel
-             if (all(voxelPos >= BRICK_PADDING) && all(voxelPos < BRICK_STORAGE_SIZE - BRICK_PADDING))
-             {
-                 // We rely on PropagateLOD kernel to fix the colors later, 
-                 // but we must ensure the material ID is updated in the node if we changed it.
-                 if (dominantMat != 0)
-                 {
-                    uint info = _NodeBuffer[globalNodeIdx].packedInfo;
-                    _NodeBuffer[globalNodeIdx].packedInfo = (info & 0xFFFF00FF) | ((dominantMat & 0xFF) << 16);
-                 }
-             }
-        }
     }
 }
