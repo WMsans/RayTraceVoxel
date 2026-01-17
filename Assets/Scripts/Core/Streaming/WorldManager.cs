@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
 using VoxelEngine.Core.Generators; // For DynamicSDFManager
+using VoxelEngine.Core.Editing; // For VoxelEditManager
 
 namespace VoxelEngine.Core.Streaming
 {
@@ -29,6 +30,34 @@ namespace VoxelEngine.Core.Streaming
         private void Start()
         {
             _pool = GetComponent<VoxelVolumePool>();
+
+            // [FIX] Auto-configure MaxDepth to match Global Voxel Size
+            // We need the Leaf Node Voxel Size to equal VoxelEditManager.voxelSize (1.0)
+            // Leaf Node Size = Resolution * GlobalVoxelSize
+            // Octree Depth N Size = InitialWorldSize / 2^N
+            // EQUATION: InitialWorldSize / 2^N = Resolution * GlobalVoxelSize
+            // 2^N = InitialWorldSize / (Resolution * GlobalVoxelSize)
+            // N = Log2(InitialWorldSize / (Resolution * GlobalVoxelSize))
+            
+            if (VoxelEditManager.Instance != null && _pool != null && _pool.prefab != null)
+            {
+                float globalVoxelSize = VoxelEditManager.Instance.voxelSize;
+                float resolution = _pool.prefab.resolution;
+                
+                float targetLeafSize = resolution * globalVoxelSize;
+                
+                if (targetLeafSize > 0)
+                {
+                    float ratio = initialWorldSize / targetLeafSize;
+                    int calculatedDepth = Mathf.RoundToInt(Mathf.Log(ratio, 2));
+                    
+                    if (calculatedDepth != maxDepth)
+                    {
+                        Debug.Log($"[WorldManager] Auto-adjusting MaxDepth from {maxDepth} to {calculatedDepth} to support editing (Target Leaf Size: {targetLeafSize}).");
+                        maxDepth = calculatedDepth;
+                    }
+                }
+            }
 
             // Auto-find viewer if not assigned (usually Main Camera)
             if (viewer == null && Camera.main != null) 

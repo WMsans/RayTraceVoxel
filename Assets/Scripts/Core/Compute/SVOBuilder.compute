@@ -8,7 +8,6 @@
 // --- Global Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
-
 // [OPTIMIZATION] Merged Buffer (Replaces BrickBuffer, MaterialBuffer, NormalBuffer)
 RWStructuredBuffer<uint> _BrickDataBuffer; 
 
@@ -19,7 +18,7 @@ StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
 StructuredBuffer<int> _SDFObjectIndexBuffer;
 // _SDFObjectBuffer is defined in GeneratorPipeline.hlsl
 
-// --- Global Uniforms (Moved to Top) ---
+// --- Global Uniforms ---
 uint _GridSize;
 float3 _ChunkWorldOrigin;
 float _ChunkWorldSize;
@@ -28,7 +27,7 @@ uint _PayloadOffset;
 uint _BrickOffset;
 int _NumDynamicObjects;
 
-// Mipmapping Uniforms (Moved here to fix 'undeclared identifier' error)
+// Mipmapping Uniforms
 uint _TargetLevelOffset;
 uint _TargetLevelCount;
 
@@ -44,10 +43,14 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     node.lodColor = 0;
     uint level = 0;
     uint indexInLevel = id;
-    if (id >= 585) { level = 4; indexInLevel = id - 585; }
-    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
-    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
-    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
+    if (id >= 585) { level = 4; indexInLevel = id - 585;
+    }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73;
+    }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9;
+    }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1;
+    }
 
     if (level < 4)
     {
@@ -67,17 +70,14 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
     uint bricksAxis = _GridSize / BRICK_SIZE;
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
-
     // 1. Calculate Brick Bounds in World Space
     float3 brickOriginLocal = id * BRICK_SIZE;
     float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
     float brickWorldRadius = (float)BRICK_SIZE * scale * 0.87;
-
     float3 brickMin = _ChunkWorldOrigin + ((brickOriginLocal - BRICK_PADDING) * scale);
     float3 brickMax = _ChunkWorldOrigin + ((brickOriginLocal + BRICK_SIZE + BRICK_PADDING) * scale);
-
     // 2. LBVH Traversal (Pre-pass)
     uint activeObjects[32];
     for(int i=0; i<32; i++) activeObjects[i] = 0;
@@ -116,11 +116,9 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
     // [OPTIMIZATION] Early-Out for Terrain
     float worldRadius = 3.0 * scale;
-
     if (activeCount == 0)
     {
         // Sample terrain height at brick corners to estimate range
-        // We use the 4 corners of the brick's XZ footprint
         float2 c1 = brickMin.xz;
         float2 c2 = float2(brickMax.x, brickMin.z);
         float2 c3 = float2(brickMin.x, brickMax.z);
@@ -135,19 +133,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         float maxH = max(max(h1, h2), max(h3, h4));
         
         // Terrain SDF is approx (y - height) * 0.5
-        // Surface band is where |y - height| * 0.5 < worldRadius
-        // So |y - height| < worldRadius * 2.0
         
-        float boundMargin = worldRadius * 2.0; 
-        
+        float boundMargin = worldRadius * 2.0;
         // Check if Brick is completely above the surface band (Air)
-        // brickMin.y > maxTerrainHeight + margin
         bool isFarAir = brickMin.y > (maxH + boundMargin);
-        
         // Check if Brick is completely below the surface band (Deep Solid)
-        // brickMax.y < minTerrainHeight - margin
         bool isDeepSolid = brickMax.y < (minH - boundMargin);
-        
         if (isFarAir || isDeepSolid)
         {
              // Write Empty Node and Early Exit
@@ -160,8 +151,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
     // 3. Evaluate SDF at Brick Center
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, activeCount);
-
-
     if (centerCtx.sdf < worldRadius)
     {
         uint brickPtr;
@@ -187,18 +176,16 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float sdf = voxelCtx.sdf;
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1;
-
                     // [OPTIMIZATION] Pack Data
-                    // Normal, SDF, and Material are packed into a single uint
                     uint packedData = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
-                    
                     uint idx = _BrickOffset + brickPtr + (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x);
                     _BrickDataBuffer[idx] = packedData;
 
                     // Accumulate for LOD (Inner 4x4x4 only)
                     if (x >= BRICK_PADDING && x < BRICK_STORAGE_SIZE - BRICK_PADDING &&
                         y >= BRICK_PADDING && y < BRICK_STORAGE_SIZE - BRICK_PADDING &&
-                        z >= BRICK_PADDING && z < BRICK_STORAGE_SIZE - BRICK_PADDING)
+                        z >= BRICK_PADDING && 
+                        z < BRICK_STORAGE_SIZE - BRICK_PADDING)
                     {
                         if (sdf < 0) 
                         {
@@ -219,13 +206,11 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         VoxelPayload payload;
         payload.brickDataIndex = brickPtr;
         _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
-        
         uint nodeIndex = GetNodeIndex(4, id);
 
         // Pack Payload (16) | Material (8)
         uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
         _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = packed;
-        
         if (voxelCount > 0)
         {
             float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
@@ -284,7 +269,6 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
         float3 avgColor = acc.rgb / count;
         float nodeDensity = acc.a / 8.0;
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(avgColor, nodeDensity));
-        
         // Pack Material back (Internal nodes have Payload=0)
         _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = (maxMaterial & 0xFF) << 16;
     }

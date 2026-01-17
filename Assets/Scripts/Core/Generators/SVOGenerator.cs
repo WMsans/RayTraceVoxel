@@ -1,6 +1,8 @@
 using UnityEngine;
 using VoxelEngine.Core.Buffers;
 using VoxelEngine.Core.Data;
+using VoxelEngine.Core.Editing; 
+using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Generators
 {
@@ -32,8 +34,6 @@ namespace VoxelEngine.Core.Generators
                 shader.SetInt("_NumDynamicObjects", 0);
             }
             
-            // Removed SDFShapeManager usage
-
             shader.SetBuffer(kernelBuild, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
             
@@ -44,7 +44,7 @@ namespace VoxelEngine.Core.Generators
             
             shader.SetInt("_NodeOffset", buffers.NodeOffset);
             shader.SetInt("_PayloadOffset", buffers.PayloadOffset);
-            shader.SetInt("_BrickOffset", buffers.BrickDataOffset); // Changed
+            shader.SetInt("_BrickOffset", buffers.BrickDataOffset); 
 
             shader.SetInt("_GridSize", resolution); 
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
@@ -54,6 +54,8 @@ namespace VoxelEngine.Core.Generators
             int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 4.0f);
             
             shader.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
+
+            // --- Phase 4: Saved Edits Removed (Temp VRAM only) ---
 
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);

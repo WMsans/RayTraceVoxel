@@ -444,6 +444,7 @@ GameObject:
   - component: {fileID: 587925452}
   - component: {fileID: 587925451}
   - component: {fileID: 587925450}
+  - component: {fileID: 587925453}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -511,6 +512,22 @@ Transform:
   - {fileID: 888823812}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &587925453
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 587925448}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6817be917d5e18d43840ce79693d2acf, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Editing.TerrainEditorTool
+  voxelModifierShader: {fileID: 7200000, guid: b43ea892b71cebe47a5e309e71b4e842, type: 3}
+  brushRadius: 4
+  brushMaterial: 1
+  editRate: 0.1
 --- !u!1 &681138556
 GameObject:
   m_ObjectHideFlags: 0
@@ -523,6 +540,7 @@ GameObject:
   - component: {fileID: 681138558}
   - component: {fileID: 681138557}
   - component: {fileID: 681138560}
+  - component: {fileID: 681138561}
   m_Layer: 0
   m_Name: World
   m_TagString: Untagged
@@ -542,8 +560,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4ce1e990257a21545af7603536218f89, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.WorldManager
-  initialWorldSize: 4096
-  maxDepth: 5
+  initialWorldSize: 256
+  maxDepth: 3
   drawDebugGizmos: 0
   viewer: {fileID: 587925452}
   splitFactor: 1.5
@@ -561,7 +579,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.VoxelVolumePool
   prefab: {fileID: 7605555090304409176, guid: def5071789b0b264aad0807b43204eaf, type: 3}
-  poolSize: 512
+  poolSize: 256
   poolContainer: {fileID: 0}
   maxNodesPerVolume: 10000
   maxBricksPerVolume: 5000
@@ -596,6 +614,19 @@ MonoBehaviour:
   globalBoundsMargin: 100
   rebuildEveryFrame: 1
   drawDebugGizmos: 0
+--- !u!114 &681138561
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 681138556}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2407a6f44e0c4af479da55b7b56460d1, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Editing.VoxelEditManager
+  voxelSize: 1
 --- !u!1 &888823811
 GameObject:
   m_ObjectHideFlags: 0
