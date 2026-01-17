@@ -44,12 +44,13 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
         // Analytical Cube Gradient (Local)
         float3 signP = sign(p);
         float3 absP = abs(p);
-        float3 distToEdge = 0.5 - absP;
         float maxAxis = max(max(absP.x, absP.y), absP.z);
         float3 localNormal = float3(0,1,0);
+        
         if (absP.x >= maxAxis - 1e-4) localNormal = float3(signP.x, 0, 0);
         else if (absP.y >= maxAxis - 1e-4) localNormal = float3(0, signP.y, 0);
         else localNormal = float3(0, 0, signP.z);
+        
         gradient = normalize(RotateVector(localNormal, obj.rotation));
     }
 
@@ -66,7 +67,7 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
     // Stage_SineFloor(ctx);
 
     // --- 2. Dynamic Objects Stage ---
-    // Iterate over the culled list of objects
+    // Iterate over the culled list of objects (Must be sorted by index for deterministic CSG)
     for(int i = 0; i < activeCount; i++)
     {
         SDFObject obj = _SDFObjectBuffer[activeObjects[i]];
@@ -80,32 +81,28 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
         }
         else if (obj.operation == 1) // Subtract
         {
-            // Smooth Subtract: smax(a, -b, k) = -smin(-a, b, k)
-            float h;
-            float negativeD = -d;
+            // Smooth Subtraction: smax(ctx.sdf, -d, k)
+            // Implementation: mix(ctx.sdf, -d, h) + k * h * (1.0 - h)
+            // where h is the mixing factor based on distance.
             
-            // Invert gradient for subtraction
-            float3 subGradient = -objGradient;
-            
-            // smin(-ctx.sdf, d, k) -> we want smax so we negate everything
-            // Standard smooth subtraction: Max(A, -B)
-            
-            // Simple hard subtract for now to ensure correctness, then smooth
-            // float result = max(ctx.sdf, -d);
-            
-            // Smooth:
             float k = obj.blendFactor;
-            float h2 = clamp( 0.5 - 0.5*(ctx.sdf + d)/k, 0.0, 1.0 );
-            ctx.sdf = lerp( ctx.sdf, -d, h2 ) + k*h2*(1.0-h2);
+            float d1 = ctx.sdf;
+            float d2 = d;
             
-            // Gradient blending approximation
-            if (h2 > 0.5) ctx.gradient = subGradient;
+            // h approaches 1.0 when -d2 > d1 (Subtractor is dominant)
+            float h = clamp( 0.5 - 0.5 * (d1 + d2) / k, 0.0, 1.0 );
             
-            // Material: If we subtract, we expose the "inside" of the subtractor?
-            // Usually we keep the original material or set to 0 (Air) if d is dominant.
-            // If the resulting surface is defined by the subtractor, it's actually just 'Air' usually.
+            ctx.sdf = lerp( d1, -d2, h ) + k * h * (1.0 - h);
+            
+            // Correct Gradient Blending
+            // When h -> 1, we are inside the subtraction, normal should be inverted object normal
+            ctx.gradient = lerp(ctx.gradient, -objGradient, h);
+            
+            // Material Logic:
+            // Usually, subtraction keeps the original material (we are cutting into it).
+            // However, if you want the "cut" surface to have a specific texture, uncomment below:
+            // if (h > 0.5) ctx.material = obj.materialId;
         }
-        // Add other operations (Intersect, Paint) as needed
     }
 
     return ctx;
