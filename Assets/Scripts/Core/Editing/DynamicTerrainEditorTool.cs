@@ -3,29 +3,35 @@ using UnityEngine.InputSystem;
 using UnityEngine.Rendering;
 using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
-using VoxelEngine.Core.Generators; // Required for DynamicSDFManager
+using VoxelEngine.Core.Generators;
 using VoxelEngine.Core.Rendering;
 
 namespace VoxelEngine.Core.Editing
 {
-    /// <summary>
-    /// A "Fake" Terrain Editor that places Dynamic SDF Objects (Spheres/Cubes) 
-    /// instead of modifying the underlying voxel volume memory.
-    /// </summary>
     public class DynamicTerrainEditorTool : MonoBehaviour
     {
-        [Header("Brush Configuration")]
-        public float brushRadius = 2.0f;
-        public int brushMaterial = 1;
+        public enum ToolMode
+        {
+            Paint = 0,   // Union (Add Material)
+            Erase = 1,   // Subtract (Dig Hole)
+            Delete = 2   // Remove Object (Delete Entity)
+        }
+
+        [Header("Tool Settings")]
+        public ToolMode mode = ToolMode.Paint;
         
         [Tooltip("0 = Sphere, 1 = Cube")]
         public int brushShape = 0; 
+        
+        public float brushRadius = 2.0f;
+        public int brushMaterial = 1;
         
         [Tooltip("Smoothness of the blend with the terrain.")]
         [Range(0.1f, 10.0f)]
         public float blendSmoothness = 2.0f;
 
-        [Tooltip("Minimum seconds between placing objects while holding click.")]
+        [Header("Timing")]
+        [Tooltip("Seconds between edits while holding click.")]
         public float editRate = 0.1f;
 
         private InputSystem_Actions _input;
@@ -33,7 +39,7 @@ namespace VoxelEngine.Core.Editing
         private bool _hasHit;
         private float _lastEditTime;
 
-        // Async Request for GPU Raycast results
+        // Async Request
         private AsyncGPUReadbackRequest _readbackRequest;
         private bool _readbackPending;
 
@@ -54,12 +60,11 @@ namespace VoxelEngine.Core.Editing
 
         private void Update()
         {
-            // 1. Synchronize Mouse Position for the Voxel Raytracer
-            // The raytracer needs to know where the cursor is to output the specific hit depth/position to the buffer.
+            // 1. Sync Mouse Position for Raytracer
             Vector2 mousePos = Mouse.current.position.ReadValue();
             VoxelRaytracerFeature.MousePosition = mousePos;
 
-            // 2. Request Readback of Hit Data from GPU
+            // 2. GPU Readback
             if (!_readbackPending && VoxelRaytracerFeature.RaycastHitBuffer != null)
             {
                 _readbackRequest = AsyncGPUReadback.Request(VoxelRaytracerFeature.RaycastHitBuffer, OnReadbackComplete);
@@ -71,15 +76,15 @@ namespace VoxelEngine.Core.Editing
             {
                 if (Time.time - _lastEditTime > editRate && _hasHit)
                 {
-                    // Check for shift key to subtract (if desired), otherwise Add
-                    // For simplicity, we default to Union (Add) here.
-                    // To implement subtract, we would check keyboard state.
-                    bool isSubtract = Keyboard.current.shiftKey.isPressed;
-                    
-                    SpawnDynamicSDF(isSubtract ? 1 : 0); // 0=Union, 1=Subtract
+                    ExecuteTool();
                     _lastEditTime = Time.time;
                 }
             }
+            
+            // Mode Switching shortcuts (optional)
+            if (Keyboard.current.pKey.wasPressedThisFrame) mode = ToolMode.Paint;
+            if (Keyboard.current.eKey.wasPressedThisFrame) mode = ToolMode.Erase;
+            if (Keyboard.current.deleteKey.wasPressedThisFrame) mode = ToolMode.Delete;
         }
 
         private void OnReadbackComplete(AsyncGPUReadbackRequest request)
@@ -87,13 +92,10 @@ namespace VoxelEngine.Core.Editing
             _readbackPending = false;
             if (request.hasError) return;
 
-            // The raytracer shader writes: float4(hitPos.x, hitPos.y, hitPos.z, hitFlag)
             var data = request.GetData<Vector4>();
             if (data.Length == 0) return;
-
             Vector4 hitData = data[0]; 
             
-            // w > 0.5 indicates a valid hit
             if (hitData.w > 0.5f)
             {
                 _currentHitPoint = new Vector3(hitData.x, hitData.y, hitData.z);
@@ -105,60 +107,86 @@ namespace VoxelEngine.Core.Editing
             }
         }
 
-        private void SpawnDynamicSDF(int operation)
+        private void ExecuteTool()
         {
             if (DynamicSDFManager.Instance == null) return;
 
-            // 1. Calculate Dimensions
-            // The shader logic for SDF primitives usually expects Scale to represent the full diameter (2 * Radius)
-            // for correct distance calculation: d = (length(p) - 0.5) * scale
-            float scaleValue = brushRadius * 2.0f;
+            switch (mode)
+            {
+                case ToolMode.Paint:
+                    SpawnDynamicSDF(0); // 0 = Union
+                    break;
 
-            // 2. Calculate Bounds
-            // Crucial: The bounds must include the object size PLUS the blend smoothness.
-            // If the bounds are too tight, the smooth blending "glow" will be clipped by the BVH.
+                case ToolMode.Erase:
+                    SpawnDynamicSDF(1); // 1 = Subtract
+                    break;
+
+                case ToolMode.Delete:
+                    RemoveClosestObject();
+                    break;
+            }
+        }
+
+        private void SpawnDynamicSDF(int operation)
+        {
+            float scaleValue = brushRadius * 2.0f;
             float boundPadding = blendSmoothness + 2.0f;
             float totalBoundRadius = brushRadius + boundPadding;
 
-            // 3. Construct the Object
             SDFObject newObj = new SDFObject
             {
                 position = _currentHitPoint,
-                rotation = Quaternion.identity, // Axis aligned for now
+                rotation = Quaternion.identity,
                 scale = Vector3.one * scaleValue,
                 
-                // Define the bounding box for the BVH
                 boundsMin = _currentHitPoint - Vector3.one * totalBoundRadius,
                 boundsMax = _currentHitPoint + Vector3.one * totalBoundRadius,
                 
-                type = brushShape,    // 0 = Sphere, 1 = Cube
-                operation = operation,// 0 = Union, 1 = Subtract
+                type = brushShape,
+                operation = operation,
                 blendFactor = blendSmoothness,
                 materialId = brushMaterial
             };
 
-            // 4. Register with Manager
-            // This triggers a Dirty Region add and a BVH Rebuild automatically
             DynamicSDFManager.Instance.RegisterObject(newObj);
+        }
+
+        private void RemoveClosestObject()
+        {
+            // Find object near cursor
+            int index = DynamicSDFManager.Instance.FindClosestObject(_currentHitPoint, brushRadius * 1.5f);
             
-            Debug.Log($"Placed Dynamic SDF at {_currentHitPoint}. Total Objects: {DynamicSDFManager.Instance.ObjectCount}");
+            if (index != -1)
+            {
+                DynamicSDFManager.Instance.RemoveObjectAt(index);
+                Debug.Log($"[Dynamic Editor] Deleted Object Index {index}");
+            }
         }
 
         private void OnDrawGizmos()
         {
             if (_hasHit)
             {
-                // Visualize the brush cursor
-                Gizmos.color = Color.cyan;
-                if (brushShape == 0)
-                    Gizmos.DrawWireSphere(_currentHitPoint, brushRadius);
+                // Visual feedback changes based on mode
+                if (mode == ToolMode.Delete)
+                {
+                    Gizmos.color = Color.red;
+                    Gizmos.DrawWireSphere(_currentHitPoint, brushRadius * 1.5f);
+                    Gizmos.DrawLine(_currentHitPoint - Vector3.right, _currentHitPoint + Vector3.right);
+                    Gizmos.DrawLine(_currentHitPoint - Vector3.up, _currentHitPoint + Vector3.up);
+                }
                 else
-                    Gizmos.DrawWireCube(_currentHitPoint, Vector3.one * brushRadius * 2.0f);
+                {
+                    Gizmos.color = mode == ToolMode.Erase ? new Color(1, 0.5f, 0, 1) : Color.cyan;
                     
-                // Visualize the blend influence area
-                Gizmos.color = new Color(0, 1, 1, 0.3f);
-                float influence = brushRadius + blendSmoothness;
-                Gizmos.DrawWireSphere(_currentHitPoint, influence);
+                    if (brushShape == 0)
+                        Gizmos.DrawWireSphere(_currentHitPoint, brushRadius);
+                    else
+                        Gizmos.DrawWireCube(_currentHitPoint, Vector3.one * brushRadius * 2.0f);
+                        
+                    Gizmos.color = new Color(0, 1, 1, 0.3f);
+                    Gizmos.DrawWireSphere(_currentHitPoint, brushRadius + blendSmoothness);
+                }
             }
         }
     }

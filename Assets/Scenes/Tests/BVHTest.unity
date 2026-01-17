@@ -541,9 +541,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 31779f8adefe3050a8de4175b16e3aea, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Editing.DynamicTerrainEditorTool
+  mode: 1
+  brushShape: 0
   brushRadius: 4
   brushMaterial: 1
-  brushShape: 0
   blendSmoothness: 2
   editRate: 0.1
 --- !u!1 &681138556
