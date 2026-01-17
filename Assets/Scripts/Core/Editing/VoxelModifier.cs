@@ -10,14 +10,6 @@ namespace VoxelEngine.Core.Editing
         private ComputeShader _shader;
         private IVoxelStorage _storage;
 
-        // Structure matching the Compute Shader
-        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-        struct ModifiedBrickInfo
-        {
-            public Vector3Int brickIdx;
-            public uint brickPtr;
-        }
-
         public VoxelModifier(ComputeShader shader, IVoxelStorage storage)
         {
             _shader = shader;
@@ -39,12 +31,11 @@ namespace VoxelEngine.Core.Editing
             
             if (!Mathf.Approximately(volVoxelSize, globalVoxelSize))
             {
-                // Debug.LogWarning($"[VoxelModifier] Skipped edit on LOD Chunk (Size: {volVoxelSize} vs Global: {globalVoxelSize})");
                 return;
             }
 
             // 2. Check Alignment
-            // The Volume must align to the Global Brick Grid for the keys to match
+            // The Volume must align to the Global Brick Grid
             float brickWorldSize = SVONode.BRICK_SIZE * globalVoxelSize;
             if (vol.WorldOrigin.x % brickWorldSize != 0 || 
                 vol.WorldOrigin.y % brickWorldSize != 0 || 
@@ -58,7 +49,6 @@ namespace VoxelEngine.Core.Editing
 
                 if (!alignedX || !alignedY || !alignedZ)
                 {
-                    // Debug.LogWarning($"[VoxelModifier] Skipped edit on Misaligned Chunk {vol.WorldOrigin}");
                     return;
                 }
             }
@@ -66,7 +56,7 @@ namespace VoxelEngine.Core.Editing
             // Calculate Scale: Voxel Units / World Units
             float worldToVoxelScale = (float)vol.Resolution / vol.WorldSize;
 
-            // This ensures minBrickId is Local, which the Shader and Readback logic expect.
+            // This ensures minBrickId is Local
             Vector3 localBrushPos = brush.position - vol.WorldOrigin;
 
             // Convert Brush to Voxel Space
@@ -91,7 +81,7 @@ namespace VoxelEngine.Core.Editing
             min = Vector3.Max(min, Vector3.zero);
             max = Vector3.Min(max, new Vector3(vol.Resolution, vol.Resolution, vol.Resolution));
 
-            // 1. Prevent invalid execution if brush is effectively outside bounds or inverted
+            // Prevent invalid execution if brush is effectively outside bounds or inverted
             if (min.x >= max.x || min.y >= max.y || min.z >= max.z) return;
 
             Vector3Int minBrickId = Vector3Int.FloorToInt(min / brickVoxelSize);
@@ -146,82 +136,9 @@ namespace VoxelEngine.Core.Editing
             _shader.SetBuffer(kernelEdit, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelEdit, "_BrickDataBuffer", vol.BrickDataBuffer);
 
-            // --- Phase 3: Bake Setup (Mod Log) ---
-            int maxModBricks = rangeX * rangeY * rangeZ;
-            ComputeBuffer appendBuffer = new ComputeBuffer(maxModBricks, 16, ComputeBufferType.Append);
-            appendBuffer.SetCounterValue(0);
-            _shader.SetBuffer(kernelEdit, "_OutModifiedBricks", appendBuffer);
-
-            // 4. Dispatch
+            // 4. Dispatch (Direct modification in VRAM, no readback)
             _shader.Dispatch(kernelAlloc, Mathf.CeilToInt(rangeX / 8.0f), Mathf.CeilToInt(rangeY / 8.0f), Mathf.CeilToInt(rangeZ / 8.0f));
             _shader.Dispatch(kernelEdit, rangeX, rangeY, rangeZ);
-
-            // --- Phase 3: Async Readback ---
-            // We need a counter buffer to know how many bricks were modified
-            ComputeBuffer countBuffer = new ComputeBuffer(1, 4, ComputeBufferType.IndirectArguments);
-            ComputeBuffer.CopyCount(appendBuffer, countBuffer, 0);
-
-            float eps = VoxelEditManager.Instance.voxelSize * 0.01f;
-            Vector3Int volOriginBrick = VoxelEditManager.Instance.GetGlobalBrickIndex(vol.WorldOrigin + Vector3.one * eps);
-
-            // 1. Request Count
-            AsyncGPUReadback.Request(countBuffer, (reqCount) => 
-            {
-                if (reqCount.hasError) { countBuffer.Dispose(); appendBuffer.Dispose(); return; }
-                
-                int count = reqCount.GetData<int>()[0];
-
-                if (count > 0)
-                {
-                    // 2. Request Modified Brick List
-                    AsyncGPUReadback.Request(appendBuffer, count * 16, 0, (reqList) => 
-                    {
-                        if (!reqList.hasError)
-                        {
-                            var list = reqList.GetData<ModifiedBrickInfo>();
-                            
-                            // 3. Request Actual Brick Data
-                            for (int i = 0; i < list.Length; i++)
-                            {
-                                ModifiedBrickInfo info = list[i];
-                                
-                                // Calculate Global Key: VolOrigin + LocalBrickIdx
-                                // Since minBrickId was calculated from Local space, info.brickIdx is Local.
-                                // Origin (Global) + Local = Global. This is now correct.
-                                Vector3Int globalKey = volOriginBrick + info.brickIdx;
-                                
-                                // [FIX] Issue Readback for the specific slice (216 uints)
-                                // We must OFFSET by the Volume's start in the Global Buffer
-                                int globalBrickPtr = vol.BufferManager.BrickDataOffset + (int)info.brickPtr;
-                                int byteOffset = globalBrickPtr * 4;
-                                int byteSize = SVONode.BRICK_VOXEL_COUNT * 4;
-
-                                // We must capture 'vol' but verify it's still valid
-                                if (vol != null && vol.BrickDataBuffer != null)
-                                {
-                                    AsyncGPUReadback.Request(vol.BrickDataBuffer, byteSize, byteOffset, (reqData) => 
-                                    {
-                                        if (!reqData.hasError)
-                                        {
-                                            uint[] data = reqData.GetData<uint>().ToArray();
-                                            VoxelEditManager.Instance.StoreBrick(globalKey, data);
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                        
-                        // Clean up
-                        countBuffer.Dispose();
-                        appendBuffer.Dispose();
-                    });
-                }
-                else
-                {
-                    countBuffer.Dispose();
-                    appendBuffer.Dispose();
-                }
-            });
         }
     }
 }
