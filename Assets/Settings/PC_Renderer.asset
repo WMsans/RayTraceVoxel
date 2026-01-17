@@ -25,7 +25,7 @@ MonoBehaviour:
     marchSteps: 32
     upscalingMode: 0
     sharpness: 0.5
-    enableFXAA: 0
+    enableFXAA: 1
     enableTAA: 1
     taaBlend: 0.9
     lodBias: 1

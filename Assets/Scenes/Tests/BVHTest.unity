@@ -445,6 +445,7 @@ GameObject:
   - component: {fileID: 587925451}
   - component: {fileID: 587925450}
   - component: {fileID: 587925453}
+  - component: {fileID: 587925454}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -519,7 +520,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 587925448}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 6817be917d5e18d43840ce79693d2acf, type: 3}
   m_Name: 
@@ -527,6 +528,24 @@ MonoBehaviour:
   voxelModifierShader: {fileID: 7200000, guid: b43ea892b71cebe47a5e309e71b4e842, type: 3}
   brushRadius: 4
   brushMaterial: 1
+  editRate: 0.1
+--- !u!114 &587925454
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 587925448}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 31779f8adefe3050a8de4175b16e3aea, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Editing.DynamicTerrainEditorTool
+  mode: 1
+  brushShape: 0
+  brushRadius: 4
+  brushMaterial: 1
+  blendSmoothness: 2
   editRate: 0.1
 --- !u!1 &681138556
 GameObject:
@@ -560,8 +579,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4ce1e990257a21545af7603536218f89, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.WorldManager
-  initialWorldSize: 256
-  maxDepth: 3
+  initialWorldSize: 1024
+  maxDepth: 4
   drawDebugGizmos: 0
   viewer: {fileID: 587925452}
   splitFactor: 1.5
@@ -579,7 +598,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.VoxelVolumePool
   prefab: {fileID: 7605555090304409176, guid: def5071789b0b264aad0807b43204eaf, type: 3}
-  poolSize: 256
+  poolSize: 512
   poolContainer: {fileID: 0}
   maxNodesPerVolume: 10000
   maxBricksPerVolume: 5000
