@@ -107,7 +107,7 @@ void Stage_Terrain(inout GenerationContext ctx)
     {
         ctx.sdf = d;
         ctx.gradient = normal;
-        ctx.material = 2; 
+        ctx.material = 4; 
     }
 }
 

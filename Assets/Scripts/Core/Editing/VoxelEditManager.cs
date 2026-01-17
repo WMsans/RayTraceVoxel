@@ -69,7 +69,7 @@ namespace VoxelEngine.Core.Editing
 
         /// <summary>
         /// Retrieves all stored bricks that intersect with the given Chunk bounds.
-        /// Used by the Generator to patch loaded chunks with saved edits.
+        /// Optimized to iterate over sparse edits rather than the dense volume.
         /// </summary>
         public List<KeyValuePair<Vector3Int, CompressedBrick>> GetEditsInChunk(Bounds chunkBounds)
         {
@@ -83,19 +83,16 @@ namespace VoxelEngine.Core.Editing
             Vector3 maxPos = chunkBounds.max - Vector3.one * (voxelSize * 0.01f);
             Vector3Int maxBrick = GetGlobalBrickIndex(maxPos);
 
-            // 2. Iterate through the range and collect existing edits
-            for (int x = minBrick.x; x <= maxBrick.x; x++)
+            // 2. Iterate through stored edits (Sparse check)
+            // This is much faster than checking every potential brick coordinate for large LOD chunks
+            foreach (var kvp in _modifiedBricks)
             {
-                for (int y = minBrick.y; y <= maxBrick.y; y++)
+                Vector3Int idx = kvp.Key;
+                if (idx.x >= minBrick.x && idx.x <= maxBrick.x &&
+                    idx.y >= minBrick.y && idx.y <= maxBrick.y &&
+                    idx.z >= minBrick.z && idx.z <= maxBrick.z)
                 {
-                    for (int z = minBrick.z; z <= maxBrick.z; z++)
-                    {
-                        Vector3Int idx = new Vector3Int(x, y, z);
-                        if (_modifiedBricks.TryGetValue(idx, out CompressedBrick brick))
-                        {
-                            results.Add(new KeyValuePair<Vector3Int, CompressedBrick>(idx, brick));
-                        }
-                    }
+                    results.Add(kvp);
                 }
             }
 
