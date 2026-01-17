@@ -76,7 +76,7 @@ namespace VoxelEngine.Core.Editing
             var results = new List<KeyValuePair<Vector3Int, CompressedBrick>>();
 
             // 1. Calculate the range of Brick Indices that this chunk covers
-            Vector3Int minBrick = GetGlobalBrickIndex(chunkBounds.min);
+            Vector3Int minBrick = GetGlobalBrickIndex(chunkBounds.min + Vector3.one * (voxelSize * 0.01f));
             
             // Use a slight offset for max to ensure we don't include the neighbor brick 
             // if the bounds land exactly on the edge.

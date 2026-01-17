@@ -110,15 +110,8 @@ namespace VoxelEngine.Core.Editing
                     // We pass the raw brush.
                     
                     VoxelModifier modifier = new VoxelModifier(voxelModifierShader, volume);
-                    // Transform brush position to Volume Local space if the shader expects local
-                    // But VoxelModifier.compute usually works in grid coordinates.
-                    // Let's assume we map World -> Volume Local inside the logic or pass World.
-                    // The simplest is: brush.position -= volume.WorldOrigin
-                    
-                    VoxelBrush localBrush = brush;
-                    localBrush.position -= volume.WorldOrigin;
-                    
-                    modifier.Apply(localBrush, volume.Resolution);
+                    // VoxelModifier now handles the World-to-Local conversion internally.
+                    modifier.Apply(brush, volume.Resolution);
                 }
             }
         }

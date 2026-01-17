@@ -66,8 +66,11 @@ namespace VoxelEngine.Core.Editing
             // Calculate Scale: Voxel Units / World Units
             float worldToVoxelScale = (float)vol.Resolution / vol.WorldSize;
 
+            // This ensures minBrickId is Local, which the Shader and Readback logic expect.
+            Vector3 localBrushPos = brush.position - vol.WorldOrigin;
+
             // Convert Brush to Voxel Space
-            Vector3 brushPosVoxel = brush.position * worldToVoxelScale;
+            Vector3 brushPosVoxel = localBrushPos * worldToVoxelScale;
             float brushRadiusVoxel = brush.radius * worldToVoxelScale;
             Vector3 brushBoundsVoxel = brush.bounds * worldToVoxelScale;
 
@@ -158,8 +161,8 @@ namespace VoxelEngine.Core.Editing
             ComputeBuffer countBuffer = new ComputeBuffer(1, 4, ComputeBufferType.IndirectArguments);
             ComputeBuffer.CopyCount(appendBuffer, countBuffer, 0);
 
-            // Calculate Volume Global Origin in Brick Coordinates (for Global indexing)
-            Vector3Int volOriginBrick = VoxelEditManager.Instance.GetGlobalBrickIndex(vol.WorldOrigin);
+            float eps = VoxelEditManager.Instance.voxelSize * 0.01f;
+            Vector3Int volOriginBrick = VoxelEditManager.Instance.GetGlobalBrickIndex(vol.WorldOrigin + Vector3.one * eps);
 
             // 1. Request Count
             AsyncGPUReadback.Request(countBuffer, (reqCount) => 
@@ -183,6 +186,8 @@ namespace VoxelEngine.Core.Editing
                                 ModifiedBrickInfo info = list[i];
                                 
                                 // Calculate Global Key: VolOrigin + LocalBrickIdx
+                                // Since minBrickId was calculated from Local space, info.brickIdx is Local.
+                                // Origin (Global) + Local = Global. This is now correct.
                                 Vector3Int globalKey = volOriginBrick + info.brickIdx;
                                 
                                 // [FIX] Issue Readback for the specific slice (216 uints)
