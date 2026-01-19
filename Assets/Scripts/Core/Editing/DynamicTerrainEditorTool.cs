@@ -5,6 +5,7 @@ using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Generators;
 using VoxelEngine.Core.Rendering;
+using VoxelEngine.Core.Analysis;
 
 namespace VoxelEngine.Core.Editing
 {
@@ -133,14 +134,17 @@ namespace VoxelEngine.Core.Editing
             float boundPadding = blendSmoothness + 2.0f;
             float totalBoundRadius = brushRadius + boundPadding;
 
+            Vector3 boundsMin = _currentHitPoint - Vector3.one * totalBoundRadius;
+            Vector3 boundsMax = _currentHitPoint + Vector3.one * totalBoundRadius;
+
             SDFObject newObj = new SDFObject
             {
                 position = _currentHitPoint,
                 rotation = Quaternion.identity,
                 scale = Vector3.one * scaleValue,
                 
-                boundsMin = _currentHitPoint - Vector3.one * totalBoundRadius,
-                boundsMax = _currentHitPoint + Vector3.one * totalBoundRadius,
+                boundsMin = boundsMin,
+                boundsMax = boundsMax,
                 
                 type = brushShape,
                 operation = operation,
@@ -149,6 +153,14 @@ namespace VoxelEngine.Core.Editing
             };
 
             DynamicSDFManager.Instance.RegisterObject(newObj);
+
+            // --- Structural Integrity Check ---
+            // Trigger check if we subtracted mass
+            if (operation == 1 && StructuralIntegritySystem.Instance != null)
+            {
+                Bounds bounds = new Bounds(_currentHitPoint, (boundsMax - boundsMin));
+                StructuralIntegritySystem.Instance.Analyze(bounds);
+            }
         }
 
         private void RemoveClosestObject()
