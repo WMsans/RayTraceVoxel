@@ -45,18 +45,9 @@ namespace VoxelEngine.Core.Generators
         public GraphicsBuffer ObjectIndexBuffer { get; private set; }
 
         public int ObjectCount => _objects.Count;
-        
-        // Fix: IsReady should be true if buffers exist, regardless of object count, 
-        // to prevent "missing buffer" errors in shaders that expect bindings.
-        public bool IsReady => SDFObjectBuffer != null && SDFObjectBuffer.IsValid();
+        public bool IsReady => _objects.Count > 0 && LBVHNodeBuffer != null && LBVHNodeBuffer.IsValid();
 
         // --- Public API ---
-
-        private void OnEnable()
-        {
-            // Fix: Force initialization of buffers (even if empty) so they can be bound immediately.
-            RebuildBVH(); 
-        }
 
         public void RegisterObject(SDFObject obj)
         {
@@ -94,9 +85,8 @@ namespace VoxelEngine.Core.Generators
                 _objects.RemoveAt(index);
                 _isDirty = true;
                 
-                // Fix: Do NOT release buffers here, just rebuild/clear them. 
-                // Releasing causes missing buffer errors if this happens at runtime.
-                if (_objects.Count == 0) RebuildBVH(); 
+                // If list is empty, we should clear buffers
+                if (_objects.Count == 0) ReleaseBuffers();
             }
         }
 
@@ -126,7 +116,7 @@ namespace VoxelEngine.Core.Generators
             foreach (var obj in _objects) AddDirtyRegion(obj);
             _objects.Clear();
             _isDirty = true;
-            RebuildBVH(); // Updates to empty buffers
+            ReleaseBuffers();
         }
 
         public List<Bounds> GetAndClearDirtyRegions()
@@ -174,60 +164,52 @@ namespace VoxelEngine.Core.Generators
         public void RebuildBVH()
         {
             int numObjects = _objects.Count;
+            if (numObjects == 0) return;
 
-            // Fix: Even if numObjects is 0, we must update/allocate buffers to valid (empty) states.
-            // We skip the logic but proceed to UpdateBuffers.
-            if (numObjects > 0)
+            // Resize arrays if needed
+            if (_mortonKeys == null || _mortonKeys.Length < numObjects) _mortonKeys = new MortonEntry[numObjects];
+            if (_sortedObjectIndices == null || _sortedObjectIndices.Length < numObjects) _sortedObjectIndices = new int[numObjects];
+            if (_bvhNodes == null || _bvhNodes.Length < numObjects * 2) _bvhNodes = new LBVHNode[numObjects * 2];
+
+            // 1. Compute Global Bounds
+            Vector3 globalMin = Vector3.one * float.MaxValue;
+            Vector3 globalMax = Vector3.one * float.MinValue;
+            for (int i = 0; i < numObjects; i++)
             {
-                // Resize arrays if needed
-                if (_mortonKeys == null || _mortonKeys.Length < numObjects) _mortonKeys = new MortonEntry[numObjects];
-                if (_sortedObjectIndices == null || _sortedObjectIndices.Length < numObjects) _sortedObjectIndices = new int[numObjects];
-                if (_bvhNodes == null || _bvhNodes.Length < numObjects * 2) _bvhNodes = new LBVHNode[numObjects * 2];
-
-                // 1. Compute Global Bounds
-                Vector3 globalMin = Vector3.one * float.MaxValue;
-                Vector3 globalMax = Vector3.one * float.MinValue;
-                for (int i = 0; i < numObjects; i++)
-                {
-                    globalMin = Vector3.Min(globalMin, _objects[i].boundsMin);
-                    globalMax = Vector3.Max(globalMax, _objects[i].boundsMax);
-                }
-                globalMin -= Vector3.one * globalBoundsMargin;
-                globalMax += Vector3.one * globalBoundsMargin;
-                Vector3 range = globalMax - globalMin;
-                range = Vector3.Max(range, Vector3.one * 0.001f);
-
-                // 2. Compute Morton Codes
-                for (int i = 0; i < numObjects; i++)
-                {
-                    Vector3 center = (_objects[i].boundsMin + _objects[i].boundsMax) * 0.5f;
-                    Vector3 n = (center - globalMin);
-                    n.x /= range.x; n.y /= range.y; n.z /= range.z;
-                    
-                    uint x = (uint)Mathf.Clamp(n.x * 1023f, 0, 1023);
-                    uint y = (uint)Mathf.Clamp(n.y * 1023f, 0, 1023);
-                    uint z = (uint)Mathf.Clamp(n.z * 1023f, 0, 1023);
-                    
-                    _mortonKeys[i] = new MortonEntry { 
-                        code = ExpandBits(x) | (ExpandBits(y) << 1) | (ExpandBits(z) << 2), 
-                        originalIndex = i 
-                    };
-                }
-
-                // 3. Sort
-                Array.Sort(_mortonKeys, 0, numObjects);
-                for(int i=0; i<numObjects; i++) _sortedObjectIndices[i] = _mortonKeys[i].originalIndex;
-
-                // 4. Build
-                _nodeCount = 0;
-                GenerateHierarchy(0, numObjects - 1);
+                globalMin = Vector3.Min(globalMin, _objects[i].boundsMin);
+                globalMax = Vector3.Max(globalMax, _objects[i].boundsMax);
             }
-            else
+            globalMin -= Vector3.one * globalBoundsMargin;
+            globalMax += Vector3.one * globalBoundsMargin;
+            Vector3 range = globalMax - globalMin;
+            range = Vector3.Max(range, Vector3.one * 0.001f);
+
+            // 2. Compute Morton Codes
+            for (int i = 0; i < numObjects; i++)
             {
-                _nodeCount = 0;
+                Vector3 center = (_objects[i].boundsMin + _objects[i].boundsMax) * 0.5f;
+                Vector3 n = (center - globalMin);
+                n.x /= range.x; n.y /= range.y; n.z /= range.z;
+                
+                uint x = (uint)Mathf.Clamp(n.x * 1023f, 0, 1023);
+                uint y = (uint)Mathf.Clamp(n.y * 1023f, 0, 1023);
+                uint z = (uint)Mathf.Clamp(n.z * 1023f, 0, 1023);
+                
+                _mortonKeys[i] = new MortonEntry { 
+                    code = ExpandBits(x) | (ExpandBits(y) << 1) | (ExpandBits(z) << 2), 
+                    originalIndex = i 
+                };
             }
 
-            // 5. Upload (Handles 0 count gracefully via Math.Max(count, 16))
+            // 3. Sort
+            Array.Sort(_mortonKeys, 0, numObjects);
+            for(int i=0; i<numObjects; i++) _sortedObjectIndices[i] = _mortonKeys[i].originalIndex;
+
+            // 4. Build
+            _nodeCount = 0;
+            GenerateHierarchy(0, numObjects - 1);
+
+            // 5. Upload
             UpdateBuffers(numObjects);
         }
 
@@ -309,10 +291,8 @@ namespace VoxelEngine.Core.Generators
             if (SDFObjectBuffer == null || SDFObjectBuffer.count < numObjects)
             {
                 SDFObjectBuffer?.Release();
-                // Ensure at least 16 elements to avoid creating 0-size buffers (which are invalid)
                 SDFObjectBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Mathf.Max(numObjects, 16), Marshal.SizeOf<SDFObject>());
             }
-            // SetData handles empty lists/arrays fine (does nothing)
             SDFObjectBuffer.SetData(_objects);
 
             if (ObjectIndexBuffer == null || ObjectIndexBuffer.count < numObjects)
@@ -320,14 +300,14 @@ namespace VoxelEngine.Core.Generators
                 ObjectIndexBuffer?.Release();
                 ObjectIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Mathf.Max(numObjects, 16), sizeof(int));
             }
-            if (numObjects > 0) ObjectIndexBuffer.SetData(_sortedObjectIndices, 0, 0, numObjects);
+            ObjectIndexBuffer.SetData(_sortedObjectIndices, 0, 0, numObjects);
 
             if (LBVHNodeBuffer == null || LBVHNodeBuffer.count < _nodeCount)
             {
                 LBVHNodeBuffer?.Release();
                 LBVHNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Mathf.Max(_nodeCount, 16), Marshal.SizeOf<LBVHNode>());
             }
-            if (_nodeCount > 0) LBVHNodeBuffer.SetData(_bvhNodes, 0, 0, _nodeCount);
+            LBVHNodeBuffer.SetData(_bvhNodes, 0, 0, _nodeCount);
         }
 
         private void ReleaseBuffers()
