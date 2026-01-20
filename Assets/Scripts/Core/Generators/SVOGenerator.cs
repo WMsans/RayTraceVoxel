@@ -28,12 +28,6 @@ namespace VoxelEngine.Core.Generators
                 shader.SetBuffer(kernelBuild, "_SDFObjectBuffer", sdfManager.SDFObjectBuffer);
                 shader.SetBuffer(kernelBuild, "_LBVHNodeBuffer", sdfManager.LBVHNodeBuffer);
                 shader.SetBuffer(kernelBuild, "_SDFObjectIndexBuffer", sdfManager.ObjectIndexBuffer);
-                
-                if (sdfManager.ChunkAtlas != null)
-                {
-                    Debug.Log("Set sdf chunk atlas");
-                    shader.SetTexture(kernelBuild, "_SDFChunkAtlas", sdfManager.ChunkAtlas);
-                }
             }
             else
             {
@@ -42,7 +36,10 @@ namespace VoxelEngine.Core.Generators
             
             shader.SetBuffer(kernelBuild, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
+            
+            // Merged Buffer Binding
             shader.SetBuffer(kernelBuild, "_BrickDataBuffer", buffers.BrickDataBuffer);
+            
             shader.SetBuffer(kernelBuild, "_CounterBuffer", buffers.CounterBuffer);
             
             shader.SetInt("_NodeOffset", buffers.NodeOffset);
@@ -57,6 +54,8 @@ namespace VoxelEngine.Core.Generators
             int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 4.0f);
             
             shader.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
+
+            // --- Phase 4: Saved Edits Removed (Temp VRAM only) ---
 
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);

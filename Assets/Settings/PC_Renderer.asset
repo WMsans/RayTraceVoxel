@@ -19,7 +19,7 @@ MonoBehaviour:
     compositeShader: {fileID: 4800000, guid: 2991eb697ecd14c98a06d3f35413a176, type: 3}
     fxaaShader: {fileID: 4800000, guid: 33335dbe0b055a94ea1232a1aed98205, type: 3}
     injectionPoint: 400
-    qualityLevel: 1
+    qualityLevel: 0
     renderScale: 0.25
     iterations: 64
     marchSteps: 32
