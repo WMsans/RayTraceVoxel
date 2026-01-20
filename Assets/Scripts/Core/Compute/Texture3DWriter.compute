@@ -1,0 +1,33 @@
+#pragma kernel WriteSDFChunk
+#pragma kernel ClearAtlas
+
+// Input: Flat array of SDF values for the chunk
+StructuredBuffer<float> _InputBuffer;
+// Output: The Global 3D Atlas
+RWTexture3D<float> _OutputTexture;
+
+// Params
+int3 _WriteOffset; // Where to start writing in the Atlas (x, y, z)
+int _Resolution;   // Size of the chunk (e.g., 32)
+float _ClearValue; // Value to clear with
+
+[numthreads(8, 8, 8)]
+void WriteSDFChunk(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_Resolution || id.y >= (uint)_Resolution || id.z >= (uint)_Resolution) return;
+    
+    // Calculate flat index for the input buffer (local chunk index)
+    uint index = id.z * (_Resolution * _Resolution) + id.y * _Resolution + id.x;
+    float val = _InputBuffer[index];
+    
+    // Write to the global atlas at the specific offset
+    uint3 pos = _WriteOffset + id;
+    _OutputTexture[pos] = val;
+}
+
+[numthreads(8, 8, 8)]
+void ClearAtlas(uint3 id : SV_DispatchThreadID)
+{
+    // Simple clear, id maps to global texture coordinates
+    _OutputTexture[id] = _ClearValue;
+}

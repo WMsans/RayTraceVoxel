@@ -1,6 +1,7 @@
 using System; 
 using System.Collections.Generic; 
 using UnityEngine; 
+using UnityEngine.Rendering;
 using VoxelEngine.Core.Data; 
 using System.Runtime.InteropServices;
 
@@ -20,6 +21,17 @@ namespace VoxelEngine.Core.Generators
         private List<Bounds> _debugDirtyRegions = new List<Bounds>();
         private bool _isDirty = false;
 
+        // --- Voxel Grid Data ---
+        [Header("Voxel Grid Atlas")]
+        public ComputeShader textureWriterCompute; // [ASSIGN THIS IN INSPECTOR]
+        public int atlasResolution = 32; // Resolution of a single chunk (32x32x32)
+        public int maxAtlasChunks = 16;  // How many chunks to store in the atlas
+        
+        // Changed to RenderTexture to allow Compute Shader writes
+        private RenderTexture _chunkAtlas;
+        public RenderTexture ChunkAtlas => _chunkAtlas;
+        private int _allocatedChunks = 0;
+        
         // BVH Data
         private struct MortonEntry : IComparable<MortonEntry>
         {
@@ -47,14 +59,112 @@ namespace VoxelEngine.Core.Generators
         public int ObjectCount => _objects.Count;
         public bool IsReady => _objects.Count > 0 && LBVHNodeBuffer != null && LBVHNodeBuffer.IsValid();
 
-        // --- Public API ---
+        protected override void Awake()
+        {
+            base.Awake();
+            InitializeAtlas();
+        }
+
+        private void InitializeAtlas()
+        {
+            if (_chunkAtlas != null) _chunkAtlas.Release();
+
+            // Create a 3D RenderTexture
+            _chunkAtlas = new RenderTexture(atlasResolution, atlasResolution, 0, RenderTextureFormat.RHalf);
+            _chunkAtlas.dimension = TextureDimension.Tex3D;
+            _chunkAtlas.volumeDepth = atlasResolution * maxAtlasChunks;
+            _chunkAtlas.enableRandomWrite = true; // Required for Compute Shader
+            _chunkAtlas.wrapMode = TextureWrapMode.Clamp;
+            _chunkAtlas.filterMode = FilterMode.Bilinear;
+            _chunkAtlas.name = "SDF_Chunk_Atlas";
+            _chunkAtlas.Create();
+            
+            // Clear to "Empty" (Positive SDF)
+            if (textureWriterCompute != null)
+            {
+                int kernel = textureWriterCompute.FindKernel("ClearAtlas");
+                textureWriterCompute.SetTexture(kernel, "_OutputTexture", _chunkAtlas);
+                textureWriterCompute.SetFloat("_ClearValue", 4.0f); // Max SDF
+                
+                // Dispatch over entire atlas
+                int totalZ = atlasResolution * maxAtlasChunks;
+                textureWriterCompute.Dispatch(kernel, 
+                    Mathf.CeilToInt(atlasResolution/8f), 
+                    Mathf.CeilToInt(atlasResolution/8f), 
+                    Mathf.CeilToInt(totalZ/8f));
+            }
+
+            _allocatedChunks = 0;
+        }
+
+        /// <summary>
+        /// Registers a raw voxel grid into the atlas and returns the chunk index.
+        /// Returns -1 if atlas is full.
+        /// </summary>
+        public int RegisterVoxelGrid(uint[] packedData, int resolution)
+        {
+            if (_allocatedChunks >= maxAtlasChunks)
+            {
+                Debug.LogWarning("DynamicSDFManager: Atlas Full! Cannot register new Voxel Grid.");
+                return -1;
+            }
+            
+            if (textureWriterCompute == null)
+            {
+                Debug.LogError("DynamicSDFManager: TextureWriter Compute Shader not assigned!");
+                return -1;
+            }
+
+            int index = _allocatedChunks++;
+            
+            // 1. Prepare Data for GPU (Convert packed uint to float SDF)
+            // We use a float buffer to upload only the R channel data
+            int totalVoxels = atlasResolution * atlasResolution * atlasResolution;
+            float[] sdfValues = new float[totalVoxels];
+            float maxSdf = 4.0f; 
+
+            // Assuming 'resolution' matches 'atlasResolution' for now
+            // Or simple linear mapping if packedData matches size
+            for (int i = 0; i < totalVoxels; i++)
+            {
+                if (i < packedData.Length)
+                {
+                    uint val = packedData[i];
+                    uint sdfInt = (val >> 8) & 0xFF;
+                    float normalizedSDF = (sdfInt / 255.0f) * 2.0f - 1.0f; // -1 to 1
+                    sdfValues[i] = normalizedSDF * maxSdf;
+                }
+                else
+                {
+                    sdfValues[i] = maxSdf; // Empty
+                }
+            }
+
+            // 2. Upload to ComputeBuffer
+            ComputeBuffer uploadBuffer = new ComputeBuffer(totalVoxels, sizeof(float));
+            uploadBuffer.SetData(sdfValues);
+
+            // 3. Dispatch Compute to write into 3D Texture
+            int kernel = textureWriterCompute.FindKernel("WriteSDFChunk");
+            textureWriterCompute.SetBuffer(kernel, "_InputBuffer", uploadBuffer);
+            textureWriterCompute.SetTexture(kernel, "_OutputTexture", _chunkAtlas);
+            textureWriterCompute.SetInts("_WriteOffset", new int[] { 0, 0, index * atlasResolution });
+            textureWriterCompute.SetInt("_Resolution", atlasResolution);
+            
+            int groups = Mathf.CeilToInt(atlasResolution / 8.0f);
+            textureWriterCompute.Dispatch(kernel, groups, groups, groups);
+
+            // Cleanup
+            uploadBuffer.Dispose();
+
+            return index;
+        }
 
         public void RegisterObject(SDFObject obj)
         {
             _objects.Add(obj);
             AddDirtyRegion(obj);
             _isDirty = true;
-            // Immediate rebuild not strictly necessary if handled in Update, but good for responsiveness
             if (!rebuildEveryFrame) RebuildBVH(); 
         }
 
@@ -65,42 +175,30 @@ namespace VoxelEngine.Core.Generators
                 SDFObject oldObj = _objects[index];
                 if (IsSame(oldObj, obj)) return;
 
-                AddDirtyRegion(oldObj); // Dirty old position
+                AddDirtyRegion(oldObj);
                 _objects[index] = obj;
-                AddDirtyRegion(obj);    // Dirty new position
+                AddDirtyRegion(obj);
                 _isDirty = true;
             }
         }
 
-        /// <summary>
-        /// Removes the object at the specified index.
-        /// </summary>
         public void RemoveObjectAt(int index)
         {
             if (index >= 0 && index < _objects.Count)
             {
-                // Mark the region occupied by the object as dirty so chunks can regenerate (and disappear the object)
                 AddDirtyRegion(_objects[index]);
-                
                 _objects.RemoveAt(index);
                 _isDirty = true;
-                
-                // If list is empty, we should clear buffers
                 if (_objects.Count == 0) ReleaseBuffers();
             }
         }
 
-        /// <summary>
-        /// Finds the index of the closest SDF object to the given point within a radius.
-        /// </summary>
         public int FindClosestObject(Vector3 position, float radius)
         {
             int bestIndex = -1;
             float minSqrDst = radius * radius;
-
             for (int i = 0; i < _objects.Count; i++)
             {
-                // Simple distance check to object center
                 float sqrDst = Vector3.SqrMagnitude(_objects[i].position - position);
                 if (sqrDst < minSqrDst)
                 {
@@ -129,8 +227,6 @@ namespace VoxelEngine.Core.Generators
             return list;
         }
 
-        // --- Internals ---
-
         private bool IsSame(SDFObject a, SDFObject b)
         {
             if (a.position != b.position) return false;
@@ -145,7 +241,7 @@ namespace VoxelEngine.Core.Generators
         {
             Vector3 center = (obj.boundsMin + obj.boundsMax) * 0.5f;
             Vector3 size = obj.boundsMax - obj.boundsMin;
-            size += Vector3.one * 2.0f; // Padding
+            size += Vector3.one * 2.0f; 
             _dirtyRegions.Add(new Bounds(center, size));
         }
 
@@ -153,6 +249,13 @@ namespace VoxelEngine.Core.Generators
 
         private void Update()
         {
+            // Bind Atlas Globally so Compute Shaders can find it
+            if (_chunkAtlas != null)
+            {
+                Shader.SetGlobalTexture("_SDFChunkAtlas", _chunkAtlas);
+                Shader.SetGlobalVector("_SDFChunkAtlasParams", new Vector4(atlasResolution, maxAtlasChunks, 0, 0));
+            }
+
             if (rebuildEveryFrame && _isDirty)
             {
                 RebuildBVH();
@@ -160,18 +263,15 @@ namespace VoxelEngine.Core.Generators
             }
         }
 
-        // --- BVH Logic (Standard) ---
         public void RebuildBVH()
         {
             int numObjects = _objects.Count;
             if (numObjects == 0) return;
 
-            // Resize arrays if needed
             if (_mortonKeys == null || _mortonKeys.Length < numObjects) _mortonKeys = new MortonEntry[numObjects];
             if (_sortedObjectIndices == null || _sortedObjectIndices.Length < numObjects) _sortedObjectIndices = new int[numObjects];
             if (_bvhNodes == null || _bvhNodes.Length < numObjects * 2) _bvhNodes = new LBVHNode[numObjects * 2];
 
-            // 1. Compute Global Bounds
             Vector3 globalMin = Vector3.one * float.MaxValue;
             Vector3 globalMax = Vector3.one * float.MinValue;
             for (int i = 0; i < numObjects; i++)
@@ -184,7 +284,6 @@ namespace VoxelEngine.Core.Generators
             Vector3 range = globalMax - globalMin;
             range = Vector3.Max(range, Vector3.one * 0.001f);
 
-            // 2. Compute Morton Codes
             for (int i = 0; i < numObjects; i++)
             {
                 Vector3 center = (_objects[i].boundsMin + _objects[i].boundsMax) * 0.5f;
@@ -201,15 +300,12 @@ namespace VoxelEngine.Core.Generators
                 };
             }
 
-            // 3. Sort
             Array.Sort(_mortonKeys, 0, numObjects);
             for(int i=0; i<numObjects; i++) _sortedObjectIndices[i] = _mortonKeys[i].originalIndex;
 
-            // 4. Build
             _nodeCount = 0;
             GenerateHierarchy(0, numObjects - 1);
 
-            // 5. Upload
             UpdateBuffers(numObjects);
         }
 
@@ -229,7 +325,7 @@ namespace VoxelEngine.Core.Generators
 
             if (first == last)
             {
-                node.leftChild = ~first; // Leaf
+                node.leftChild = ~first; 
                 node.rightChild = -1;
                 int objIdx = _sortedObjectIndices[first];
                 node.boundsMin = _objects[objIdx].boundsMin;
@@ -315,6 +411,7 @@ namespace VoxelEngine.Core.Generators
             SDFObjectBuffer?.Release(); SDFObjectBuffer = null;
             LBVHNodeBuffer?.Release(); LBVHNodeBuffer = null;
             ObjectIndexBuffer?.Release(); ObjectIndexBuffer = null;
+            if (_chunkAtlas != null) { _chunkAtlas.Release(); _chunkAtlas = null; }
         }
         
         public SDFObject GetObject(int index)
