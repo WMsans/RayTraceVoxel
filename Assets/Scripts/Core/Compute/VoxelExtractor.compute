@@ -15,41 +15,41 @@ int _TLASResolution;
 
 // --- Extraction Settings ---
 float3 _BoundsMin;
-int3 _Resolution;
-// Dimensions of the extraction grid
+int3 _Resolution; // Dimensions of the extraction grid
 float _VoxelSize;
 
 // --- Output ---
 // Dense Grid of Packed Voxel Data (uint)
 RWStructuredBuffer<uint> _OutputGrid;
+
 // --- SVO Traversal Logic (Duplicated from VoxelRaytracer/IntegrityAnalysis) ---
 // Returns the packed uint data directly
 uint SampleWorldVoxel(float3 worldPos)
 {
-    // [FIX] Define Packed Air: SDF=4.0, Norm=(0,1,0), Mat=0
-    uint packedAir = PackVoxelData(MAX_SDF_RANGE, float3(0, 1, 0), 0);
-
     // 1. TLAS Lookup
-    if (any(worldPos < _TLASBoundsMin) || any(worldPos > _TLASBoundsMax)) return packedAir;
-float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
+    if (any(worldPos < _TLASBoundsMin) || any(worldPos > _TLASBoundsMax)) return 0;
+
+    float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
     int3 cellIdx = clamp(int3((worldPos - _TLASBoundsMin) / cellSize), 0, _TLASResolution - 1);
-uint flatIdx = cellIdx.z * _TLASResolution * _TLASResolution + cellIdx.y * _TLASResolution + cellIdx.x;
+    uint flatIdx = cellIdx.z * _TLASResolution * _TLASResolution + cellIdx.y * _TLASResolution + cellIdx.x;
     
     TLASCell cell = _TLASGridBuffer[flatIdx];
-for (uint k = 0; k < cell.count; k++)
+
+    for (uint k = 0; k < cell.count; k++)
     {
         int chunkId = _TLASChunkIndexBuffer[cell.offset + k];
-ChunkDef chunk = _ChunkBuffer[chunkId];
+        ChunkDef chunk = _ChunkBuffer[chunkId];
 
         if (all(worldPos >= chunk.boundsMin) && all(worldPos <= chunk.boundsMax))
         {
             // Transform to Node Space
             float size = chunk.boundsMax.x - chunk.boundsMin.x;
-float scale = size / 64.0;
+            float scale = size / 64.0;
             float3 nodePos = (worldPos - chunk.boundsMin) / scale;
-// Traverse SVO
+            
+            // Traverse SVO
             uint nodeIndex = 0;
-float3 currentNodeOrigin = float3(0,0,0);
+            float3 currentNodeOrigin = float3(0,0,0);
             float currentSize = 64.0;
             
             // Limit depth to 4 (Leaf)
@@ -57,60 +57,61 @@ float3 currentNodeOrigin = float3(0,0,0);
             {
                 if (currentSize <= BRICK_SIZE)
                 {
-                    
-SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
+                    SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
                     uint payloadIndex, matID;
                     UnpackNode(node, payloadIndex, matID);
-if (payloadIndex != 0)
+                    
+                    if (payloadIndex != 0)
                     {
                         VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + payloadIndex];
-float3 localPos = nodePos - currentNodeOrigin;
+                        float3 localPos = nodePos - currentNodeOrigin;
                         
                         // Sample Brick
                         float3 p = localPos + (float)BRICK_PADDING;
-uint3 i = clamp((uint3)floor(p), 0, BRICK_STORAGE_SIZE - 1);
+                        uint3 i = clamp((uint3)floor(p), 0, BRICK_STORAGE_SIZE - 1);
                         uint idx = chunk.brickOffset + payload.brickDataIndex + 
                                   (i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
                                   (i.y * BRICK_STORAGE_SIZE) + i.x;
-return _GlobalBrickDataBuffer[idx];
+                        
+                        return _GlobalBrickDataBuffer[idx];
                     }
-                    return packedAir;
-// Empty Leaf
+                    return 0; // Empty Leaf
                 }
 
                 float halfSize = currentSize * 0.5;
-float3 center = currentNodeOrigin + halfSize;
-                int octant = (nodePos.x >= center.x ? 1 : 0) |
-(nodePos.y >= center.y ? 2 : 0) | (nodePos.z >= center.z ? 4 : 0);
-SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
+                float3 center = currentNodeOrigin + halfSize;
+                int octant = (nodePos.x >= center.x ? 1 : 0) | (nodePos.y >= center.y ? 2 : 0) | (nodePos.z >= center.z ? 4 : 0);
+                
+                SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
                 uint childMask = (node.topology >> 24) & 0xFF;
-if ((childMask & (1 << octant)) != 0)
+                
+                if ((childMask & (1 << octant)) != 0)
                 {
                     uint childBase = node.topology & 0xFFFFFF;
-uint maskBefore = childMask & ((1 << octant) - 1);
+                    uint maskBefore = childMask & ((1 << octant) - 1);
                     nodeIndex = childBase + countbits(maskBefore);
-currentNodeOrigin += float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
-currentSize = halfSize;
+                    currentNodeOrigin += float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+                    currentSize = halfSize;
                 }
-                else return packedAir;
-// Empty Branch
+                else return 0; // Empty Branch
             }
         }
     }
-    return packedAir;
-// Air
+    return 0; // Air
 }
 
 [numthreads(8, 8, 8)]
 void ExtractGrid(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)_Resolution.x || id.y >= (uint)_Resolution.y || id.z >= (uint)_Resolution.z) return;
-// Sample World Center of the Voxel
+
+    // Sample World Center of the Voxel
     float3 offset = (float3)id * _VoxelSize + (_VoxelSize * 0.5);
-float3 worldPos = _BoundsMin + offset;
+    float3 worldPos = _BoundsMin + offset;
 
     uint data = SampleWorldVoxel(worldPos);
-// Write to dense grid
+    
+    // Write to dense grid
     uint index = id.z * (_Resolution.x * _Resolution.y) + id.y * _Resolution.x + id.x;
-_OutputGrid[index] = data;
+    _OutputGrid[index] = data;
 }
