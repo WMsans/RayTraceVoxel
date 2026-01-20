@@ -5,18 +5,11 @@
 #include "./Generators/TerrainGenerator.hlsl"
 #include "./Generators/Spheres.hlsl"
 #include "./Generators/SineFloor.hlsl"
+#include "./Generators/Trees.hlsl"
 
 // --- Global Dynamic SDF Resources ---
 // These are bound by VoxelVolume or DynamicSDFManager
 StructuredBuffer<SDFObject> _SDFObjectBuffer;
-
-// --- SDF Primitives ---
-
-float sdBox(float3 p, float3 b)
-{
-    float3 q = abs(p) - b;
-    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
-}
 
 float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
 {
@@ -32,7 +25,6 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
 
     float d = 3.402823466e+38; 
     gradient = float3(0,1,0);
-
     if (obj.type == 0) // Sphere
     {
         d = (length(p) - 0.5) * minScale;
@@ -46,11 +38,9 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
         float3 absP = abs(p);
         float maxAxis = max(max(absP.x, absP.y), absP.z);
         float3 localNormal = float3(0,1,0);
-        
         if (absP.x >= maxAxis - 1e-4) localNormal = float3(signP.x, 0, 0);
         else if (absP.y >= maxAxis - 1e-4) localNormal = float3(0, signP.y, 0);
         else localNormal = float3(0, 0, signP.z);
-        
         gradient = normalize(RotateVector(localNormal, obj.rotation));
     }
 
@@ -61,12 +51,14 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
 {
     GenerationContext ctx;
     InitContext(ctx, worldPos);
-
+    
     // --- 1. Base Stage (Terrain) ---
     Stage_Terrain(ctx);
-    // Stage_SineFloor(ctx);
-
-    // --- 2. Dynamic Objects Stage ---
+    
+    // --- 2. Trees Stage (Minecraft-like) ---
+    Stage_Trees(ctx);
+    
+    // --- 3. Dynamic Objects Stage ---
     // Iterate over the culled list of objects (Must be sorted by index for deterministic CSG)
     for(int i = 0; i < activeCount; i++)
     {
@@ -84,20 +76,15 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
             // Smooth Subtraction: smax(ctx.sdf, -d, k)
             // Implementation: mix(ctx.sdf, -d, h) + k * h * (1.0 - h)
             // where h is the mixing factor based on distance.
-            
             float k = obj.blendFactor;
             float d1 = ctx.sdf;
             float d2 = d;
-            
             // h approaches 1.0 when -d2 > d1 (Subtractor is dominant)
             float h = clamp( 0.5 - 0.5 * (d1 + d2) / k, 0.0, 1.0 );
-            
             ctx.sdf = lerp( d1, -d2, h ) + k * h * (1.0 - h);
-            
             // Correct Gradient Blending
             // When h -> 1, we are inside the subtraction, normal should be inverted object normal
             ctx.gradient = lerp(ctx.gradient, -objGradient, h);
-            
             // Material Logic:
             // Usually, subtraction keeps the original material (we are cutting into it).
             // However, if you want the "cut" surface to have a specific texture, uncomment below:
