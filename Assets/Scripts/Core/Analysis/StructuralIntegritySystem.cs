@@ -1,5 +1,5 @@
 using System.Collections;
-using System.Collections.Generic; // Added for List<T>
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 using Unity.Collections;
@@ -8,6 +8,8 @@ using Unity.Burst;
 using Unity.Mathematics;
 using VoxelEngine.Core.Streaming;
 using VoxelEngine.Core.Editing;
+using VoxelEngine.Core.Generators;
+using VoxelEngine.Core.Data;
 
 namespace VoxelEngine.Core.Analysis
 {
@@ -15,16 +17,15 @@ namespace VoxelEngine.Core.Analysis
     {
         [Header("Configuration")]
         public ComputeShader integrityCompute;
-        [Tooltip("Margin around the brush bounds to check for connectivity.")]
+        public ComputeShader extractorCompute;
+        public GameObject dynamicBodyPrefab;
         public float analysisMargin = 2.0f; 
+        
         [Header("Debug")]
         public bool drawDebugGizmos = true;
 
-        // Buffers
         private ComputeBuffer _resultBuffer;
         private NativeArray<uint> _readbackArray;
-
-        // Debug Data
         private List<Vector3> _debugFloatingPositions = new List<Vector3>();
         private Vector3 _lastBoundsMin;
         private float _lastVoxelSize;
@@ -36,22 +37,16 @@ namespace VoxelEngine.Core.Analysis
 
         private IEnumerator AnalyzeRoutine(Bounds bounds)
         {
-            // 1. Wait for EndOfFrame to ensure WorldManager has regenerated the chunks
             yield return new WaitForEndOfFrame();
             
             if (VoxelVolumePool.Instance == null || VoxelVolumePool.Instance.ActiveChunkCount == 0) yield break;
 
-            // 2. Expand bounds
             bounds.Expand(analysisMargin);
             Vector3 min = bounds.min;
-            Vector3 max = bounds.max;
             float voxelSize = VoxelEditManager.Instance.voxelSize;
-
-            // Store for Debugging
             _lastBoundsMin = min;
             _lastVoxelSize = voxelSize;
 
-            // 3. Calculate Resolution
             int resX = Mathf.CeilToInt(bounds.size.x / voxelSize);
             int resY = Mathf.CeilToInt(bounds.size.y / voxelSize);
             int resZ = Mathf.CeilToInt(bounds.size.z / voxelSize);
@@ -59,98 +54,158 @@ namespace VoxelEngine.Core.Analysis
 
             if (totalVoxels == 0) yield break;
 
-            // 4. Setup Compute
+            // --- Step 1: Integrity Check (0/1) ---
             if (_resultBuffer != null) _resultBuffer.Release();
             _resultBuffer = new ComputeBuffer(totalVoxels, sizeof(uint));
 
             int kernel = integrityCompute.FindKernel("ExtractRegion");
             var pool = VoxelVolumePool.Instance;
-
-            integrityCompute.SetBuffer(kernel, "_GlobalNodeBuffer", pool.GlobalNodeBuffer);
-            integrityCompute.SetBuffer(kernel, "_GlobalPayloadBuffer", pool.GlobalPayloadBuffer);
-            integrityCompute.SetBuffer(kernel, "_GlobalBrickDataBuffer", pool.GlobalBrickDataBuffer);
-            integrityCompute.SetBuffer(kernel, "_ChunkBuffer", pool.ChunkBuffer);
-            integrityCompute.SetBuffer(kernel, "_TLASGridBuffer", pool.TLASGridBuffer);
-            integrityCompute.SetBuffer(kernel, "_TLASChunkIndexBuffer", pool.TLASChunkIndexBuffer);
             
-            integrityCompute.SetVector("_TLASBoundsMin", pool.TLASBoundsMin);
-            integrityCompute.SetVector("_TLASBoundsMax", pool.TLASBoundsMax);
-            integrityCompute.SetInt("_TLASResolution", pool.TLASResolution);
+            // Bind buffers (omitted for brevity, same as previous)
+            BindIntegrityBuffers(kernel, pool, min, resX, resY, resZ, voxelSize);
+            
+            int gx = Mathf.CeilToInt(resX/8f), gy = Mathf.CeilToInt(resY/8f), gz = Mathf.CeilToInt(resZ/8f);
+            integrityCompute.Dispatch(kernel, gx, gy, gz);
 
-            integrityCompute.SetVector("_BoundsMin", min);
-            integrityCompute.SetVector("_BoundsMax", max);
-            integrityCompute.SetInts("_Resolution", new int[] { resX, resY, resZ });
-            integrityCompute.SetFloat("_VoxelSize", voxelSize);
-            integrityCompute.SetBuffer(kernel, "_ResultBuffer", _resultBuffer);
-
-            int groupsX = Mathf.CeilToInt(resX / 8.0f);
-            int groupsY = Mathf.CeilToInt(resY / 8.0f);
-            int groupsZ = Mathf.CeilToInt(resZ / 8.0f);
-            integrityCompute.Dispatch(kernel, groupsX, groupsY, groupsZ);
-
-            // Fix: Allocate the NativeArray before requesting data into it.
-            // RequestIntoNativeArray writes directly to this memory, so it must exist.
             if (!_readbackArray.IsCreated || _readbackArray.Length != totalVoxels)
             {
                 if (_readbackArray.IsCreated) _readbackArray.Dispose();
                 _readbackArray = new NativeArray<uint>(totalVoxels, Allocator.Persistent);
             }
 
-            AsyncGPUReadback.RequestIntoNativeArray(ref _readbackArray, _resultBuffer, (request) => OnReadbackComplete(request, resX, resY, resZ));
-        }
+            // --- Step 2: Readback and Identify Floating Cluster ---
+            bool requestDone = false;
+            AsyncGPUReadback.RequestIntoNativeArray(ref _readbackArray, _resultBuffer, (req) => requestDone = true);
+            while (!requestDone) yield return null;
 
-        private void OnReadbackComplete(AsyncGPUReadbackRequest request, int w, int h, int d)
-        {
-            if (request.hasError) return;
-
-            var resultFloatingIndices = new NativeList<int>(Allocator.TempJob);
             var resultFloatingCount = new NativeArray<int>(1, Allocator.TempJob);
+            var resultFloatingIndices = new NativeList<int>(Allocator.TempJob);
             
             var job = new IntegrityAnalysisJob
             {
                 voxels = _readbackArray,
-                dims = new int3(w, h, d),
+                dims = new int3(resX, resY, resZ),
                 floatingCount = resultFloatingCount,
                 floatingIndices = resultFloatingIndices
             };
-
             job.Schedule().Complete();
 
-            int floating = resultFloatingCount[0];
+            int floatingCount = resultFloatingCount[0];
             
-            // --- Update Debug Gizmos ---
-            _debugFloatingPositions.Clear();
-            if (floating > 0 && drawDebugGizmos)
+            // --- Step 3: TEARDOWN PHASE ---
+            if (floatingCount > 0)
             {
-                Debug.LogWarning($"[Structural Integrity] Detected {floating} floating voxels!");
-                for (int i = 0; i < resultFloatingIndices.Length; i++)
-                {
-                    int idx = resultFloatingIndices[i];
-                    int z = idx / (w * h);
-                    int rem = idx % (w * h);
-                    int y = rem / w;
-                    int x = rem % w;
+                Debug.Log($"[Integrity] Found {floatingCount} floating voxels. Initiating Teardown.");
+                
+                // 3a. Calculate Bounds of floating voxels
+                Bounds floatingBounds = CalculateFloatingBounds(resultFloatingIndices, resX, resY, min, voxelSize);
+                
+                // 3b. Extract Data
+                ComputeBuffer gridData = ExtractFloatingData(floatingBounds);
 
-                    Vector3 localPos = new Vector3(x, y, z) * _lastVoxelSize + (_lastVoxelSize * 0.5f) * Vector3.one;
-                    _debugFloatingPositions.Add(_lastBoundsMin + localPos);
+                // 3c. Erase from World (Subtract)
+                SDFObject subtractor = new SDFObject
+                {
+                    type = 1, // Cube
+                    operation = 1, // Subtract
+                    boundsMin = floatingBounds.min,
+                    boundsMax = floatingBounds.max,
+                    position = floatingBounds.center,
+                    rotation = Quaternion.identity,
+                    scale = floatingBounds.size,
+                    blendFactor = 0.5f,
+                    materialId = 1
+                };
+                DynamicSDFManager.Instance.RegisterObject(subtractor);
+
+                // 3d. Instantiate Dynamic Body
+                if (dynamicBodyPrefab != null && gridData != null)
+                {
+                    GameObject go = Instantiate(dynamicBodyPrefab, floatingBounds.center, Quaternion.identity);
+                    var body = go.GetComponent<DynamicVoxelBody>();
+                    if (body != null)
+                    {
+                        body.Initialize(gridData, floatingBounds.size);
+                    }
                 }
+                
+                // Clean up temp buffer (The Body makes its own copy or uses it)
+                 if (gridData != null) gridData.Release();
             }
-            // ---------------------------
 
             resultFloatingCount.Dispose();
             resultFloatingIndices.Dispose();
         }
 
-        private void OnDrawGizmos()
+        private void BindIntegrityBuffers(int kernel, VoxelVolumePool pool, Vector3 min, int rx, int ry, int rz, float size)
         {
-            if (!drawDebugGizmos || _debugFloatingPositions == null) return;
+            integrityCompute.SetBuffer(kernel, "_GlobalNodeBuffer", pool.GlobalNodeBuffer);
+            integrityCompute.SetBuffer(kernel, "_GlobalPayloadBuffer", pool.GlobalPayloadBuffer);
+            integrityCompute.SetBuffer(kernel, "_GlobalBrickDataBuffer", pool.GlobalBrickDataBuffer);
+            integrityCompute.SetBuffer(kernel, "_ChunkBuffer", pool.ChunkBuffer);
+            integrityCompute.SetBuffer(kernel, "_TLASGridBuffer", pool.TLASGridBuffer);
+            integrityCompute.SetBuffer(kernel, "_TLASChunkIndexBuffer", pool.TLASChunkIndexBuffer);
+            integrityCompute.SetVector("_TLASBoundsMin", pool.TLASBoundsMin);
+            integrityCompute.SetVector("_TLASBoundsMax", pool.TLASBoundsMax);
+            integrityCompute.SetInt("_TLASResolution", pool.TLASResolution);
+            integrityCompute.SetVector("_BoundsMin", min);
+            integrityCompute.SetInts("_Resolution", new int[] { rx, ry, rz });
+            integrityCompute.SetFloat("_VoxelSize", size);
+            integrityCompute.SetBuffer(kernel, "_ResultBuffer", _resultBuffer);
+        }
 
-            Gizmos.color = Color.red;
-            float size = _lastVoxelSize * 0.9f;
-            foreach (var pos in _debugFloatingPositions)
+        private Bounds CalculateFloatingBounds(NativeList<int> indices, int w, int h, Vector3 regionMin, float voxelSize)
+        {
+            Vector3 min = Vector3.one * float.MaxValue;
+            Vector3 max = Vector3.one * float.MinValue;
+
+            for (int i = 0; i < indices.Length; i++)
             {
-                Gizmos.DrawWireCube(pos, Vector3.one * size);
+                int idx = indices[i];
+                int z = idx / (w * h);
+                int rem = idx % (w * h);
+                int y = rem / w;
+                int x = rem % w;
+
+                Vector3 pos = regionMin + new Vector3(x, y, z) * voxelSize + Vector3.one * (voxelSize * 0.5f);
+                min = Vector3.Min(min, pos);
+                max = Vector3.Max(max, pos);
             }
+            return new Bounds((min + max) * 0.5f, max - min + Vector3.one * voxelSize);
+        }
+
+        private ComputeBuffer ExtractFloatingData(Bounds bounds)
+        {
+            if (extractorCompute == null) return null;
+            
+            float voxelSize = VoxelEditManager.Instance.voxelSize;
+            int rx = Mathf.CeilToInt(bounds.size.x / voxelSize);
+            int ry = Mathf.CeilToInt(bounds.size.y / voxelSize);
+            int rz = Mathf.CeilToInt(bounds.size.z / voxelSize);
+            int count = rx * ry * rz;
+
+            ComputeBuffer outputGrid = new ComputeBuffer(count, sizeof(uint));
+            int kernel = extractorCompute.FindKernel("ExtractGrid");
+            var pool = VoxelVolumePool.Instance;
+
+            extractorCompute.SetBuffer(kernel, "_GlobalNodeBuffer", pool.GlobalNodeBuffer);
+            extractorCompute.SetBuffer(kernel, "_GlobalPayloadBuffer", pool.GlobalPayloadBuffer);
+            extractorCompute.SetBuffer(kernel, "_GlobalBrickDataBuffer", pool.GlobalBrickDataBuffer);
+            extractorCompute.SetBuffer(kernel, "_ChunkBuffer", pool.ChunkBuffer);
+            extractorCompute.SetBuffer(kernel, "_TLASGridBuffer", pool.TLASGridBuffer);
+            extractorCompute.SetBuffer(kernel, "_TLASChunkIndexBuffer", pool.TLASChunkIndexBuffer);
+            extractorCompute.SetVector("_TLASBoundsMin", pool.TLASBoundsMin);
+            extractorCompute.SetVector("_TLASBoundsMax", pool.TLASBoundsMax);
+            extractorCompute.SetInt("_TLASResolution", pool.TLASResolution);
+
+            extractorCompute.SetVector("_BoundsMin", bounds.min);
+            extractorCompute.SetInts("_Resolution", new int[] { rx, ry, rz });
+            extractorCompute.SetFloat("_VoxelSize", voxelSize);
+            extractorCompute.SetBuffer(kernel, "_OutputGrid", outputGrid);
+
+            extractorCompute.Dispatch(kernel, Mathf.CeilToInt(rx/8f), Mathf.CeilToInt(ry/8f), Mathf.CeilToInt(rz/8f));
+            
+            return outputGrid;
         }
 
         private void OnDestroy()
