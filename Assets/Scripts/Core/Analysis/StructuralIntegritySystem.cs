@@ -61,7 +61,7 @@ namespace VoxelEngine.Core.Analysis
             int kernel = integrityCompute.FindKernel("ExtractRegion");
             var pool = VoxelVolumePool.Instance;
             
-            // Bind buffers
+            // Bind buffers (omitted for brevity, same as previous)
             BindIntegrityBuffers(kernel, pool, min, resX, resY, resZ, voxelSize);
             
             int gx = Mathf.CeilToInt(resX/8f), gy = Mathf.CeilToInt(resY/8f), gz = Mathf.CeilToInt(resZ/8f);
@@ -104,32 +104,19 @@ namespace VoxelEngine.Core.Analysis
                 ComputeBuffer gridData = ExtractFloatingData(floatingBounds);
 
                 // 3c. Erase from World (Subtract)
-                // [FIX] Expand the subtraction box slightly. Exact bounds can leave artifacts at the 0.0 SDF surface.
-                Vector3 subtractSize = floatingBounds.size + Vector3.one * 0.25f;
-                Bounds subtractBounds = new Bounds(floatingBounds.center, subtractSize);
-
                 SDFObject subtractor = new SDFObject
                 {
                     type = 1, // Cube
                     operation = 1, // Subtract
-                    boundsMin = subtractBounds.min,
-                    boundsMax = subtractBounds.max,
-                    position = subtractBounds.center,
+                    boundsMin = floatingBounds.min,
+                    boundsMax = floatingBounds.max,
+                    position = floatingBounds.center,
                     rotation = Quaternion.identity,
-                    scale = subtractSize,
+                    scale = floatingBounds.size,
                     blendFactor = 0.5f,
                     materialId = 1
                 };
-
-                if (DynamicSDFManager.Instance != null)
-                {
-                    DynamicSDFManager.Instance.RegisterObject(subtractor);
-                    
-                    // [FIX] Force a buffer rebuild immediately.
-                    // If WorldManager updates before DynamicSDFManager in the next frame loop,
-                    // it would see the dirty region but use old GPU buffers, failing to delete the chunks.
-                    DynamicSDFManager.Instance.RebuildBVH();
-                }
+                DynamicSDFManager.Instance.RegisterObject(subtractor);
 
                 // 3d. Instantiate Dynamic Body
                 if (dynamicBodyPrefab != null && gridData != null)
@@ -138,7 +125,6 @@ namespace VoxelEngine.Core.Analysis
                     var body = go.GetComponent<DynamicVoxelBody>();
                     if (body != null)
                     {
-                        // Use original accurate size for the mesh generation
                         body.Initialize(gridData, floatingBounds.size);
                     }
                 }
@@ -235,7 +221,7 @@ namespace VoxelEngine.Core.Analysis
         [ReadOnly] public NativeArray<uint> voxels;
         public int3 dims;
         [WriteOnly] public NativeArray<int> floatingCount;
-        [WriteOnly] public NativeList<int> floatingIndices; 
+        [WriteOnly] public NativeList<int> floatingIndices; // Added to store specific floating voxels
 
         public void Execute()
         {
