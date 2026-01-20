@@ -45,11 +45,8 @@ public class DebugVoxelGridSpawner : MonoBehaviour
         int totalVoxels = resolution * resolution * resolution;
         uint[] packedData = new uint[totalVoxels];
         
-        // [FIX] Center the sphere perfectly within the bounds 0..32
         float center = resolution / 2.0f;
-        
-        // Define Sphere Radius (e.g., 40% of the resolution to ensure it fits inside the bounds)
-        float radius = resolution * 0.4f;
+        float thickness = resolution / 4.0f;
 
         for (int z = 0; z < resolution; z++)
         {
@@ -59,16 +56,12 @@ public class DebugVoxelGridSpawner : MonoBehaviour
                 {
                     int index = z * resolution * resolution + y * resolution + x;
 
-                    // [FIX] Use +0.5 to sample the CENTER of the voxel, aligning with Texture UVs
-                    Vector3 voxelPos = new Vector3(x + 0.5f, y + 0.5f, z + 0.5f);
-
-                    // Calculate distance from the current voxel to the center of the grid
-                    float dist = Vector3.Distance(voxelPos, new Vector3(center, center, center));
-
-                    // Calculate SDF: 
-                    // dist - radius < 0 (Negative) means INSIDE the sphere
-                    // dist - radius > 0 (Positive) means OUTSIDE the sphere
-                    float sdf = dist - radius;
+                    bool inX = Mathf.Abs(x - center) < thickness && Mathf.Abs(y - center) < thickness;
+                    bool inY = Mathf.Abs(x - center) < thickness && Mathf.Abs(z - center) < thickness;
+                    bool inZ = Mathf.Abs(y - center) < thickness && Mathf.Abs(z - center) < thickness;
+                    
+                    bool isSolid = inX || inY || inZ;
+                    float sdf = isSolid ? -1.0f : 1.0f;
                     
                     packedData[index] = PackData(sdf, Vector3.up, 2); 
                 }
