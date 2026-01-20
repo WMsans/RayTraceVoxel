@@ -79,8 +79,8 @@ MonoBehaviour:
   targetMaterialId: 4
   sdfThreshold: 1
   normalYThreshold: 0.5
-  bladeWidth: 0.2
-  bladeHeight: 1
-  windTexture: {fileID: 2800000, guid: 46c15a73b109a40488a19526c57e4d3d, type: 3}
-  baseColor: {r: 0.1, g: 0.3, b: 0.1, a: 1}
-  tipColor: {r: 0.4, g: 0.6, b: 0.2, a: 1}
+  bladeWidth: 0.5
+  bladeHeight: 2
+  windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
+  baseColor: {r: 0.39607844, g: 0.36862746, b: 0.13333334, a: 1}
+  tipColor: {r: 0.39607844, g: 0.42352942, b: 0.13333334, a: 1}

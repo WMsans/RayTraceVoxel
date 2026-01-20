@@ -116,6 +116,14 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
                 // Transform to World Space
                 float3 worldPos = _ChunkWorldOrigin + surfacePosLocal * scale;
 
+                // Use the integer voxel coordinate (stable seed) to generate random offsets
+                float3 jitterSeed = brickOriginLocal + (float3)voxelOffset;
+                float jitterX = (Random(jitterSeed) * 2.0 - 1.0) * 0.35; // +/- 35% of voxel size
+                float jitterZ = (Random(jitterSeed + float3(7.1, 3.3, 1.9)) * 2.0 - 1.0) * 0.35;
+
+                worldPos.x += jitterX * scale;
+                worldPos.z += jitterZ * scale;
+
                 // Create Instance
                 GrassInstance instance;
                 instance.position = worldPos;
