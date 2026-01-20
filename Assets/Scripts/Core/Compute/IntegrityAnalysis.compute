@@ -1,0 +1,150 @@
+#pragma kernel ExtractRegion
+
+#include "./Includes/VoxelStructures.hlsl"
+
+// --- Inputs ---
+// TLAS / Global Buffers (Same as VoxelRaytracer)
+StructuredBuffer<SVONode> _GlobalNodeBuffer;
+StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
+StructuredBuffer<uint> _GlobalBrickDataBuffer;
+
+StructuredBuffer<ChunkDef> _ChunkBuffer;
+StructuredBuffer<TLASCell> _TLASGridBuffer;
+StructuredBuffer<int> _TLASChunkIndexBuffer;
+float3 _TLASBoundsMin;
+float3 _TLASBoundsMax;
+int _TLASResolution;
+
+// Analysis Region
+float3 _BoundsMin;
+float3 _BoundsMax;
+int3 _Resolution; // Dimensions of the extraction grid
+float _VoxelSize;
+
+// --- Output ---
+// 0 = Air, 1 = Solid
+RWStructuredBuffer<uint> _ResultBuffer;
+
+// --- Helpers (Simplified from VoxelRaytracer) ---
+
+bool IntersectBoxPoint(float3 p, float3 boxMin, float3 boxMax)
+{
+    return all(p >= boxMin) && all(p <= boxMax);
+}
+
+// Samples a specific brick at a local coordinate
+bool SampleBrickSolid(uint brickOffset, uint brickPtr, float3 localPos)
+{
+    float3 p = localPos + (float)BRICK_PADDING;
+    uint3 i = clamp((uint3)floor(p), 0, BRICK_STORAGE_SIZE - 1);
+    uint idx = brickOffset + brickPtr + (i.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + (i.y * BRICK_STORAGE_SIZE) + i.x;
+    
+    float sdf; float3 n; uint mat;
+    UnpackVoxelData(_GlobalBrickDataBuffer[idx], sdf, n, mat);
+    
+    // Solid if inside surface (SDF < 0)
+    return sdf < 0.0;
+}
+
+// Traverses the SVO for a single point
+bool SampleChunk(ChunkDef chunk, float3 worldPos)
+{
+    // 1. Transform to Node Space
+    float size = chunk.boundsMax.x - chunk.boundsMin.x;
+    float scale = size / 64.0; // 64 is the grid size of the octree root
+    float3 nodePos = (worldPos - chunk.boundsMin) / scale;
+    
+    // 2. Traverse (Iterative)
+    // Root is at chunk.nodeOffset
+    // We assume max depth 4 (Leaf)
+    
+    uint nodeIndex = 0;
+    float3 currentNodeOrigin = float3(0,0,0);
+    float currentSize = 64.0;
+    
+    for (int depth = 0; depth < 5; depth++)
+    {
+        // Leaf Check
+        if (currentSize <= BRICK_SIZE)
+        {
+            SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
+            uint payloadIndex, matID;
+            UnpackNode(node, payloadIndex, matID);
+            
+            if (payloadIndex != 0)
+            {
+                VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + payloadIndex];
+                float3 localPos = nodePos - currentNodeOrigin;
+                return SampleBrickSolid(chunk.brickOffset, payload.brickDataIndex, localPos);
+            }
+            return false; // Empty leaf
+        }
+        
+        // Internal Node - Find Octant
+        float halfSize = currentSize * 0.5;
+        float3 center = currentNodeOrigin + halfSize;
+        
+        int octant = 0;
+        if (nodePos.x >= center.x) octant |= 1;
+        if (nodePos.y >= center.y) octant |= 2;
+        if (nodePos.z >= center.z) octant |= 4;
+        
+        SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
+        uint childMask = (node.topology >> 24) & 0xFF;
+        
+        if ((childMask & (1 << octant)) != 0)
+        {
+            uint childBase = node.topology & 0xFFFFFF;
+            uint maskBefore = childMask & ((1 << octant) - 1);
+            nodeIndex = childBase + countbits(maskBefore);
+            
+            currentNodeOrigin += float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+            currentSize = halfSize;
+        }
+        else
+        {
+            return false; // Empty space
+        }
+    }
+    return false;
+}
+
+bool IsWorldPointSolid(float3 worldPos)
+{
+    // TLAS Lookup
+    if (!IntersectBoxPoint(worldPos, _TLASBoundsMin, _TLASBoundsMax)) return false;
+    
+    float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
+    int3 cellIdx = clamp(int3((worldPos - _TLASBoundsMin) / cellSize), 0, _TLASResolution - 1);
+    
+    uint flatIdx = cellIdx.z * _TLASResolution * _TLASResolution + cellIdx.y * _TLASResolution + cellIdx.x;
+    TLASCell cell = _TLASGridBuffer[flatIdx];
+    
+    for (uint k = 0; k < cell.count; k++)
+    {
+        int chunkId = _TLASChunkIndexBuffer[cell.offset + k];
+        ChunkDef chunk = _ChunkBuffer[chunkId];
+        
+        if (IntersectBoxPoint(worldPos, chunk.boundsMin, chunk.boundsMax))
+        {
+            return SampleChunk(chunk, worldPos);
+        }
+    }
+    
+    return false;
+}
+
+[numthreads(8, 8, 8)]
+void ExtractRegion(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_Resolution.x || id.y >= (uint)_Resolution.y || id.z >= (uint)_Resolution.z) return;
+    
+    float3 offset = (float3)id * _VoxelSize + (_VoxelSize * 0.5);
+    float3 worldPos = _BoundsMin + offset;
+    
+    bool isSolid = IsWorldPointSolid(worldPos);
+    
+    // Linear Index: z * (w*h) + y * w + x
+    uint index = id.z * (_Resolution.x * _Resolution.y) + id.y * _Resolution.x + id.x;
+    _ResultBuffer[index] = isSolid ? 1 : 0;
+}
