@@ -18,7 +18,7 @@ namespace VoxelEngine.Core.Rendering
 
         [Header("Generation Settings")]
         public int maxInstances = 100000;
-        public int targetMaterialId = 2; 
+        public int targetMaterialId = 4; 
         [Range(0f, 1f)] public float sdfThreshold = 0.5f;
         [Range(-1f, 1f)] public float normalYThreshold = 0.5f;
 
@@ -86,8 +86,10 @@ namespace VoxelEngine.Core.Rendering
         {
             if (grassCompute == null || !_volume.IsReady) return;
             
+            // 1. Reset Counter
             _grassAppendBuffer.SetCounterValue(0);
 
+            // 2. Dispatch Compute
             int kernel = grassCompute.FindKernel("GenerateGrass");
             grassCompute.SetBuffer(kernel, "_NodeBuffer", _volume.NodeBuffer);
             grassCompute.SetBuffer(kernel, "_PayloadBuffer", _volume.PayloadBuffer);
@@ -108,13 +110,21 @@ namespace VoxelEngine.Core.Rendering
 
             int groups = Mathf.CeilToInt((_volume.Resolution / 4.0f) / 4.0f);
             grassCompute.Dispatch(kernel, groups, groups, groups);
-
-            ComputeBuffer.CopyCount(_grassAppendBuffer, _indirectArgsBuffer, 4); 
-
+            
+            // 3. Set Mesh Data FIRST (Index Count, Start Index, etc.)
+            // We update the CPU array and upload it. Index [1] (Instance Count) is 0 here.
             _argsData[0] = (uint)_grassMesh.GetIndexCount(0);
+            _argsData[1] = 0; // Placeholder, will be filled by CopyCount
             _argsData[2] = (uint)_grassMesh.GetIndexStart(0);
             _argsData[3] = (uint)_grassMesh.GetBaseVertex(0);
+            _argsData[4] = 0; // Start Instance
+            
             _indirectArgsBuffer.SetData(_argsData); 
+
+            // 4. Copy Instance Count SECOND
+            // This takes the count from the AppendBuffer and writes it into byte offset 4 
+            // (which corresponds to the uint at index 1) of the indirect args buffer.
+            ComputeBuffer.CopyCount(_grassAppendBuffer, _indirectArgsBuffer, 4); 
             
             _renderBounds = _volume.WorldBounds;
         }

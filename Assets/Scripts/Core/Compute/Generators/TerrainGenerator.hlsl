@@ -96,8 +96,8 @@ void Stage_Terrain(inout GenerationContext ctx)
         
         // 3. Material Assignment
         // w close to 0 is Terrain, w close to 1 is Tubes.
-        // We assign ID 2 for Terrain, ID 3 for Tubes.
-        ctx.material = (w > 0.5) ? 3 : 2; 
+        // We assign ID 4 for Terrain, ID 3 for Tubes.
+        ctx.material = (w > 0.5) ? 3 : 4; 
 
         // 4. Tetrahedral Normal Calculation
         // Calculate the gradient of the MapTerrain function
