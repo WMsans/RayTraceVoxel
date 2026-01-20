@@ -415,7 +415,9 @@ namespace VoxelEngine.Core.Rendering
                     data.mainLightColor = mainCol;
                     data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); 
                     
-                    data.mousePosition = VoxelRaytracerFeature.MousePosition;
+                    // Scale the mouse position to match the reduced resolution of the compute buffer
+                    data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale;
+                    
                     data.maxIterations = iterations;
                     data.maxMarchSteps = marchSteps;
 
