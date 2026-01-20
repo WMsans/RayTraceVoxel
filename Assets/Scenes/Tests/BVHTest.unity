@@ -660,6 +660,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Analysis.StructuralIntegritySystem
   integrityCompute: {fileID: 7200000, guid: c3cb08fa1abd2264b95433af74591896, type: 3}
+  extractorCompute: {fileID: 7200000, guid: 47bdbbba413237e49a82292da1e21eed, type: 3}
+  dynamicBodyPrefab: {fileID: 7751174534827815226, guid: dcfebfd5daddf9a47a4feebabfa15b5c, type: 3}
   analysisMargin: 2
   drawDebugGizmos: 1
 --- !u!1 &888823811

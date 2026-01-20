@@ -3,7 +3,6 @@ using VoxelEngine.Core.Buffers;
 
 namespace VoxelEngine.Core.Streaming
 {
-    [RequireComponent(typeof(Rigidbody))]
     public class DynamicVoxelBody : MonoBehaviour
     {
         public ComputeShader gridSVOBuilder;
@@ -21,8 +20,8 @@ namespace VoxelEngine.Core.Streaming
             _volume.BuildFromGrid(gridSVOBuilder, sourceGrid, new Vector3Int((int)size.x, (int)size.y, (int)size.z));
             
             // Adjust Mass
-            var rb = GetComponent<Rigidbody>();
-            rb.mass = size.x * size.y * size.z * 0.1f; // Simple density approximation
+            // var rb = GetComponent<Rigidbody>();
+            // rb.mass = size.x * size.y * size.z * 0.1f; // Simple density approximation
         }
     }
 }
