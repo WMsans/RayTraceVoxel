@@ -3,111 +3,124 @@
 
 #include "../Includes/GenerationContext.hlsl"
 
-// Adapted from Inigo Quilez - https://iquilezles.org/
-#define SC 1.0 
+// --- Adapted Constants and Noise Functions ---
 
-float hash(float2 p)
+// Matrix from GLSL: mat2(1.6, -1.2, 1.2, 1.6)
+// Note: GLSL mat2 columns are (1.6, -1.2) and (1.2, 1.6). 
+// We implement the transform explicitly to ensure exact parity.
+
+float noi(float2 p)
 {
-    float3 p3  = frac(float3(p.xyx) * .1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return frac((p3.x + p3.y) * p3.z);
+    return 0.5 * (cos(6.2831 * p.x) + cos(6.2831 * p.y));
 }
 
-float3 noised(float2 x)
+float terrainMed(float2 p)
 {
-    float2 f = frac(x);
-    float2 u = f*f*f*(f*(f*6.0-15.0)+10.0);
-    float2 du = 30.0*f*f*(f*(f-2.0)+1.0);
-    float2 p = floor(x);
-    float a = hash(p + float2(0,0));
-    float b = hash(p + float2(1,0));
-    float c = hash(p + float2(0,1));
-    float d = hash(p + float2(1,1));
-    
-    float k0 = a;
-    float k1 = b - a;
-    float k2 = c - a;
-    float k3 = a - b - c + d;
-    float val = k0 + k1*u.x + k2*u.y + k3*u.x*u.y;
-    float2 grad = du * (float2(k1, k2) + k3*u.yx);
-    return float3(val, grad);
-}
-
-static const float2x2 m2 = float2x2(0.8, 0.6, -0.6, 0.8);
-
-float3 terrainM(float2 x)
-{
-    float2 p = x * 0.003 / SC;
-    float a = 0.0;
-    float b = 1.0;
-    float2 d = float2(0.0, 0.0);
-    for(int i = 0; i < 9; i++)
+    p *= 0.0013;
+    float s = 1.0;
+    float t = 0.0;
+    for (int i = 0; i < 6; i++)
     {
-        float3 n = noised(p);
-        d += n.yz;
-        a += b * n.x / (1.0 + dot(d,d));
-        b *= 0.5;
-        p = mul(m2, p) * 2.0;
+        t += s * noi(p);
+        s *= 0.5 + 0.1 * t;
+        
+        // GLSL: p = 0.97 * m2 * p + ...
+        // m2 * p corresponds to:
+        // x' = 1.6*x + 1.2*y
+        // y' = -1.2*x + 1.6*y 
+        // (Wait, GLSL mat2 constructor is column-major: mat2(c1x, c1y, c2x, c2y))
+        // mat2(1.6, -1.2, 1.2, 1.6) -> | 1.6  1.2 |
+        //                              | -1.2 1.6 |
+        float2 nextP;
+        nextP.x = 1.6 * p.x + 1.2 * p.y;
+        nextP.y = -1.2 * p.x + 1.6 * p.y;
+        
+        p = 0.97 * nextP + (t - 0.5) * 0.2;
     }
-    
-    return float3(SC * 120.0 * a, d);
+    return t * 55.0;
 }
 
-// Restored Helper Function
+// Helper for SVOBuilder optimization (Estimates surface height)
 float GetHeight(float2 pos)
 {
-    return terrainM(pos).x;
+    return terrainMed(pos);
+}
+
+float tubes(float3 pos)
+{
+    float sep = 400.0;
+    
+    // Noise distortion
+    pos.z -= sep * 0.025 * noi(0.005 * pos.xz * float2(0.5, 1.5));
+    pos.x -= sep * 0.050 * noi(0.005 * pos.zy * float2(0.5, 1.5));
+    
+    // Domain Repetition (Modulo logic)
+    // GLSL: qos = mod(pos + sep*0.5, sep) - sep*0.5
+    float2 posShifted = pos.xz + sep * 0.5;
+    float2 qosXZ = posShifted - floor(posShifted / sep) * sep - sep * 0.5;
+    
+    float3 qos = float3(qosXZ.x, pos.y - 70.0, qosXZ.y);
+    
+    qos.x += sep * 0.3 * cos(0.01 * pos.z);
+    qos.y += sep * 0.1 * cos(0.01 * pos.x);
+
+    float sph = length(qos.xy) - sep * 0.012;
+    
+    // Surface detail on tubes
+    sph -= (1.0 - 0.8 * smoothstep(-10.0, 0.0, qos.y)) * sep * 0.003 * noi(0.15 * pos.xy * float2(0.2, 1.0));
+    
+    return sph;
+}
+
+// Combined SDF Function
+// Returns x: SDF Distance, y: Blend Factor (0=Terrain, 1=Tubes)
+float2 MapTerrain(float3 pos)
+{
+    float h = pos.y - terrainMed(pos.xz);
+    float sph = tubes(pos);
+    
+    float k = 60.0;
+    // Smooth Union / Mix logic
+    float w = clamp(0.5 + 0.5 * (h - sph) / k, 0.0, 1.0);
+    
+    // smin logic: mix(h, sph, w) - k*w*(1.0-w)
+    float finalSDF = lerp(h, sph, w) - k * w * (1.0 - w);
+    
+    return float2(finalSDF, w);
 }
 
 void Stage_Terrain(inout GenerationContext ctx)
 {
-    // 1. Calculate Base Height for the SDF
-    // We keep this to calculate the actual distance 'd' for the current pixel
-    float height = GetHeight(ctx.position.xz);
-    
-    // 2. Vertical Signed Distance (The "Map" function)
-    float d = (ctx.position.y - height) * 0.5;
+    // 1. Evaluate blended SDF
+    float2 res = MapTerrain(ctx.position);
+    float d = res.x;
+    float w = res.y;
 
-    // 3. Tetrahedral Normal Calculation
-    // ---------------------------------------------------------
-    // Define the offset (epsilon). 
-    // In the GLSL example: vec2 e = vec2(-1.0, 1.0) * 0.01;
-    float2 e = float2(-1.0, 1.0) * 0.1; // 0.1 matches your previous 'eps' size
-    
-    // We need to evaluate the SDF at 4 specific corners of a tetrahedron.
-    // The SDF function is: f(p) = (p.y - GetHeight(p.xz)) * 0.5
-    
-    // Corner 1: e.yxx (1, -1, -1)
-    float3 p1 = ctx.position + float3(e.y, e.x, e.x);
-    float v1 = p1.y - GetHeight(p1.xz); // * 0.5 optimization: removed (cancels out)
-    
-    // Corner 2: e.xxy (-1, -1, 1)
-    float3 p2 = ctx.position + float3(e.x, e.x, e.y);
-    float v2 = p2.y - GetHeight(p2.xz);
-    
-    // Corner 3: e.xyx (-1, 1, -1)
-    float3 p3 = ctx.position + float3(e.x, e.y, e.x);
-    float v3 = p3.y - GetHeight(p3.xz);
-    
-    // Corner 4: e.yyy (1, 1, 1)
-    float3 p4 = ctx.position + float3(e.y, e.y, e.y);
-    float v4 = p4.y - GetHeight(p4.xz);
-    
-    // Sum the vectors weighted by the sampled values
-    float3 normal = normalize(
-        float3(e.y, e.x, e.x) * v1 +
-        float3(e.x, e.x, e.y) * v2 +
-        float3(e.x, e.y, e.x) * v3 +
-        float3(e.y, e.y, e.y) * v4
-    );
-    // ---------------------------------------------------------
-
-    // 4. Union with existing SDF
+    // 2. Union with existing SDF
     if (d < ctx.sdf)
     {
         ctx.sdf = d;
-        ctx.gradient = normal;
-        ctx.material = 2; 
+        
+        // 3. Material Assignment
+        // w close to 0 is Terrain, w close to 1 is Tubes.
+        // We assign ID 2 for Terrain, ID 3 for Tubes.
+        ctx.material = (w > 0.5) ? 3 : 2; 
+
+        // 4. Tetrahedral Normal Calculation
+        // Calculate the gradient of the MapTerrain function
+        float2 e = float2(-1.0, 1.0) * 0.1;
+        
+        float v1 = MapTerrain(ctx.position + float3(e.y, e.x, e.x)).x;
+        float v2 = MapTerrain(ctx.position + float3(e.x, e.x, e.y)).x;
+        float v3 = MapTerrain(ctx.position + float3(e.x, e.y, e.x)).x;
+        float v4 = MapTerrain(ctx.position + float3(e.y, e.y, e.y)).x;
+        
+        ctx.gradient = normalize(
+            float3(e.y, e.x, e.x) * v1 +
+            float3(e.x, e.x, e.y) * v2 +
+            float3(e.x, e.y, e.x) * v3 +
+            float3(e.y, e.y, e.y) * v4
+        );
     }
 }
 

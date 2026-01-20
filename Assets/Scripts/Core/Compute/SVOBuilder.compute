@@ -59,6 +59,7 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
         if (level == 1) nextLevelOffset = 9;
         if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
+
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
@@ -77,6 +78,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
     float brickWorldRadius = (float)BRICK_SIZE * scale * 0.87;
+
     float3 brickMin = _ChunkWorldOrigin + ((brickOriginLocal - BRICK_PADDING) * scale);
     float3 brickMax = _ChunkWorldOrigin + ((brickOriginLocal + BRICK_SIZE + BRICK_PADDING) * scale);
 
@@ -118,8 +120,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     }
 
     // [FIX] SORT ACTIVE OBJECTS
-    // The BVH traversal returns objects in spatial order. CSG operations must be deterministic (creation order).
-    // We perform a simple Insertion Sort on the indices. Since N <= 32, this is very fast.
+    // The BVH traversal returns objects in spatial order.
+    // CSG operations must be deterministic (creation order).
+    // We perform a simple Insertion Sort on the indices.
+    // Since N <= 32, this is very fast.
     for (int k = 1; k < activeCount; k++)
     {
         uint key = activeObjects[k];
@@ -133,9 +137,13 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     }
     // [END FIX]
 
-    // [OPTIMIZATION] Early-Out for Terrain
+    // [OPTIMIZATION DISABLED] Early-Out for Terrain
+    // The "Tubes" are floating 3D structures. The heightmap optimization (GetHeight)
+    // assumes a single surface and incorrectly culls the air where tubes reside.
+    // We disable this optimization to ensure 3D structures are generated correctly.
+    
     float worldRadius = 3.0 * scale;
-    if (activeCount == 0)
+    /* if (activeCount == 0)
     {
         // Sample terrain height at brick corners to estimate range
         float2 c1 = brickMin.xz;
@@ -153,7 +161,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         
         // Terrain SDF is approx (y - height) * 0.5
         float boundMargin = worldRadius * 2.0;
-        
+
         // Check if Brick is completely above the surface band (Air)
         bool isFarAir = brickMin.y > (maxH + boundMargin);
         // Check if Brick is completely below the surface band (Deep Solid)
@@ -168,6 +176,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             return;
         }
     }
+    */
 
     // 3. Evaluate SDF at Brick Center
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, activeCount);
@@ -194,7 +203,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
                     GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, activeCount);
-
+                    
                     float sdf = voxelCtx.sdf;
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1;
@@ -258,7 +267,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 void PropagateLOD(uint id : SV_DispatchThreadID)
 {
     if (id >= _TargetLevelCount) return;
-
     uint nodeIndex = _TargetLevelOffset + id;
     SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
 
