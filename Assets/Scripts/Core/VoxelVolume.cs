@@ -36,6 +36,9 @@ namespace VoxelEngine.Core
         public int MaxNodes => _maxNodes;
         public int MaxBricks => _maxBricks;
         public bool IsReady => BufferManager != null;
+        
+        // --- Events ---
+        public event Action OnRegenerationComplete;
 
         private void OnEnable() { VoxelVolumeRegistry.Register(this); }
         private void OnDisable() { VoxelVolumeRegistry.Unregister(this); }
@@ -68,6 +71,9 @@ namespace VoxelEngine.Core
             if (svoCompute == null || !IsReady) return;
             BufferManager.ResetCounters(); 
             SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize);
+            
+            // Notify listeners (e.g. GrassRenderer)
+            OnRegenerationComplete?.Invoke();
         }
 
         public void Save(string filePath, Action<bool> onComplete = null) => VoxelDataSerializer.Save(this, filePath, onComplete);

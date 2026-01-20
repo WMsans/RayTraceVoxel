@@ -11,6 +11,7 @@ GameObject:
   - component: {fileID: 9126307425040577668}
   - component: {fileID: 7605555090304409176}
   - component: {fileID: 4819740143505349971}
+  - component: {fileID: 9210260336194324207}
   m_Layer: 0
   m_Name: SVOVolume
   m_TagString: Untagged
@@ -47,11 +48,20 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VoxelVolume
   svoCompute: {fileID: 7200000, guid: 2857a9a78428a720d8ef270c2fdec704, type: 3}
   resolution: 64
-  maxNodes: 100000
-  maxBricks: 50000
-  nodeCount: 0
-  brickCount: 0
 --- !u!114 &4819740143505349971
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7120167303073674635}
+  m_Enabled: 0
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8badc7886809b3646b31a0ce449f9381, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Serialization.VoxelSaveLoadController
+  defaultSaveName: world_save.vxvol
+--- !u!114 &9210260336194324207
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -60,7 +70,17 @@ MonoBehaviour:
   m_GameObject: {fileID: 7120167303073674635}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 8badc7886809b3646b31a0ce449f9381, type: 3}
+  m_Script: {fileID: 11500000, guid: 6f3690ad8a251144ca0b6a26cf8c6169, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Serialization.VoxelSaveLoadController
-  defaultSaveName: world_save.vxvol
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Rendering.VoxelGrassRenderer
+  grassCompute: {fileID: 7200000, guid: 357defad94c925f408102b522a17d15b, type: 3}
+  grassShader: {fileID: 4800000, guid: ed2effe1310f6a44f99d2428be07f88b, type: 3}
+  maxInstances: 100000
+  targetMaterialId: 2
+  sdfThreshold: 0.5
+  normalYThreshold: 0.5
+  bladeWidth: 0.2
+  bladeHeight: 1
+  windTexture: {fileID: 2800000, guid: 46c15a73b109a40488a19526c57e4d3d, type: 3}
+  baseColor: {r: 0.1, g: 0.3, b: 0.1, a: 1}
+  tipColor: {r: 0.4, g: 0.6, b: 0.2, a: 1}
