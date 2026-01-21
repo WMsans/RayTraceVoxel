@@ -399,20 +399,26 @@ namespace VoxelEngine.Core.Rendering
                 // --- 4. Grass Pass (Rasterization) ---
                 // Grass is drawn AFTER Composite has populated the Depth Buffer.
                 // Grass is drawn BEFORE FXAA so it gets anti-aliased.
-                if (VoxelGrassRenderer.ActiveRenderers.Count > 0)
+                if (VoxelGrassRenderer.ActiveRenderers.Count > 0 || VoxelLeafRenderer.ActiveLeafRenderers.Count > 0)
                 {
-                    using (var builder = renderGraph.AddRasterRenderPass<GrassPassData>("Voxel Grass", out var grassData))
+                    using (var builder = renderGraph.AddRasterRenderPass<GrassPassData>("Voxel Vegetation", out var grassData))
                     {
                         grassData.colorTarget = compositeOutput;
                         grassData.depthTarget = resourceData.activeDepthTexture;
 
                         // Bind targets
                         builder.SetRenderAttachment(grassData.colorTarget, 0, AccessFlags.Write);
-                        builder.SetRenderAttachmentDepth(grassData.depthTarget, AccessFlags.ReadWrite); // Read existing depth, Write grass depth
+                        builder.SetRenderAttachmentDepth(grassData.depthTarget, AccessFlags.ReadWrite);
 
                         builder.SetRenderFunc((GrassPassData gData, RasterGraphContext context) =>
                         {
+                            // Draw Grass
                             foreach (var renderer in VoxelGrassRenderer.ActiveRenderers)
+                            {
+                                renderer.Draw(context.cmd);
+                            }
+                            // Draw Leaves
+                            foreach (var renderer in VoxelLeafRenderer.ActiveLeafRenderers)
                             {
                                 renderer.Draw(context.cmd);
                             }

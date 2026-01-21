@@ -12,6 +12,7 @@ GameObject:
   - component: {fileID: 7605555090304409176}
   - component: {fileID: 4819740143505349971}
   - component: {fileID: 9210260336194324207}
+  - component: {fileID: -4855828778010543098}
   m_Layer: 0
   m_Name: SVOVolume
   m_TagString: Untagged
@@ -88,3 +89,26 @@ MonoBehaviour:
   windStrength: 2
   windFrequency: 0.1
   windDirection: {x: 1, y: 0.5}
+--- !u!114 &-4855828778010543098
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7120167303073674635}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9e4f1ea28eba66146a0b9b4fa5773f6e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Rendering.VoxelLeafRenderer
+  leafCompute: {fileID: 7200000, guid: ac27228066f6cd243b5ceeed3e38dd9d, type: 3}
+  leafShader: {fileID: 4800000, guid: 436a60fc8d9081549b9cb4d2090e2055, type: 3}
+  maxInstances: 50000
+  targetMaterialId: 6
+  sdfThreshold: 0.8
+  leafScale: 20
+  innerColor: {r: 0.05, g: 0.2, b: 0.05, a: 1}
+  outerColor: {r: 0.1, g: 0.4, b: 0.1, a: 1}
+  windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
+  windSpeed: 0.02
+  windStrength: 2
