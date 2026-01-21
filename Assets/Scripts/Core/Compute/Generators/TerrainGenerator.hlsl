@@ -24,13 +24,6 @@ float terrainMed(float2 p)
         t += s * noi(p);
         s *= 0.5 + 0.1 * t;
         
-        // GLSL: p = 0.97 * m2 * p + ...
-        // m2 * p corresponds to:
-        // x' = 1.6*x + 1.2*y
-        // y' = -1.2*x + 1.6*y 
-        // (Wait, GLSL mat2 constructor is column-major: mat2(c1x, c1y, c2x, c2y))
-        // mat2(1.6, -1.2, 1.2, 1.6) -> | 1.6  1.2 |
-        //                              | -1.2 1.6 |
         float2 nextP;
         nextP.x = 1.6 * p.x + 1.2 * p.y;
         nextP.y = -1.2 * p.x + 1.6 * p.y;
@@ -103,8 +96,8 @@ void Stage_Terrain(inout GenerationContext ctx)
         
         // 3. Material Assignment
         // w close to 0 is Terrain, w close to 1 is Tubes.
-        // We assign ID 2 for Terrain, ID 3 for Tubes.
-        ctx.material = (w > 0.5) ? 3 : 2; 
+        // We assign ID 4 for Terrain, ID 3 for Tubes.
+        ctx.material = (w > 0.5) ? 3 : 4; 
 
         // 4. Tetrahedral Normal Calculation
         // Calculate the gradient of the MapTerrain function

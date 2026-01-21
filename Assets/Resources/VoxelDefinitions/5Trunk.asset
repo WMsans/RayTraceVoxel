@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9c9aa08fa05d0a443aaebd24d73e13d1, type: 3}
+  m_Name: 5Trunk
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Data.SolidVoxelDefinition
+  id: 5
+  voxelName: Trunk
+  renderType: 1
+  blockTextures:
+    Albedo: {fileID: 2800000, guid: 77415d98f15c3b74ea33aa6f8027716b, type: 3}
+    Normal: {fileID: 2800000, guid: d1afa2544fc83af48a3bf2b11e7f55be, type: 3}
+    Roughness: {fileID: 2800000, guid: f2a715fb89dade14fa72309c25b2ce7f, type: 3}
+    Metallic: 0
+    AmbientOcclusion: {fileID: 2800000, guid: eb2109e03dfe9b9418f25d0f2f0b92b9, type: 3}
+    TopAlbedo: {fileID: 2800000, guid: 77415d98f15c3b74ea33aa6f8027716b, type: 3}
+    TopNormal: {fileID: 2800000, guid: d1afa2544fc83af48a3bf2b11e7f55be, type: 3}
+    TopRoughness: {fileID: 2800000, guid: f2a715fb89dade14fa72309c25b2ce7f, type: 3}
+    TopMetallic: 0
+    TopAmbientOcclusion: {fileID: 2800000, guid: eb2109e03dfe9b9418f25d0f2f0b92b9, type: 3}
