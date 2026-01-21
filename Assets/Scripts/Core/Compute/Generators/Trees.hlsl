@@ -74,9 +74,12 @@ void Stage_Trees(inout GenerationContext ctx)
                 float3 treeBase = float3(treeXZ.x, terrainH, treeXZ.y);
                 
                 // Tree Dimensions (Variation based on hash)
-                float trunkHeight = 5.0 + h * 2.0; // 5 to 7 units high
-                float trunkWidth = 0.8; 
-                float3 leavesSize = float3(2.5, 2.0, 2.5); // Radius-like dimensions
+                float trunkHeight = 70.0 + h * 30.0;
+                
+                float trunkWidth = 6.0;
+
+                // Note: These are half-extents (radius), so the foliage box is 36x24x36
+                float3 leavesSize = float3(18.0, 12.0, 18.0); 
                 
                 // --- Construct SDF ---
                 float3 p = ctx.position - treeBase;

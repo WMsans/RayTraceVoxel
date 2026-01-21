@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.RenderGraphModule; // [Fix] Required for RasterCommandBuffer
 using VoxelEngine.Core.Data;
+using VoxelEngine.Core.Editing; // Required for VoxelEditManager
 using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Rendering
@@ -45,6 +46,9 @@ namespace VoxelEngine.Core.Rendering
         private Material _grassMaterial;
         private Mesh _grassMesh;
         private Bounds _renderBounds;
+        
+        // --- LOD State ---
+        private float _lodScale = 1.0f;
 
         private void Awake()
         {
@@ -92,6 +96,19 @@ namespace VoxelEngine.Core.Rendering
         {
             if (grassCompute == null || !_volume.IsReady) return;
             
+            // --- 0. Calculate LOD Scale ---
+            // Lower LOD (further chunks) have larger voxels.
+            // We scale the grass up to compensate for the lower density (fewer voxels per area).
+            float currentVoxelSize = _volume.WorldSize / (float)_volume.Resolution;
+            float baseVoxelSize = 1.0f;
+            
+            if (VoxelEditManager.Instance != null) 
+                baseVoxelSize = VoxelEditManager.Instance.voxelSize;
+
+            // Ratio of current voxel size to base size. 
+            // e.g., Base=1.0, Current=2.0 (LOD1) -> Scale=2.0
+            _lodScale = Mathf.Max(1.0f, currentVoxelSize / baseVoxelSize);
+
             // 1. Reset Counter
             _grassAppendBuffer.SetCounterValue(0);
 
@@ -136,7 +153,6 @@ namespace VoxelEngine.Core.Rendering
         }
 
         // --- Render Called by RenderFeature ---
-        // [Fix] Changed parameter from CommandBuffer to RasterCommandBuffer
         public void Draw(RasterCommandBuffer cmd)
         {
             if (_grassMaterial == null || _indirectArgsBuffer == null || !_volume.gameObject.activeInHierarchy) return;
@@ -145,8 +161,10 @@ namespace VoxelEngine.Core.Rendering
             _grassMaterial.SetBuffer("_GrassInstanceBuffer", _grassAppendBuffer);
             _grassMaterial.SetColor("_BaseColor", baseColor);
             _grassMaterial.SetColor("_TipColor", tipColor);
-            _grassMaterial.SetFloat("_BladeWidth", bladeWidth);
-            _grassMaterial.SetFloat("_BladeHeight", bladeHeight);
+            
+            // [LOD Logic] Scale blade dimensions by the LOD scale calculated in OnVolumeRegenerated
+            _grassMaterial.SetFloat("_BladeWidth", bladeWidth * _lodScale);
+            _grassMaterial.SetFloat("_BladeHeight", bladeHeight * _lodScale);
             
             _grassMaterial.SetFloat("_WindSpeed", windSpeed);
             _grassMaterial.SetFloat("_WindStrength", windStrength);

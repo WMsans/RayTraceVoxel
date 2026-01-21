@@ -77,7 +77,7 @@ MonoBehaviour:
   grassShader: {fileID: 4800000, guid: ed2effe1310f6a44f99d2428be07f88b, type: 3}
   maxInstances: 100000
   targetMaterialId: 4
-  sdfThreshold: 1
+  sdfThreshold: 0.5
   normalYThreshold: 0.5
   bladeWidth: 0.5
   bladeHeight: 2
