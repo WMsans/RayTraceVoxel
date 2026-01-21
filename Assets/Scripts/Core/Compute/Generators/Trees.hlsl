@@ -42,14 +42,27 @@ float sdBox(float3 p, float3 b)
 
 // --- Combined Tree Logic (Distance + Analytical Gradient) ---
 
+// Rotates a 2D vector p by angle a
+float2 rotate(float2 p, float a) 
+{
+    float s = sin(a);
+    float c = cos(a);
+    return float2(p.x * c - p.y * s, p.x * s + p.y * c);
+}
+
 // Calculates distance, material, and gradient in a SINGLE PASS
 // This replaces the expensive finite-difference normal calculation.
-void GetTreeData(float3 p, float h, out float dist, out uint mat, out float3 grad)
+void GetTreeData(float3 p, float h, float angle, out float dist, out uint mat, out float3 grad)
 {
+    // Apply Rotation
+    // We rotate the position inverse to the tree rotation
+    float3 pRot = p;
+    pRot.xz = rotate(p.xz, -angle);
+
     // --- 1. Organic Trunk ---
-    float3 pTrunk = p;
+    float3 pTrunk = pRot;
     // Simple bend (cheap)
-    float bend = sin(p.y * 0.05);
+    float bend = sin(pRot.y * 0.05);
     pTrunk.x += bend * 2.0;
     
     // Trunk Dimensions
@@ -70,10 +83,14 @@ void GetTreeData(float3 p, float h, out float dist, out uint mat, out float3 gra
 
     // Approx Trunk Gradient: Horizontal vector away from center + slight up/down tilt for taper
     // This is "good enough" for organic shapes.
-    float3 gTrunk = normalize(float3(pTrunk.x, 0, pTrunk.z)); 
+    // Ensure gradient is calculated in rotated space then rotated back!
+    float3 gTrunkLocal = normalize(float3(pTrunk.x, 0, pTrunk.z)); 
+    // Rotate gradient back to world space
+    float3 gTrunk = gTrunkLocal;
+    gTrunk.xz = rotate(gTrunkLocal.xz, angle);
 
     // --- 2. Leaf Canopy ---
-    float3 pLeaves = p - float3(0, h * 0.85, 0);
+    float3 pLeaves = pRot - float3(0, h * 0.85, 0);
 
     // Cheap Domain Warp (Single call instead of 3)
     // Displaces the lookup point to make the ellipsoid lumpy
@@ -88,12 +105,17 @@ void GetTreeData(float3 p, float h, out float dist, out uint mat, out float3 gra
 
     // Leaf Surface Detail (Single octave)
     // Again, added to distance, ignored for gradient
-    float leafNoise = snoise(p * 0.15) * 1.2;
+    // Use non-rotated p for global noise consistency (optional, but looks better if leaves "swim" slightly through noise space)
+    // Actually, let's use rotated p so noise sticks to the tree
+    float leafNoise = snoise(pRot * 0.15) * 1.2;
     dLeaves += leafNoise;
 
     // Leaf Gradient (Analytical gradient of an ellipsoid)
     // Gradient is p / r^2
-    float3 gLeaves = normalize(pLeavesWarped / (leafSize * leafSize));
+    float3 gLeavesLocal = normalize(pLeavesWarped / (leafSize * leafSize));
+    // Rotate gradient back to world space
+    float3 gLeaves = gLeavesLocal;
+    gLeaves.xz = rotate(gLeavesLocal.xz, angle);
 
     // --- 3. Blending ---
     float blendStrength = 4.0;
@@ -158,11 +180,14 @@ void Stage_Trees(inout GenerationContext ctx)
                 float treeHeight = 65.0 + h * 40.0;
                 if (ctx.position.y < terrainH - 5.0 || ctx.position.y > terrainH + treeHeight + 20.0) continue;
 
+                // Random Rotation (0 to 2*PI)
+                float rotationAngle = Hash2D(cellId + 5.7) * 6.28318;
+
                 // Calculate Tree Data
                 float d;
                 uint mat;
                 float3 g;
-                GetTreeData(ctx.position - treeBase, treeHeight, d, mat, g);
+                GetTreeData(ctx.position - treeBase, treeHeight, rotationAngle, d, mat, g);
                 
                 // Union (Min)
                 if (d < minD)
