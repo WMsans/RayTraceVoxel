@@ -19,6 +19,8 @@ MonoBehaviour:
   - {fileID: 11400000, guid: 9185654d5aef4404b8094515210d0ab0, type: 2}
   - {fileID: 11400000, guid: 2ff0dc5154c29314f8590386f17dab45, type: 2}
   - {fileID: 11400000, guid: eec6781f6e255654c90f5e77b4456778, type: 2}
+  - {fileID: 11400000, guid: 50b063e6b6c420946847b3c2dab99e7a, type: 2}
+  - {fileID: 11400000, guid: d1645c153243eef41b6f635a62d9c0df, type: 2}
   albedoTextureArray: {fileID: 18700000, guid: 1fdfff8d91c325d26ab34376e7baeaf0, type: 2}
   normalTextureArray: {fileID: 18700000, guid: 2ba185b400a1836d4987cfc0bad9781f, type: 2}
   maskTextureArray: {fileID: 18700000, guid: 60ecd5e0bcab6763ca906742e0e923d4, type: 2}
@@ -65,6 +67,24 @@ MonoBehaviour:
     topAlbedoIndex: 2
     topNormalIndex: 2
     topMaskIndex: 2
+    sideMetallic: 0
+    topMetallic: 0
+    renderType: 1
+  - sideAlbedoIndex: 7
+    sideNormalIndex: 7
+    sideMaskIndex: 7
+    topAlbedoIndex: 7
+    topNormalIndex: 7
+    topMaskIndex: 7
+    sideMetallic: 0
+    topMetallic: 0
+    renderType: 1
+  - sideAlbedoIndex: 8
+    sideNormalIndex: 8
+    sideMaskIndex: 8
+    topAlbedoIndex: 8
+    topNormalIndex: 8
+    topMaskIndex: 8
     sideMetallic: 0
     topMetallic: 0
     renderType: 1
