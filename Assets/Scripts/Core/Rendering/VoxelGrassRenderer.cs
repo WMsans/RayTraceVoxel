@@ -25,9 +25,15 @@ namespace VoxelEngine.Core.Rendering
         [Header("Visual Settings")]
         public float bladeWidth = 0.2f;
         public float bladeHeight = 1.0f;
-        public Texture2D windTexture;
         public Color baseColor = new Color(0.1f, 0.3f, 0.1f);
         public Color tipColor = new Color(0.4f, 0.6f, 0.2f);
+
+        [Header("Wind Settings")]
+        public Texture2D windTexture;
+        public float windSpeed = 1.0f;
+        public float windStrength = 0.5f;
+        public float windFrequency = 0.1f;
+        public Vector2 windDirection = new Vector2(1f, 0.5f);
 
         // --- Buffers ---
         private ComputeBuffer _grassAppendBuffer;
@@ -142,6 +148,11 @@ namespace VoxelEngine.Core.Rendering
             _grassMaterial.SetFloat("_BladeWidth", bladeWidth);
             _grassMaterial.SetFloat("_BladeHeight", bladeHeight);
             
+            _grassMaterial.SetFloat("_WindSpeed", windSpeed);
+            _grassMaterial.SetFloat("_WindStrength", windStrength);
+            _grassMaterial.SetFloat("_WindFrequency", windFrequency);
+            _grassMaterial.SetVector("_WindDirection", windDirection);
+
             if (windTexture != null)
                 _grassMaterial.SetTexture("_WindTex", windTexture);
 

@@ -11,6 +11,7 @@ Shader "VoxelEngine/Grass"
         _WindSpeed("Wind Speed", Float) = 1.0
         _WindStrength("Wind Strength", Float) = 0.5
         _WindFrequency("Wind Frequency", Float) = 0.1
+        _WindDirection("Wind Direction", Vector) = (1, 0.5, 0, 0)
 
         [Header(Geometry)]
         _BladeHeight("Blade Height Scale", Float) = 1.0
@@ -58,6 +59,7 @@ Shader "VoxelEngine/Grass"
                 float _WindSpeed;
                 float _WindStrength;
                 float _WindFrequency;
+                float4 _WindDirection;
                 float _BladeHeight;
                 float _BladeWidth;
                 float _Cutoff;
@@ -138,7 +140,7 @@ Shader "VoxelEngine/Grass"
 
                 // 6. Wind Displacement (Vertex Shader)
                 // Sample noise based on world position and time
-                float2 windUV = (instancePos.xz * _WindFrequency) + (_Time.y * _WindSpeed * float2(0.5, 0.2));
+                float2 windUV = (instancePos.xz * _WindFrequency) + (_Time.y * _WindSpeed * _WindDirection.xy);
                 float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
                 
                 // Remap 0..1 to -1..1
@@ -148,8 +150,7 @@ Shader "VoxelEngine/Grass"
                 // Using pow(uv.y, 2) creates a nice curve where the tip bends more than the middle
                 float bendFactor = pow(input.uv.y, 2.0);
                 
-                worldPos.x += windNoise * _WindStrength * bendFactor;
-                worldPos.z += windNoise * _WindStrength * 0.5 * bendFactor; // Less Z movement for variety
+                worldPos.xz += windNoise * _WindStrength * bendFactor * _WindDirection.xy;
                 
                 // Slight Y depression to simulate bending down (simple approximation)
                 worldPos.y -= abs(windNoise) * _WindStrength * 0.2 * bendFactor;

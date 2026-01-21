@@ -81,6 +81,10 @@ MonoBehaviour:
   normalYThreshold: 0.5
   bladeWidth: 0.5
   bladeHeight: 2
-  windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
   baseColor: {r: 0.39607844, g: 0.36862746, b: 0.13333334, a: 1}
   tipColor: {r: 0.39607844, g: 0.42352942, b: 0.13333334, a: 1}
+  windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
+  windSpeed: 0.02
+  windStrength: 2
+  windFrequency: 0.1
+  windDirection: {x: 1, y: 0.5}
