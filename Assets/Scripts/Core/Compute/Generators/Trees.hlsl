@@ -11,14 +11,7 @@
 #define MAT_LOG 5
 #define MAT_LEAVES 6
 
-// --- SDF Primitives ---
-
-// Box
-float sdBox(float3 p, float3 b)
-{
-    float3 q = abs(p) - b;
-    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
-}
+// --- SDF Primitives (Distance Only) ---
 
 // Tapered Cylinder (Cone segment)
 float sdCappedCone(float3 p, float h, float r1, float r2)
@@ -40,73 +33,82 @@ float sdEllipsoid(float3 p, float3 r)
     return k0 * (k0 - 1.0) / k1;
 }
 
-// --- Tree Definition ---
-
-// Calculates distance and material for a single tree instance
-float GetTreeSDF(float3 p, float h, out uint mat)
+// Box (Required for compilation safety, though not strictly used in the optimized tree logic)
+float sdBox(float3 p, float3 b)
 {
-    // --- 1. Organic Trunk ---
-    // Apply slight bend to the trunk using sine waves
-    float3 pTrunk = p;
-    pTrunk.x += sin(p.y * 0.05) * 2.0;
-    pTrunk.z += cos(p.y * 0.04) * 2.0;
-
-    // Dimensions
-    float rBottom = 3.5;
-    float rTop = 1.2;
-    float trunkHeight = h * 0.6; // Trunk is 60% of total height
-
-    // Offset so base is at 0
-    float dTrunk = sdCappedCone(pTrunk - float3(0, trunkHeight * 0.5, 0), trunkHeight * 0.5, rBottom, rTop);
-
-    // Add bark texture (micro-noise)
-    dTrunk += snoise(pTrunk * 0.8) * 0.15;
-
-    // --- 2. Leaf Canopy ---
-    // Position canopy near the top
-    float3 pLeaves = p - float3(0, h * 0.85, 0);
-
-    // Domain Warp: Distort the coordinate space to make the sphere "lumpy"
-    float3 warp = float3(
-        snoise(pLeaves * 0.08),
-        snoise(pLeaves * 0.08 + float3(10,0,0)),
-        snoise(pLeaves * 0.08 + float3(0,0,10))
-    );
-    pLeaves += warp * 4.0; 
-
-    // Ellipsoid Shape
-    float3 leafSize = float3(16.0, 12.0, 16.0) * (h / 70.0);
-    float dLeaves = sdEllipsoid(pLeaves, leafSize);
-
-    // Surface Detail: Roughen the leaves
-    dLeaves += snoise(p * 0.25) * 1.5; // Large lumps
-    dLeaves += snoise(p * 0.8) * 0.5;  // Small detail
-
-    // --- 3. Blending ---
-    // Smoothly blend trunk and leaves
-    float blendStrength = 4.0;
-    float hBlend = clamp(0.5 + 0.5 * (dLeaves - dTrunk) / blendStrength, 0.0, 1.0);
-    float dFinal = lerp(dLeaves, dTrunk, hBlend) - blendStrength * hBlend * (1.0 - hBlend);
-
-    // Material Logic: If closer to trunk shape, use Log, else Leaves
-    // Use a biased comparison to let leaves cover the top branches
-    if (dTrunk < dLeaves + 1.0) mat = MAT_LOG;
-    else mat = MAT_LEAVES;
-
-    return dFinal;
+    float3 q = abs(p) - b;
+    return length(max(q,0.0)) + min(max(q.x,max(q.y,q.z)),0.0);
 }
 
-// Helper: Calculate normal using Finite Difference (expensive but necessary for organic noise)
-float3 GetTreeNormal(float3 p, float h)
+// --- Combined Tree Logic (Distance + Analytical Gradient) ---
+
+// Calculates distance, material, and gradient in a SINGLE PASS
+// This replaces the expensive finite-difference normal calculation.
+void GetTreeData(float3 p, float h, out float dist, out uint mat, out float3 grad)
 {
-    float2 e = float2(1.0, -1.0) * 0.01; // Epsilon
-    uint m; // dummy
-    return normalize(
-        e.xyy * GetTreeSDF(p + e.xyy, h, m) +
-        e.yyx * GetTreeSDF(p + e.yyx, h, m) +
-        e.yxy * GetTreeSDF(p + e.yxy, h, m) +
-        e.xxx * GetTreeSDF(p + e.xxx, h, m)
-    );
+    // --- 1. Organic Trunk ---
+    float3 pTrunk = p;
+    // Simple bend (cheap)
+    float bend = sin(p.y * 0.05);
+    pTrunk.x += bend * 2.0;
+    
+    // Trunk Dimensions
+    float rBottom = 3.5;
+    float rTop = 1.2;
+    float trunkHeight = h * 0.8;
+    float halfTrunkH = trunkHeight * 0.5;
+
+    // Trunk SDF
+    // Note: We use a simplified vertical capsule/cone approximation for the gradient to save cost
+    // instead of the exact derivative of sdCappedCone which is complex.
+    float dTrunk = sdCappedCone(pTrunk - float3(0, halfTrunkH, 0), halfTrunkH, rBottom, rTop);
+    
+    // Cheap Bark Noise (Single octave, low frequency)
+    // We add this to distance but IGNORE it for gradient to keep it cheap and smooth-shaded
+    float barkNoise = snoise(pTrunk * 0.4) * 0.3;
+    dTrunk += barkNoise;
+
+    // Approx Trunk Gradient: Horizontal vector away from center + slight up/down tilt for taper
+    // This is "good enough" for organic shapes.
+    float3 gTrunk = normalize(float3(pTrunk.x, 0, pTrunk.z)); 
+
+    // --- 2. Leaf Canopy ---
+    float3 pLeaves = p - float3(0, h * 0.85, 0);
+
+    // Cheap Domain Warp (Single call instead of 3)
+    // Displaces the lookup point to make the ellipsoid lumpy
+    float warp = snoise(pLeaves * 0.05); 
+    float3 pLeavesWarped = pLeaves + warp * 3.0;
+
+    // Leaf Dimensions
+    float3 leafSize = float3(16.0, 12.0, 16.0) * (h / 70.0);
+    
+    // Leaf SDF
+    float dLeaves = sdEllipsoid(pLeavesWarped, leafSize);
+
+    // Leaf Surface Detail (Single octave)
+    // Again, added to distance, ignored for gradient
+    float leafNoise = snoise(p * 0.15) * 1.2;
+    dLeaves += leafNoise;
+
+    // Leaf Gradient (Analytical gradient of an ellipsoid)
+    // Gradient is p / r^2
+    float3 gLeaves = normalize(pLeavesWarped / (leafSize * leafSize));
+
+    // --- 3. Blending ---
+    float blendStrength = 4.0;
+    // Calculate mix factor hBlend
+    float hBlend = clamp(0.5 + 0.5 * (dLeaves - dTrunk) / blendStrength, 0.0, 1.0);
+    
+    // Blend Distance
+    dist = lerp(dLeaves, dTrunk, hBlend) - blendStrength * hBlend * (1.0 - hBlend);
+    
+    // Blend Gradient (Fast approximation)
+    grad = normalize(lerp(gLeaves, gTrunk, hBlend));
+
+    // Material Logic
+    if (dTrunk < dLeaves + 1.0) mat = MAT_LOG;
+    else mat = MAT_LEAVES;
 }
 
 // Simple deterministic hash
@@ -120,14 +122,13 @@ void Stage_Trees(inout GenerationContext ctx)
     // 1. Grid Traversal
     float2 currentGridId = floor(ctx.position.xz / TREE_GRID_SIZE);
 
-    // Track the closest tree surface found in this search
     float minD = 1e5;
     uint bestMat = 0;
-    float3 bestTreePos = float3(0,0,0);
-    float bestTreeHeight = 0;
+    float3 bestGrad = float3(0,1,0);
     bool foundTree = false;
 
     // Search 3x3 neighbor cells
+    // Optimization: Unroll or keep tight
     for (int y = -1; y <= 1; y++)
     {
         for (int x = -1; x <= 1; x++)
@@ -139,28 +140,36 @@ void Stage_Trees(inout GenerationContext ctx)
             float h = Hash2D(cellId);
             if (h < TREE_CHANCE)
             {
-                // Random position within cell
+                // Tree Parameters
                 float2 offset = (float2(Hash2D(cellId + 1.13), Hash2D(cellId + 3.51)) * 0.6 + 0.2) * TREE_GRID_SIZE;
                 float2 treeXZ = cellId * TREE_GRID_SIZE + offset;
                 
+                // OPTIMIZATION: Bounding Box Check
+                // Max tree height ~105, Max leaf radius ~20
+                // If we are far from this tree's column, SKIP IT.
+                // This saves massive amounts of SDF evaluations.
+                if (abs(ctx.position.x - treeXZ.x) > 25.0 || abs(ctx.position.z - treeXZ.y) > 25.0) continue;
+
                 // Get Terrain Height
                 float terrainH = GetHeight(treeXZ);
                 float3 treeBase = float3(treeXZ.x, terrainH, treeXZ.y);
                 
-                // Tree Parameters
-                float treeHeight = 65.0 + h * 40.0; // Range: 65 - 105
+                // Vertical Bounds Check
+                float treeHeight = 65.0 + h * 40.0;
+                if (ctx.position.y < terrainH - 5.0 || ctx.position.y > terrainH + treeHeight + 20.0) continue;
 
-                // Evaluate Distance
+                // Calculate Tree Data
+                float d;
                 uint mat;
-                float d = GetTreeSDF(ctx.position - treeBase, treeHeight, mat);
+                float3 g;
+                GetTreeData(ctx.position - treeBase, treeHeight, d, mat, g);
                 
                 // Union (Min)
                 if (d < minD)
                 {
                     minD = d;
                     bestMat = mat;
-                    bestTreePos = treeBase;
-                    bestTreeHeight = treeHeight;
+                    bestGrad = g;
                     foundTree = true;
                 }
             }
@@ -172,8 +181,7 @@ void Stage_Trees(inout GenerationContext ctx)
     {
         ctx.sdf = minD;
         ctx.material = bestMat;
-        // Calculate smooth normal for the closest tree
-        ctx.gradient = GetTreeNormal(ctx.position - bestTreePos, bestTreeHeight);
+        ctx.gradient = bestGrad; // Direct assignment, no finite difference!
     }
 }
 
