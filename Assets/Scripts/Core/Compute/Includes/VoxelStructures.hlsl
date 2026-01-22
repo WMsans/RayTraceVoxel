@@ -58,6 +58,8 @@ struct ChunkDef
     uint payloadOffset;
     uint brickOffset;
     float3 padding; 
+    float4x4 worldToLocal;
+    float4x4 localToWorld;
 };
 
 struct SDFObject

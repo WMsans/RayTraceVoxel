@@ -106,8 +106,8 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
     int iter = 0;
     
     float gridSz = 64.0; 
-    float scale = (chunk.boundsMax.x - chunk.boundsMin.x) / gridSz;
-    float pixelSpread = _RaytraceParams.x * scale;
+    // In Local Space (0..64), scale is effectively 1 relative to the coordinate system
+    float pixelSpread = _RaytraceParams.x; 
 
     HitInfo result;
     result.hit = false; result.pos = 0; result.normal = 0; result.matId = 0;
@@ -267,29 +267,55 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                  for (uint k = 0; k < cell.count; k++)
                  {
                      int chunkId = _TLASChunkIndexBuffer[cell.offset + k];
-                     ChunkDef chunk = _ChunkBuffer[chunkId];
+                 ChunkDef chunk = _ChunkBuffer[chunkId];
+                     
+                     // 1. Broad Phase: World Space Intersection (AABB)
                      float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
                      if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > tCurrent - 0.01) 
                      {
-                        float tStartC = max(0.0, tBox.x);
-                        float tEndC = min(closestT, tBox.y);
                         if (tBox.y > tCurrent) 
                         {
-                             float size = chunk.boundsMax.x - chunk.boundsMin.x;
-                             float scale = size / 64.0; 
-                             float3 chunkOrigin = chunk.boundsMin;
-                             float3 rayOriginNode = (rayOrigin - chunkOrigin) / scale;
-                             HitInfo info = TraceSVO(chunk, rayOriginNode, rayDir, tEndC/scale, tStartC/scale);
-                             if (info.hit)
+                             // 2. Transform Ray to Local Space (Object Space)
+                             float3 localOrigin = mul(chunk.worldToLocal, float4(rayOrigin, 1.0)).xyz;
+                             float3 localDir = normalize(mul((float3x3)chunk.worldToLocal, rayDir));
+                             
+                             // 3. Local Space Intersection
+                             // The SVO exists in 0..64 local space (Resolution=64)
+                             float boundsSz = 64.0;
+                             float2 tLocalBox = IntersectBox(localOrigin, localDir, float3(0,0,0), float3(boundsSz, boundsSz, boundsSz));
+                             
+                             if (tLocalBox.x < tLocalBox.y && tLocalBox.y > 0)
                              {
-                                 float3 hitWorld = chunkOrigin + info.pos * scale;
-                                 float dist = length(hitWorld - rayOrigin);
-                                 if (dist < closestT)
+                                 float tStartL = max(0.0, tLocalBox.x);
+                                 float tEndL = tLocalBox.y;
+                                 
+                                 // Trace SVO in Local Space
+                                 HitInfo info = TraceSVO(chunk, localOrigin, localDir, tEndL, tStartL);
+                                 
+                                 if (info.hit)
                                  {
-                                     closestT = dist;
-                                     bestHit = info;
-                                     bestHit.pos = hitWorld; 
-                                     anyHit = true;
+                                     // 4. Transform Hit back to World Space
+                                     float3 hitWorld = mul(chunk.localToWorld, float4(info.pos, 1.0)).xyz;
+                                     float dist = length(hitWorld - rayOrigin);
+                                     
+                                     if (dist < closestT)
+                                     {
+                                         closestT = dist;
+                                         bestHit = info;
+                                         bestHit.pos = hitWorld;
+                                         
+                                         // Transform Normal to World Space
+                                         // Use inverse-transpose of worldToLocal for correct normal transformation with non-uniform scale
+                                         // Note: mul(vec, mat) does row-vector multiply (vec^T * mat). 
+                                         // We want (M^-1)^T * n. 
+                                         // chunk.worldToLocal is M^-1. 
+                                         // mul(n, chunk.worldToLocal) -> n^T * worldToLocal. 
+                                         // This is equivalent to worldToLocal^T * n if we consider column vectors. 
+                                         // Yes, mul(n, M) in Unity/HLSL is equivalent to M^T * n.
+                                         bestHit.normal = normalize(mul(info.normal, (float3x3)chunk.worldToLocal));
+                                         
+                                         anyHit = true;
+                                     }
                                  }
                              }
                         }

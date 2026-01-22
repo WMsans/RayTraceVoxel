@@ -80,5 +80,14 @@ namespace VoxelEngine.Core
         public void Load(string filePath) => VoxelDataSerializer.Load(this, filePath);
         
         private void OnDestroy() { BufferManager?.Dispose(); }
+
+        private void OnDrawGizmosSelected()
+        {
+            if (WorldSize > 0)
+            {
+                Gizmos.color = Color.yellow;
+                Gizmos.DrawWireCube(WorldBounds.center, WorldBounds.size);
+            }
+        }
     }
 }

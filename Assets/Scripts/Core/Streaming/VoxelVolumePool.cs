@@ -18,6 +18,8 @@ namespace VoxelEngine.Core.Streaming
         public uint payloadOffset;
         public uint brickDataOffset; 
         public Vector3 padding; 
+        public Matrix4x4 worldToLocal;
+        public Matrix4x4 localToWorld;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -159,6 +161,8 @@ namespace VoxelEngine.Core.Streaming
                 def.nodeOffset = (uint)vol.BufferManager.NodeOffset;
                 def.payloadOffset = (uint)vol.BufferManager.PayloadOffset;
                 def.brickDataOffset = (uint)vol.BufferManager.BrickDataOffset;
+                def.worldToLocal = vol.transform.worldToLocalMatrix;
+                def.localToWorld = vol.transform.localToWorldMatrix;
                 
                 _chunkData[writeIndex] = def;
                 writeIndex++;
