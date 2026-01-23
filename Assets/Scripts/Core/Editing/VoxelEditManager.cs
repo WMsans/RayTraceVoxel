@@ -5,7 +5,7 @@ using VoxelEngine.Core.Data; // For SVONode constants
 namespace VoxelEngine.Core.Editing
 {
     /// <summary>
-    /// Phase 1: The Sparse Edit Database.
+    /// The Sparse Edit Database.
     /// Manages the persistence of voxel edits (deltas) on the CPU.
     /// Stores edits at the highest resolution (LOD 0) to ensure consistency across LOD levels.
     /// </summary>
@@ -20,6 +20,36 @@ namespace VoxelEngine.Core.Editing
         private Dictionary<Vector3Int, uint[]> _sparseDatabase = new Dictionary<Vector3Int, uint[]>();
 
         public int EditCount => _sparseDatabase.Count;
+
+        public struct EditData
+        {
+            public Vector3Int Coordinate;
+            public uint[] VoxelData;
+        }
+
+        /// <summary>
+        /// Retrieves all edits that intersect with the given world bounds.
+        /// </summary>
+        /// <param name="bounds">The world bounds to query.</param>
+        /// <returns>A list of EditData containing the coordinate and voxel data.</returns>
+        public List<EditData> GetEdits(Bounds bounds)
+        {
+            var results = new List<EditData>();
+            float brickWorldSize = SVONode.BRICK_SIZE * voxelSize;
+            Vector3 brickSizeVec = Vector3.one * brickWorldSize;
+
+            foreach (var kvp in _sparseDatabase)
+            {
+                Vector3 brickOrigin = new Vector3(kvp.Key.x, kvp.Key.y, kvp.Key.z) * brickWorldSize;
+                Bounds brickBounds = new Bounds(brickOrigin + (brickSizeVec * 0.5f), brickSizeVec);
+
+                if (bounds.Intersects(brickBounds))
+                {
+                    results.Add(new EditData { Coordinate = kvp.Key, VoxelData = kvp.Value });
+                }
+            }
+            return results;
+        }
 
         /// <summary>
         /// Registers a delta (edit) for a specific brick.

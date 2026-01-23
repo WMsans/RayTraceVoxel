@@ -4,7 +4,7 @@ namespace VoxelEngine.Core.Data
 {
     /// <summary>
     /// GPU-compatible struct for a single grass instance.
-    /// Phase 1 Output.
+    /// Output.
     /// </summary>
     public struct GrassInstance
     {

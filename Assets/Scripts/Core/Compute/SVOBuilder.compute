@@ -18,6 +18,17 @@ StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
 StructuredBuffer<int> _SDFObjectIndexBuffer;
 // _SDFObjectBuffer is defined in GeneratorPipeline.hlsl
 
+// --- Edit Buffers ---
+struct EditInfo {
+    int3 globalGridPos;
+    int dataIndex;
+};
+StructuredBuffer<EditInfo> _EditInfoBuffer;
+StructuredBuffer<uint> _EditVoxelBuffer;
+int _EditCount;
+float _GlobalVoxelSize;
+int _GlobalBrickSize;
+
 // --- Global Uniforms ---
 uint _GridSize;
 float3 _ChunkWorldOrigin;
@@ -30,6 +41,48 @@ int _NumDynamicObjects;
 // Mipmapping Uniforms
 uint _TargetLevelOffset;
 uint _TargetLevelCount;
+
+void ApplyEdits(inout GenerationContext ctx, float3 pos)
+{
+    if (_EditCount == 0) return;
+    
+    // Global Brick Coordinate (LOD 0)
+    float globalBrickSizeWorld = (float)_GlobalBrickSize * _GlobalVoxelSize; 
+    // Protect against div/0 if uniforms not set
+    if (globalBrickSizeWorld <= 0.001) return;
+
+    int3 globalGridPos = floor(pos / globalBrickSizeWorld);
+
+    // Naive Search (Optimizable)
+    for (int i = 0; i < _EditCount; i++)
+    {
+        EditInfo info = _EditInfoBuffer[i];
+        if (all(info.globalGridPos == globalGridPos))
+        {
+             float3 brickOrigin = (float3)globalGridPos * globalBrickSizeWorld;
+             float3 localPos = pos - brickOrigin; 
+             
+             // Map localPos to Voxel Index
+             int3 idx = floor(localPos / _GlobalVoxelSize) + int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+             idx = clamp(idx, 0, BRICK_STORAGE_SIZE - 1);
+             
+             uint flatIdx = info.dataIndex + (idx.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + idx.y * BRICK_STORAGE_SIZE + idx.x);
+             uint packedData = _EditVoxelBuffer[flatIdx];
+             
+             float e_sdf;
+             float3 e_norm;
+             uint e_mat;
+             UnpackVoxelData(packedData, e_sdf, e_norm, e_mat);
+             
+             // OVERWRITE
+             ctx.sdf = e_sdf;
+             ctx.gradient = e_norm;
+             ctx.material = e_mat;
+             
+             break;
+        }
+    }
+}
 
 [numthreads(64, 1, 1)]
 void InitDenseStructure(uint id : SV_DispatchThreadID)
@@ -143,43 +196,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     // We disable this optimization to ensure 3D structures are generated correctly.
     
     float worldRadius = 3.0 * scale;
-    /* if (activeCount == 0)
-    {
-        // Sample terrain height at brick corners to estimate range
-        float2 c1 = brickMin.xz;
-        float2 c2 = float2(brickMax.x, brickMin.z);
-        float2 c3 = float2(brickMin.x, brickMax.z);
-        float2 c4 = brickMax.xz;
-        
-        float h1 = GetHeight(c1);
-        float h2 = GetHeight(c2);
-        float h3 = GetHeight(c3);
-        float h4 = GetHeight(c4);
-        
-        float minH = min(min(h1, h2), min(h3, h4));
-        float maxH = max(max(h1, h2), max(h3, h4));
-        
-        // Terrain SDF is approx (y - height) * 0.5
-        float boundMargin = worldRadius * 2.0;
-
-        // Check if Brick is completely above the surface band (Air)
-        bool isFarAir = brickMin.y > (maxH + boundMargin);
-        // Check if Brick is completely below the surface band (Deep Solid)
-        bool isDeepSolid = brickMax.y < (minH - boundMargin);
-
-        if (isFarAir || isDeepSolid)
-        {
-             // Write Empty Node and Early Exit
-            uint nodeIndex = GetNodeIndex(4, id);
-            _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
-            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
-            return;
-        }
-    }
-    */
 
     // 3. Evaluate SDF at Brick Center
-    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, activeCount);
+    // Phase 3: Terrain -> Edits -> Dynamic SDF
+    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0); // 0 objects
+    ApplyEdits(centerCtx, brickCenterWorld);
+    ApplyDynamicObjects(centerCtx, brickCenterWorld, activeObjects, activeCount);
 
     if (centerCtx.sdf < worldRadius)
     {
@@ -202,7 +224,10 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
-                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, activeCount);
+                    // Phase 3: Per-Voxel Logic
+                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    ApplyEdits(voxelCtx, voxelPosWorld);
+                    ApplyDynamicObjects(voxelCtx, voxelPosWorld, activeObjects, activeCount);
                     
                     float sdf = voxelCtx.sdf;
                     uint mat = voxelCtx.material;
@@ -262,6 +287,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
     }
 }
+
 
 [numthreads(64, 1, 1)]
 void PropagateLOD(uint id : SV_DispatchThreadID)
