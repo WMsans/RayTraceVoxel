@@ -14,6 +14,7 @@ namespace VoxelEngine.Core.Editing
         public float brushRadius = 2.0f;
         public int brushMaterial = 1;
         public float editRate = 0.1f; 
+        public BrushOp editMode = BrushOp.Add;
 
         private InputSystem_Actions _input;
         private Vector3 _currentHitPoint;
@@ -57,7 +58,7 @@ namespace VoxelEngine.Core.Editing
             {
                 if (Time.time - _lastEditTime > editRate && _hasHit)
                 {
-                    ApplyBrush(BrushOp.Add);
+                    ApplyBrush(editMode);
                     _lastEditTime = Time.time;
                 }
             }

@@ -520,7 +520,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 587925448}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 6817be917d5e18d43840ce79693d2acf, type: 3}
   m_Name: 
@@ -529,6 +529,7 @@ MonoBehaviour:
   brushRadius: 4
   brushMaterial: 1
   editRate: 0.1
+  editMode: 0
 --- !u!114 &587925454
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -536,7 +537,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 587925448}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 31779f8adefe3050a8de4175b16e3aea, type: 3}
   m_Name: 
