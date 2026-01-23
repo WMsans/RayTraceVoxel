@@ -52,22 +52,36 @@ public class Phase3Tester : MonoBehaviour
         // 2. Get the Brick Coordinate (Using your Manager's helper)
         Vector3Int brickCoord = VoxelEditManager.Instance.GetBrickCoordinate(worldPos);
         
-        Debug.Log($"[Test] Digging hole at World: {worldPos}, BrickCoord: {brickCoord}");
+        Debug.Log($"[Test] Generating Sphere at World: {worldPos}, BrickCoord: {brickCoord}");
 
-        // 3. Create "Air" Data
-        // 216 uints (6x6x6). SDF > 0 means air. Material 0 means empty.
-        uint[] airData = new uint[216];
-        for (int i = 0; i < airData.Length; i++)
+        // 3. Create Sphere Data (Material 1)
+        uint[] voxelData = new uint[216];
+        int size = 6;
+        Vector3 center = new Vector3(2.5f, 2.5f, 2.5f);
+        float radius = 1.5f;
+
+        for (int z = 0; z < size; z++)
         {
-            // PackVoxelData (From your logic: float sdf, float3 normal, uint mat)
-            // SDF = 1.0 (Air), Normal = Up, Mat = 0
-            // You'll need to replicate your packing logic here or expose a helper.
-            // Assuming 16-bit float SDF, standard packing:
-            airData[i] = PackAirVoxel(); 
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    int index = z * size * size + y * size + x;
+                    Vector3 pos = new Vector3(x, y, z);
+                    
+                    float dist = Vector3.Distance(pos, center);
+                    float sdf = dist - radius;
+                    
+                    Vector3 normal = (pos - center).normalized;
+                    if (normal == Vector3.zero) normal = Vector3.up;
+
+                    voxelData[index] = PackVoxelData(sdf, normal, 1);
+                }
+            }
         }
 
         // 4. Register Edit
-        VoxelEditManager.Instance.RegisterEdit(brickCoord, airData);
+        VoxelEditManager.Instance.RegisterEdit(brickCoord, voxelData);
 
         // 5. Force Re-generation (Quick & Dirty method: Clear chunks)
         // ideally you call WorldManager.Instance.ReloadChunk(chunkCoord);
@@ -85,20 +99,42 @@ public class Phase3Tester : MonoBehaviour
     }
 
     // --- Helper to replicate your shader packing ---
-    uint PackAirVoxel()
+    uint PackVoxelData(float sdf, Vector3 normal, uint materialID)
     {
-        // This must match VoxelStructures.hlsl PackVoxelData
-        // Example approximation:
-        float sdf = 1.0f; // Positive = Air
-        uint material = 0; 
-        
-        // Assuming standard layout (this is pseudo-code based on common voxel packing)
-        // You likely have a C# helper for this in VoxelData.cs
-        // If not, just return a value you KNOW is air (e.g. 0xFFFFFFFF if that's empty)
-        // But based on your shader: 
-        // uint packedData = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
-        
-        // For testing, try to find a helper in your project, or use:
-        return 0; // If 0 is treated as "Default Empty" by your Unpack logic
+        // 1. Material (8 bits)
+        uint mat = materialID & 0xFF;
+
+        // 2. SDF (8 bits SNORM) -> Range +/- 4.0
+        float normalizedSDF = Mathf.Clamp(sdf / 4.0f, -1.0f, 1.0f);
+        uint sdfInt = (uint)((normalizedSDF * 0.5f + 0.5f) * 255.0f);
+
+        // 3. Normal (16 bits)
+        uint norm = PackNormalOct(normal);
+
+        // Layout: [Normal 16] [SDF 8] [Mat 8]
+        return mat | (sdfInt << 8) | (norm << 16);
+    }
+
+    uint PackNormalOct(Vector3 n)
+    {
+        float sum = Mathf.Abs(n.x) + Mathf.Abs(n.y) + Mathf.Abs(n.z);
+        if (sum < 1e-5f) return 0;
+        n /= sum;
+
+        float x = n.x;
+        float y = n.y;
+
+        if (n.z < 0)
+        {
+            float tX = (1.0f - Mathf.Abs(y)) * Mathf.Sign(x);
+            float tY = (1.0f - Mathf.Abs(x)) * Mathf.Sign(y);
+            x = tX;
+            y = tY;
+        }
+
+        uint packedX = (uint)(Mathf.Clamp01(x * 0.5f + 0.5f) * 255.0f);
+        uint packedY = (uint)(Mathf.Clamp01(y * 0.5f + 0.5f) * 255.0f);
+
+        return packedX | (packedY << 8);
     }
 }
