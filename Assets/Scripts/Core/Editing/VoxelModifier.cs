@@ -161,9 +161,25 @@ namespace VoxelEngine.Core.Editing
                             }
                         }
                     }
-                    Debug.Log($"[VoxelModifier] Captured {rangeX}x{rangeY}x{rangeZ} bricks. First value: {rawData[0]}");
+                    Debug.Log($"[VoxelModifier] Captured {rangeX}x{rangeY}x{rangeZ} bricks. First value: " + LogPackedVoxel(rawData[0]));
                 }
             });
+        }
+        string LogPackedVoxel(uint data)
+        {
+            // 1. Extract Material (Bottom 8 bits)
+            uint materialId = data & 0xFF;
+
+            // 2. Extract SDF (Next 8 bits)
+            uint sdfInt = (data >> 8) & 0xFF;
+            float normalizedSDF = (sdfInt / 255.0f) * 2.0f - 1.0f;
+            float sdf = normalizedSDF * 4.0f; // MAX_SDF_RANGE
+
+            // 3. Extract Normal (Top 16 bits)
+            // (Simplification for debug only - full unpacking requires the Octahedral math)
+            uint packedNormal = (data >> 16) & 0xFFFF;
+
+            return $"[Unpack] Mat: {materialId}, SDF: {sdf:F2}, PackedNormal: {packedNormal:X4}";
         }
     }
 }
