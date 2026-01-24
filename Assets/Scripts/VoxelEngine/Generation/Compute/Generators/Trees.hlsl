@@ -1,8 +1,8 @@
 #ifndef TREES_GEN
 #define TREES_GEN
 
-#include "../Includes/GenerationContext.hlsl"
-#include "../Includes/Noise.hlsl" 
+#include "../../../Shared/Shaders/Includes/GenerationContext.hlsl"
+#include "../../../Shared/Shaders/Includes/Noise.hlsl"
 #include "TerrainGenerator.hlsl"
 
 // --- Constants ---

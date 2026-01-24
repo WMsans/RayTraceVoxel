@@ -1,7 +1,7 @@
 #ifndef TERRAIN_GEN
 #define TERRAIN_GEN
 
-#include "../Includes/GenerationContext.hlsl"
+#include "../../../Shared/Shaders/Includes/GenerationContext.hlsl"
 
 // --- Adapted Constants and Noise Functions ---
 

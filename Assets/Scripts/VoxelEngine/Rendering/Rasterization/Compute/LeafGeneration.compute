@@ -1,6 +1,6 @@
 #pragma kernel GenerateLeaves
 
-#include "Includes/VoxelStructures.hlsl"
+#include "../../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
 // --- Inputs ---
 StructuredBuffer<SVONode> _NodeBuffer;

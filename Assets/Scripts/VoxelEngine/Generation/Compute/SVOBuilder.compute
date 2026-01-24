@@ -2,7 +2,7 @@
 #pragma kernel BuildBricks
 #pragma kernel PropagateLOD 
 
-#include "./Includes/VoxelStructures.hlsl"
+#include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 #include "./GeneratorPipeline.hlsl"
 
 // --- Global Buffers ---

@@ -1,7 +1,7 @@
 #ifndef SINE_FLOOR_GEN
 #define SINE_FLOOR_GEN
 
-#include "../Includes/GenerationContext.hlsl"
+#include "../../../Shared/Shaders/Includes/GenerationContext.hlsl"
 
 void Stage_SineFloor(inout GenerationContext ctx)
 {

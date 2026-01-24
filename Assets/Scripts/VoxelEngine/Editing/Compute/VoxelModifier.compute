@@ -4,7 +4,7 @@
 #pragma kernel EditVoxelsCube
 #pragma kernel ExtractBricks
 
-#include "./Includes/VoxelStructures.hlsl"
+#include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
 // --- Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;

@@ -1,7 +1,7 @@
 #ifndef GENERATOR_PIPELINE_H
 #define GENERATOR_PIPELINE_H
 
-#include "./Includes/GenerationContext.hlsl"
+#include "../../Shared/Shaders/Includes/GenerationContext.hlsl"
 #include "./Generators/TerrainGenerator.hlsl"
 #include "./Generators/Spheres.hlsl"
 #include "./Generators/SineFloor.hlsl"

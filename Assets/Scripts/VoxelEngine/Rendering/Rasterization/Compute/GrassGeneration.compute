@@ -1,6 +1,6 @@
 #pragma kernel GenerateGrass
 
-#include "Includes/VoxelStructures.hlsl"
+#include "../../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
 // --- Inputs ---
 // We bind the Volume's data buffers

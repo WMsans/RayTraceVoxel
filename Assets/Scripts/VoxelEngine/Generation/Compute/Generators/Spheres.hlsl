@@ -1,7 +1,7 @@
 #ifndef SPHERES_GEN
 #define SPHERES_GEN
 
-#include "../Includes/GenerationContext.hlsl"
+#include "../../../Shared/Shaders/Includes/GenerationContext.hlsl"
 
 void Stage_Spheres(inout GenerationContext ctx)
 {
