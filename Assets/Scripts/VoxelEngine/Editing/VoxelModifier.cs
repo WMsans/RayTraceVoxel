@@ -161,7 +161,6 @@ namespace VoxelEngine.Core.Editing
                             }
                         }
                     }
-                    Debug.Log($"[VoxelModifier] Captured {rangeX}x{rangeY}x{rangeZ} bricks. First value: " + LogPackedVoxel(rawData[0]));
                 }
             });
         }

@@ -94,7 +94,7 @@ void ApplyEdits(inout GenerationContext ctx, float3 pos, float voxelSize)
     }
     else
     {
-        // --- Phase 4: Downsampling Strategy ---
+        // --- Downsampling Strategy ---
         // When generating low-LOD chunks (voxelSize > editVoxelSize),
         // we must average the high-res edits to prevent aliasing/disappearing edits.
         
@@ -269,7 +269,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float worldRadius = 3.0 * scale;
 
     // 3. Evaluate SDF at Brick Center
-    // Phase 3: Terrain -> Edits -> Dynamic SDF
+    // Terrain -> Edits -> Dynamic SDF
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0); // 0 objects
     ApplyEdits(centerCtx, brickCenterWorld, scale);
     ApplyDynamicObjects(centerCtx, brickCenterWorld, activeObjects, activeCount);
@@ -295,7 +295,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
-                    // Phase 3: Per-Voxel Logic
+                    // Per-Voxel Logic
                     GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
                     ApplyEdits(voxelCtx, voxelPosWorld, scale);
                     ApplyDynamicObjects(voxelCtx, voxelPosWorld, activeObjects, activeCount);

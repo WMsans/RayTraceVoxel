@@ -50,7 +50,7 @@ namespace VoxelEngine.Core.Generators
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
             shader.SetFloat("_ChunkWorldSize", chunkSize);
 
-            // --- Phase 3: Prepare Edits ---
+            // --- Prepare Edits ---
             var editManager = VoxelEditManager.Instance;
             GraphicsBuffer editInfoBuffer = null;
             GraphicsBuffer editVoxelBuffer = null;
