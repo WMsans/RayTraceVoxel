@@ -57,8 +57,7 @@ namespace VoxelEngine.Core.Editing
         /// </summary>
         /// <param name="coord">The global coordinate of the brick (ChunkOrigin / BrickSize).</param>
         /// <param name="data">The 216 integers representing the packed voxels in the brick.</param>
-        /// <param name="isDestructive">If true, triggers connectivity analysis to detect floating islands.</param>
-        public void RegisterEdit(Vector3Int coord, uint[] data, bool isDestructive = false)
+        public void RegisterEdit(Vector3Int coord, uint[] data)
         {
             if (data == null || data.Length != SVONode.BRICK_VOXEL_COUNT)
             {
@@ -75,32 +74,6 @@ namespace VoxelEngine.Core.Editing
             else
             {
                 _sparseDatabase.Add(coord, (uint[])data.Clone());
-            }
-
-            // Teardown Phase 2: Connectivity Analysis
-            if (isDestructive && VoxelEngine.Core.Analysis.VoxelConnectivityManager.Instance != null)
-            {
-                // Calculate world origin of the brick for debug visualization
-                float brickWorldSize = SVONode.BRICK_SIZE * voxelSize;
-                Vector3 brickOrigin = new Vector3(coord.x, coord.y, coord.z) * brickWorldSize;
-                
-                VoxelEngine.Core.Analysis.VoxelConnectivityManager.Instance.LastAnalyzedWorldOrigin = brickOrigin;
-
-                // We analyze the single brick that was modified.
-                // In a full system, we might need to analyze neighbors if the cut spans boundaries.
-                // For this prototype step, we analyze the brick.
-                VoxelEngine.Core.Analysis.VoxelConnectivityManager.Instance.AnalyzeConnectivity(
-                    data, 
-                    new Vector3Int(6, 6, 6), 
-                    (floatingIndices) => 
-                    {
-                        if (floatingIndices.Length > 0)
-                        {
-                            Debug.Log($"[Teardown] Detected {floatingIndices.Length} floating voxels in brick {coord}.");
-                            // Phase 3 will handle physics instantiation here.
-                        }
-                    }
-                );
             }
         }
 

@@ -116,7 +116,6 @@ namespace VoxelEngine.Core.Editing
             // C. Request Async Readback
             // Capture necessary variables for the callback
             Vector3 worldOrigin = vol.WorldOrigin;
-            bool isDestructive = (brush.op == 1); // 1 = Subtract
             
             AsyncGPUReadback.Request(readbackBuffer, (request) =>
             {
@@ -156,13 +155,13 @@ namespace VoxelEngine.Core.Editing
                                 cursor += SVONode.BRICK_VOXEL_COUNT;
 
                                 // 3. Store in Database
-                                VoxelEditManager.Instance.RegisterEdit(globalCoord, brickData, isDestructive);
+                                VoxelEditManager.Instance.RegisterEdit(globalCoord, brickData);
                                 
                                 // Note: RegisterEdit effectively marks it as dirty in the database.
                             }
                         }
                     }
-                    // Debug.Log($"[VoxelModifier] Captured {rangeX}x{rangeY}x{rangeZ} bricks. First value: " + LogPackedVoxel(rawData[0]));
+                    Debug.Log($"[VoxelModifier] Captured {rangeX}x{rangeY}x{rangeZ} bricks. First value: " + LogPackedVoxel(rawData[0]));
                 }
             });
         }
