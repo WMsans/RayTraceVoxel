@@ -18,7 +18,7 @@ namespace VoxelEngine.Core
         private int _maxNodes;
         private int _maxBricks;
         
-        public Vector3 WorldOrigin { get; private set; }
+        public Vector3 WorldOrigin => transform.position;
         public float WorldSize { get; private set; }
         public Bounds WorldBounds => new Bounds(WorldOrigin + Vector3.one * WorldSize * 0.5f, Vector3.one * WorldSize);
 
@@ -57,7 +57,6 @@ namespace VoxelEngine.Core
 
         public void OnPullFromPool(Vector3 worldOrigin, float size)
         {
-            WorldOrigin = worldOrigin;
             WorldSize = size;
             BufferManager.ResetCounters();
             this.gameObject.SetActive(true);
