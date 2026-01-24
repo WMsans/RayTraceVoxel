@@ -13,14 +13,15 @@ namespace VoxelEngine.Core.Editing
         public ComputeShader voxelModifierShader;
         public float brushRadius = 2.0f;
         public int brushMaterial = 1;
-        public float editRate = 0.1f; // Seconds between edits
+        public float editRate = 0.1f; 
+        public BrushOp editMode = BrushOp.Add;
 
         private InputSystem_Actions _input;
         private Vector3 _currentHitPoint;
         private bool _hasHit;
         private float _lastEditTime;
 
-        // Async Request
+        // Async Request for Raycast Hit
         private AsyncGPUReadbackRequest _readbackRequest;
         private bool _readbackPending;
 
@@ -41,23 +42,23 @@ namespace VoxelEngine.Core.Editing
 
         private void Update()
         {
-            // 1. Update Mouse Position for Raytracer
+            // Sync Mouse Position for Raytracer
             Vector2 mousePos = Mouse.current.position.ReadValue();
             VoxelRaytracerFeature.MousePosition = mousePos;
 
-            // 2. Request Readback of Hit Data
+            // Request Readback of Hit Data from Raytracer
             if (!_readbackPending && VoxelRaytracerFeature.RaycastHitBuffer != null)
             {
                 _readbackRequest = AsyncGPUReadback.Request(VoxelRaytracerFeature.RaycastHitBuffer, OnReadbackComplete);
                 _readbackPending = true;
             }
 
-            // 3. Handle Input
+            // Handle Input
             if (_input.Player.Attack.IsPressed())
             {
                 if (Time.time - _lastEditTime > editRate && _hasHit)
                 {
-                    ApplyBrush(BrushOp.Add); // Or Subtract based on modifier key
+                    ApplyBrush(editMode);
                     _lastEditTime = Time.time;
                 }
             }
@@ -69,7 +70,7 @@ namespace VoxelEngine.Core.Editing
             if (request.hasError) return;
 
             var data = request.GetData<Vector4>();
-            Vector4 hitData = data[0]; // [x, y, z, hitFlag]
+            Vector4 hitData = data[0]; 
             
             if (hitData.w > 0.5f)
             {
@@ -85,8 +86,11 @@ namespace VoxelEngine.Core.Editing
         private void ApplyBrush(BrushOp op)
         {
             if (voxelModifierShader == null) return;
+            if (VoxelEditManager.Instance == null)
+            {
+                Debug.LogWarning("VoxelEditManager is missing. Edits will not be saved.");
+            }
 
-            // Define Brush
             VoxelBrush brush = new VoxelBrush
             {
                 position = _currentHitPoint,
@@ -96,8 +100,6 @@ namespace VoxelEngine.Core.Editing
                 op = (int)op
             };
             brush.bounds = Vector3.one * brushRadius * 2;
-
-            // Find Intersecting Volumes
             Bounds brushBounds = new Bounds(brush.position, brush.bounds);
             
             foreach (var volume in VoxelVolumeRegistry.Volumes)
@@ -105,12 +107,8 @@ namespace VoxelEngine.Core.Editing
                 if (!volume.gameObject.activeInHierarchy) continue;
                 if (volume.WorldBounds.Intersects(brushBounds))
                 {
-                    // Convert World Brush to Local Volume Space if needed
-                    // For now, VoxelModifier assumes World Space or matches Volume Space
-                    // We pass the raw brush.
-                    
                     VoxelModifier modifier = new VoxelModifier(voxelModifierShader, volume);
-                    // VoxelModifier now handles the World-to-Local conversion internally.
+                    // This call now triggers the GPU edit AND the async readback
                     modifier.Apply(brush, volume.Resolution);
                 }
             }

@@ -2,6 +2,7 @@
 #pragma kernel EditVoxelsSphere
 #pragma kernel AllocateNodesCube
 #pragma kernel EditVoxelsCube
+#pragma kernel ExtractBricks
 
 #include "./Includes/VoxelStructures.hlsl"
 
@@ -10,6 +11,10 @@ RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<uint> _BrickDataBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
+
+// Stores flattened voxel data for the requested brick range.
+// Size = (RangeX * RangeY * RangeZ) * 216
+RWStructuredBuffer<uint> _ReadbackBuffer; 
 
 // --- Uniforms ---
 int3 _MinBrickIndex;
@@ -22,20 +27,18 @@ int _NodeOffset;
 int _PayloadOffset;
 int _BrickOffset;
 
-float3 _BrushPosition; // In Voxel Coordinates
-float3 _BrushBounds;   // In Voxel Coordinates
-float _BrushRadius;    // In Voxel Coordinates
+float3 _BrushPosition; 
+float3 _BrushBounds;   
+float _BrushRadius;    
 int _BrushMaterialId;
-int _BrushOp; // 0=Add, 1=Subtract, 2=Paint
+int _BrushOp; 
 float _Smoothness;
 
 // --- Helpers ---
-// Simple traversal to find leaf node index for a grid position
-// Returns -1 if not found or not leaf
 int GetLeafNodeIndex(int3 gridPos)
 {
     uint level = 4;
-    uint index = GetNodeIndex(level, (uint3)gridPos); // From VoxelStructures.hlsl
+    uint index = GetNodeIndex(level, (uint3)gridPos); 
     return index;
 }
 
@@ -179,4 +182,66 @@ void AllocateNodesCube(uint3 id : SV_DispatchThreadID)
 void EditVoxelsCube(uint3 id : SV_DispatchThreadID) 
 {
     // TODO: Cube logic would go here
+}
+
+[numthreads(4, 4, 4)]
+void ExtractBricks(uint3 id : SV_DispatchThreadID)
+{
+    // id corresponds to the offset within the dispatch range (0..Range-1)
+    int3 brickIdx = _MinBrickIndex + (int3)id;
+    
+    // Bounds check against the requested range
+    if (any(brickIdx > _MaxBrickIndex)) return;
+
+    // Calculate Linear Write Index for the Readback Buffer
+    // We assume the C# side reads the data in the same Z->Y->X order
+    int3 range = (_MaxBrickIndex - _MinBrickIndex) + 1;
+    
+    // Safety check for dispatch over-run
+    if (any(id >= (uint3)range)) return;
+
+    uint brickLinearIdx = id.z * (range.x * range.y) + id.y * range.x + id.x;
+    uint writeStart = brickLinearIdx * BRICK_VOXEL_COUNT; // 216 voxels per brick
+
+    // 1. Resolve SVO Node
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+    
+    uint payloadIdx, matID;
+    UnpackNode(node, payloadIdx, matID);
+
+    // 2. Check for Empty Node
+    if (payloadIdx == 0)
+    {
+        // If the node is empty, we must write "Air" to the database
+        // so the edit manager knows this region is empty (or cleared).
+        // Air = SDF Max Range, Normal Up, Material 0
+        uint packedAir = PackVoxelData(MAX_SDF_RANGE, float3(0, 1, 0), 0);
+        
+        for (uint i = 0; i < BRICK_VOXEL_COUNT; i++)
+        {
+            _ReadbackBuffer[writeStart + i] = packedAir;
+        }
+        return;
+    }
+
+    // 3. Read Existing Brick Data
+    VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
+    uint brickPtr = payload.brickDataIndex;
+
+    // Iterate 6x6x6
+    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
+    {
+        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++)
+        {
+            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
+            {
+                uint voxelIdx = _BrickOffset + brickPtr + (z * 36) + (y * 6) + x;
+                uint data = _BrickDataBuffer[voxelIdx];
+                
+                // Write to linear readback buffer
+                _ReadbackBuffer[writeStart + (z * 36) + (y * 6) + x] = data;
+            }
+        }
+    }
 }

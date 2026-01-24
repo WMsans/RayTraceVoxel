@@ -50,12 +50,59 @@ namespace VoxelEngine.Core.Generators
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
             shader.SetFloat("_ChunkWorldSize", chunkSize);
 
+            // --- Phase 3: Prepare Edits ---
+            var editManager = VoxelEditManager.Instance;
+            GraphicsBuffer editInfoBuffer = null;
+            GraphicsBuffer editVoxelBuffer = null;
+            int editCount = 0;
+
+            if (editManager != null)
+            {
+                Bounds chunkBounds = new Bounds(chunkOrigin + Vector3.one * (chunkSize * 0.5f), Vector3.one * chunkSize);
+                var edits = editManager.GetEdits(chunkBounds);
+                editCount = edits.Count;
+
+                if (editCount > 0)
+                {
+                    editInfoBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, editCount, 16); // int4 (x,y,z, dataIdx)
+                    editVoxelBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, editCount * 216, 4); // uint
+
+                    var infoArray = new int[editCount * 4];
+                    var voxelArray = new uint[editCount * 216];
+
+                    for (int i = 0; i < editCount; i++)
+                    {
+                        var e = edits[i];
+                        infoArray[i * 4 + 0] = e.Coordinate.x;
+                        infoArray[i * 4 + 1] = e.Coordinate.y;
+                        infoArray[i * 4 + 2] = e.Coordinate.z;
+                        infoArray[i * 4 + 3] = i * 216; // Start index
+
+                        System.Array.Copy(e.VoxelData, 0, voxelArray, i * 216, 216);
+                    }
+
+                    editInfoBuffer.SetData(infoArray);
+                    editVoxelBuffer.SetData(voxelArray);
+                }
+            }
+
+            // Bind Edit Buffers (or safe fallbacks if empty)
+            shader.SetBuffer(kernelBuild, "_EditInfoBuffer", editCount > 0 ? editInfoBuffer : buffers.NodeBuffer);
+            shader.SetBuffer(kernelBuild, "_EditVoxelBuffer", editCount > 0 ? editVoxelBuffer : buffers.NodeBuffer);
+            shader.SetInt("_EditCount", editCount);
+            shader.SetFloat("_GlobalVoxelSize", editManager != null ? editManager.voxelSize : 1.0f);
+            shader.SetInt("_GlobalBrickSize", 4);
+
             int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
             int threadGroups = Mathf.CeilToInt(numBricksPerAxis / 4.0f);
             
             shader.Dispatch(kernelBuild, threadGroups, threadGroups, threadGroups);
 
-            // --- Phase 4: Saved Edits Removed (Temp VRAM only) ---
+            // Cleanup Edit Buffers
+            if (editInfoBuffer != null) editInfoBuffer.Release();
+            if (editVoxelBuffer != null) editVoxelBuffer.Release();
+
+            // --- Saved Edits Removed (Temp VRAM only) ---
 
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);

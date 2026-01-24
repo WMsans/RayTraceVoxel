@@ -40,7 +40,7 @@ RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
 RWStructuredBuffer<float4> _RaycastBuffer;
 
-// --- Phase 2: Temporal Foundations Resources ---
+// --- Temporal Foundations Resources ---
 RWTexture2D<float2> _MotionVectorTexture;
 float4x4 _PrevViewProjMatrix;
 
@@ -217,7 +217,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     uint width, height; _Result.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) return;
 
-    // --- Phase 2: Apply Jitter ---
+    // --- Apply Jitter ---
     // _RaytraceParams.y = jitterX, .z = jitterY
     float2 jitter = _RaytraceParams.yz;
     float2 uv = (id.xy + 0.5 + jitter) / float2(width, height) * 2.0 - 1.0;
@@ -269,7 +269,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                      int chunkId = _TLASChunkIndexBuffer[cell.offset + k];
                  ChunkDef chunk = _ChunkBuffer[chunkId];
                      
-                     // 1. Broad Phase: World Space Intersection (AABB)
+                     // 1. World Space Intersection (AABB)
                      float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
                      if (tBox.x < tBox.y && tBox.x < closestT && tBox.y > tCurrent - 0.01) 
                      {
@@ -366,7 +366,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         _Result[id.xy] = float4(color, 1.0);
         _ResultDepth[id.xy] = _CameraViewProjection[2].z * bestHit.pos.z + _CameraViewProjection[3].z;
 
-        // --- Phase 2: Calculate Motion Vector ---
+        // --- Calculate Motion Vector ---
         // Transform current world position to Clip Space
         float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
         

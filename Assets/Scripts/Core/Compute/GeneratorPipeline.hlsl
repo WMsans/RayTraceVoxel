@@ -47,18 +47,8 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
     return d;
 }
 
-GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], int activeCount)
+void ApplyDynamicObjects(inout GenerationContext ctx, float3 worldPos, uint activeObjects[32], int activeCount)
 {
-    GenerationContext ctx;
-    InitContext(ctx, worldPos);
-    
-    // --- 1. Base Stage (Terrain) ---
-    Stage_Terrain(ctx);
-    
-    // --- 2. Trees Stage (Minecraft-like) ---
-    Stage_Trees(ctx);
-    
-    // --- 3. Dynamic Objects Stage ---
     // Iterate over the culled list of objects (Must be sorted by index for deterministic CSG)
     for(int i = 0; i < activeCount; i++)
     {
@@ -91,6 +81,21 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
             // if (h > 0.5) ctx.material = obj.materialId;
         }
     }
+}
+
+GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], int activeCount)
+{
+    GenerationContext ctx;
+    InitContext(ctx, worldPos);
+    
+    // --- 1. Base Stage (Terrain) ---
+    Stage_Terrain(ctx);
+    
+    // --- 2. Trees Stage (Minecraft-like) ---
+    Stage_Trees(ctx);
+    
+    // --- 3. Dynamic Objects Stage ---
+    ApplyDynamicObjects(ctx, worldPos, activeObjects, activeCount);
 
     return ctx;
 }

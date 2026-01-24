@@ -78,12 +78,12 @@ namespace VoxelEngine.Core.Streaming
                 UpdateNodeLOD(_rootNode, viewer.position);
             }
 
-            // Phase 4: Process Cache Invalidation
+            // Process Cache Invalidation
             ProcessDirtyRegions();
         }
 
         /// <summary>
-        /// Phase 4: Checks for dirty SDF regions and regenerates affected VoxelVolumes.
+        /// Checks for dirty SDF regions and regenerates affected VoxelVolumes.
         /// </summary>
         private void ProcessDirtyRegions()
         {

@@ -62,7 +62,7 @@ Shader "Hidden/VoxelComposite"
             float FsrLuma(float3 rgb) { return dot(rgb, float3(0.5, 0.5, 0.5));
             } 
 
-            // --- PHASE 1: EASU (Edge Adaptive Spatial Upsampling) ---
+            // --- EASU (Edge Adaptive Spatial Upsampling) ---
             float3 FsrEasu(float2 uv)
             {
                 float2 texSize = _BlitTexture_TexelSize.zw;
@@ -112,7 +112,7 @@ Shader "Hidden/VoxelComposite"
                 return colSharp;
             }
 
-            // --- PHASE 2: RCAS (Robust Contrast Adaptive Sharpening) ---
+            // --- RCAS (Robust Contrast Adaptive Sharpening) ---
             float3 FsrRcas(float3 col, float2 uv)
             {
                 float2 p = _BlitTexture_TexelSize.xy;
