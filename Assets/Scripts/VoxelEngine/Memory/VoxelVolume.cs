@@ -20,7 +20,30 @@ namespace VoxelEngine.Core
         
         public Vector3 WorldOrigin => transform.position;
         public float WorldSize { get; private set; }
-        public Bounds WorldBounds => new Bounds(WorldOrigin + Vector3.one * WorldSize * 0.5f, Vector3.one * WorldSize);
+        public Bounds WorldBounds
+        {
+            get
+            {
+                // Calculate AABB of the rotated/scaled volume
+                float halfRes = resolution * 0.5f;
+                Vector3 localCenter = new Vector3(halfRes, halfRes, halfRes);
+                Vector3 localHalfExtents = new Vector3(halfRes, halfRes, halfRes);
+
+                Vector3 worldCenter = transform.TransformPoint(localCenter);
+
+                // Transform local extents axes to world space (handles rotation & scale)
+                Vector3 worldAxisX = transform.TransformVector(new Vector3(localHalfExtents.x, 0, 0));
+                Vector3 worldAxisY = transform.TransformVector(new Vector3(0, localHalfExtents.y, 0));
+                Vector3 worldAxisZ = transform.TransformVector(new Vector3(0, 0, localHalfExtents.z));
+
+                // Sum absolute components to get new AABB extents
+                float x = Mathf.Abs(worldAxisX.x) + Mathf.Abs(worldAxisY.x) + Mathf.Abs(worldAxisZ.x);
+                float y = Mathf.Abs(worldAxisX.y) + Mathf.Abs(worldAxisY.y) + Mathf.Abs(worldAxisZ.y);
+                float z = Mathf.Abs(worldAxisX.z) + Mathf.Abs(worldAxisY.z) + Mathf.Abs(worldAxisZ.z);
+
+                return new Bounds(worldCenter, new Vector3(x, y, z) * 2.0f);
+            }
+        }
 
         public GraphicsBuffer NodeBuffer => BufferManager?.NodeBuffer;
         public GraphicsBuffer PayloadBuffer => BufferManager?.PayloadBuffer;
