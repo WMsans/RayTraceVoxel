@@ -19,6 +19,8 @@ namespace VoxelEngine.Core.Editing
         // Stored as uint[] because it matches the packed GPU data format.
         private Dictionary<Vector3Int, uint[]> _sparseDatabase = new Dictionary<Vector3Int, uint[]>();
 
+        public event System.Action<Vector3Int, uint[]> OnBrickModified;
+
         public int EditCount => _sparseDatabase.Count;
 
         public struct EditData
@@ -75,6 +77,7 @@ namespace VoxelEngine.Core.Editing
             {
                 _sparseDatabase.Add(coord, (uint[])data.Clone());
             }
+            OnBrickModified?.Invoke(coord, _sparseDatabase[coord]);
         }
 
         /// <summary>

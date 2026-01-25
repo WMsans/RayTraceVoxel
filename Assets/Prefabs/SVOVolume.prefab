@@ -13,7 +13,6 @@ GameObject:
   - component: {fileID: 4819740143505349971}
   - component: {fileID: 9210260336194324207}
   - component: {fileID: -4855828778010543098}
-  - component: {fileID: 737195808145206011}
   m_Layer: 0
   m_Name: SVOVolume
   m_TagString: Untagged
@@ -113,18 +112,3 @@ MonoBehaviour:
   windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
   windSpeed: 0.02
   windStrength: 2
---- !u!114 &737195808145206011
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 7120167303073674635}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 06f4602770c62d14b9e22f22a362077c, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Analysis.StructureAnalysisManager
-  analysisShader: {fileID: 7200000, guid: 467dfc73de2a0f6bfa17ec0149bcb3b3, type: 3}
-  searchRadiusBricks: 8
-  visualizeResults: 1
