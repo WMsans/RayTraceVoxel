@@ -86,9 +86,27 @@ namespace VoxelEngine.Core.Structural
 
                 if (_graph.TryGetValue(neighborCoord, out StructuralNode neighbor))
                 {
-                    // Link them in the graph
-                    node.Neighbors[i] = neighbor;
-                    neighbor.Neighbors[(int)opposite] = node;
+                    // FIX: Only link if the faces are physically connected (have solid voxels at the interface)
+                    // We check if the node has solid voxels on the outgoing face,
+                    // AND if the neighbor has solid voxels on the incoming face.
+                    // (CanTraverse(face, face) checks if the face bit is set in the mask).
+                    
+                    bool selfFaceActive = node.CanTraverse(direction, direction);
+                    bool neighborFaceActive = neighbor.CanTraverse(opposite, opposite);
+
+                    if (selfFaceActive && neighborFaceActive)
+                    {
+                        // Valid physical connection
+                        node.Neighbors[i] = neighbor;
+                        neighbor.Neighbors[(int)opposite] = node;
+                    }
+                    else
+                    {
+                        // Ensure they are disconnected if faces don't touch
+                        // This handles the case where a neighbor exists but the specific face is empty
+                        node.Neighbors[i] = null;
+                        neighbor.Neighbors[(int)opposite] = null;
+                    }
                 }
             }
         }
