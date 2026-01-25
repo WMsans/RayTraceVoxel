@@ -110,6 +110,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
             // ... [Keep other Shader IDs same as before] ...
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
+            private static readonly int _GlobalNodePageTableParams = Shader.PropertyToID("_GlobalNodePageTable");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
             private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
             private static readonly int _TLASGridBufferParams = Shader.PropertyToID("_TLASGridBuffer");
@@ -207,7 +208,7 @@ namespace VoxelEngine.Core.Rendering
 
             // --- Pass Data Classes ---
             private class PassData { /* ... same fields as before ... */ 
-                public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
+                public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer nodePageTableBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
             }
             private class CompositePassData { public TextureHandle source; public TextureHandle depthSource; public Material material; public bool useFSR; public float sharpness; }
             private class FXAAPassData { public TextureHandle source; public Material material; }
@@ -310,7 +311,7 @@ namespace VoxelEngine.Core.Rendering
                     data.computeShader = _shader; data.kernel = _shader.FindKernel("CSMain");
                     if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid()) VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16);
                     data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
-                    var pool = VoxelVolumePool.Instance; data.nodeBuffer = pool.GlobalNodeBuffer; data.payloadBuffer = pool.GlobalPayloadBuffer; data.brickDataBuffer = pool.GlobalBrickDataBuffer; data.chunkBuffer = pool.ChunkBuffer; data.chunkCount = pool.VisibleChunkCount; data.tlasGridBuffer = pool.TLASGridBuffer; data.tlasChunkIndexBuffer = pool.TLASChunkIndexBuffer; data.tlasBoundsMin = pool.TLASBoundsMin; data.tlasBoundsMax = pool.TLASBoundsMax; data.tlasResolution = pool.TLASResolution; data.frameCount = Time.frameCount; data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
+                    var pool = VoxelVolumePool.Instance; data.nodeBuffer = pool.GlobalNodeBuffer; data.nodePageTableBuffer = pool.GlobalNodePageTable; data.payloadBuffer = pool.GlobalPayloadBuffer; data.brickDataBuffer = pool.GlobalBrickDataBuffer; data.chunkBuffer = pool.ChunkBuffer; data.chunkCount = pool.VisibleChunkCount; data.tlasGridBuffer = pool.TLASGridBuffer; data.tlasChunkIndexBuffer = pool.TLASChunkIndexBuffer; data.tlasBoundsMin = pool.TLASBoundsMin; data.tlasBoundsMax = pool.TLASBoundsMax; data.tlasResolution = pool.TLASResolution; data.frameCount = Time.frameCount; data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
                     if (_albedoHandle != null) data.albedoArray = renderGraph.ImportTexture(_albedoHandle);
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
@@ -331,6 +332,7 @@ namespace VoxelEngine.Core.Rendering
                     {
                         var cs = pd.computeShader; var ker = pd.kernel; var cmd = ctx.cmd;
                         cmd.SetComputeBufferParam(cs, ker, _GlobalNodeBufferParams, pd.nodeBuffer);
+                        cmd.SetComputeBufferParam(cs, ker, _GlobalNodePageTableParams, pd.nodePageTableBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalPayloadBufferParams, pd.payloadBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _GlobalBrickDataBufferParams, pd.brickDataBuffer);
                         cmd.SetComputeBufferParam(cs, ker, _ChunkBufferParams, pd.chunkBuffer);

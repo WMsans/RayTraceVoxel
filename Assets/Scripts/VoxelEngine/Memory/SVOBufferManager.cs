@@ -7,6 +7,7 @@ namespace VoxelEngine.Core.Buffers
     public class SVOBufferManager
     {
         public GraphicsBuffer NodeBuffer { get; private set; }
+        public GraphicsBuffer PageTableBuffer { get; private set; } // Added Paging
         public GraphicsBuffer PayloadBuffer { get; private set; }
         
         // Merged Buffer: [Packed uint] per voxel
@@ -19,11 +20,12 @@ namespace VoxelEngine.Core.Buffers
         public int BrickDataOffset { get; private set; }
 
         public SVOBufferManager(
-            GraphicsBuffer nodes, int nodeOffset,
+            GraphicsBuffer nodes, GraphicsBuffer pageTable, int nodeOffset,
             GraphicsBuffer payloads, int payloadOffset,
             GraphicsBuffer brickData, int brickDataOffset) 
         {
             NodeBuffer = nodes;
+            PageTableBuffer = pageTable;
             NodeOffset = nodeOffset;
             
             PayloadBuffer = payloads;

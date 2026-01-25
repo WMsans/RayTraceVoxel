@@ -8,10 +8,20 @@
 // --- Global Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
+StructuredBuffer<uint> _PageTable; // Paged Memory
 // [OPTIMIZATION] Merged Buffer (Replaces BrickBuffer, MaterialBuffer, NormalBuffer)
 RWStructuredBuffer<uint> _BrickDataBuffer; 
 
 RWStructuredBuffer<uint> _CounterBuffer;
+
+// --- Paging Helper ---
+uint ResolveAddress(uint virtualAddr)
+{
+    uint pageID = virtualAddr >> 11; // / 2048
+    uint pageOffset = virtualAddr & 2047; // % 2048
+    uint physBase = _PageTable[pageID];
+    return physBase + pageOffset;
+}
 
 // Dynamic SDF Buffers
 StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
@@ -187,7 +197,10 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
-    _NodeBuffer[_NodeOffset + id] = node;
+    
+    // PAGE WRITE
+    uint physAddr = ResolveAddress(_NodeOffset + id);
+    _NodeBuffer[physAddr] = node;
 }
 
 [numthreads(4, 4, 4)]
@@ -332,30 +345,37 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
         VoxelPayload payload;
         payload.brickDataIndex = brickPtr;
-        _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
+        
+        // PAGE WRITE (Payload)
+        uint physPayloadAddr = ResolveAddress(_PayloadOffset + payloadIndex);
+        _PayloadBuffer[physPayloadAddr] = payload;
 
         uint nodeIndex = GetNodeIndex(4, id);
 
         // Pack Payload (16) | Material (8)
         uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = packed;
+        
+        // PAGE WRITE (Node)
+        uint physNodeAddr = ResolveAddress(_NodeOffset + nodeIndex);
+        _NodeBuffer[physNodeAddr].packedInfo = packed;
 
         if (voxelCount > 0)
         {
             float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
-            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
+            _NodeBuffer[physNodeAddr].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
         }
         else
         {
-            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+            _NodeBuffer[physNodeAddr].lodColor = 0;
         }
     }
     else
     {
         // Empty Brick
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        uint physNodeAddr = ResolveAddress(_NodeOffset + nodeIndex);
+        _NodeBuffer[physNodeAddr].packedInfo = 0;
+        _NodeBuffer[physNodeAddr].lodColor = 0;
     }
 }
 
@@ -365,11 +385,14 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
 {
     if (id >= _TargetLevelCount) return;
     uint nodeIndex = _TargetLevelOffset + id;
-    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+    
+    // PAGE LOOKUP
+    uint physNodeAddr = ResolveAddress(_NodeOffset + nodeIndex);
+    SVONode node = _NodeBuffer[physNodeAddr];
 
     if (node.topology == 0)
     {
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        _NodeBuffer[physNodeAddr].lodColor = 0;
         return;
     }
 
@@ -380,7 +403,10 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
 
     for (int i = 0; i < 8; i++)
     {
-        SVONode child = _NodeBuffer[_NodeOffset + childBasePtr + i];
+        // PAGE LOOKUP (Child)
+        uint childPhysAddr = ResolveAddress(_NodeOffset + childBasePtr + i);
+        SVONode child = _NodeBuffer[childPhysAddr];
+        
         float4 c = UnpackColor(child.lodColor);
         if (c.a > 0.0) 
         {
@@ -399,13 +425,13 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     {
         float3 avgColor = acc.rgb / count;
         float nodeDensity = acc.a / 8.0;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(avgColor, nodeDensity));
+        _NodeBuffer[physNodeAddr].lodColor = PackColor(float4(avgColor, nodeDensity));
         // Pack Material back (Internal nodes have Payload=0)
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = (maxMaterial & 0xFF) << 16;
+        _NodeBuffer[physNodeAddr].packedInfo = (maxMaterial & 0xFF) << 16;
     }
     else
     {
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
+        _NodeBuffer[physNodeAddr].lodColor = 0;
+        _NodeBuffer[physNodeAddr].packedInfo = 0;
     }
 }
