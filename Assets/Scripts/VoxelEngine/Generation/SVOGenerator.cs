@@ -15,7 +15,8 @@ namespace VoxelEngine.Core.Generators
             int kernelInit = shader.FindKernel("InitDenseStructure");
             shader.SetBuffer(kernelInit, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelInit, "_CounterBuffer", buffers.CounterBuffer);
-            shader.SetInt("_NodeOffset", buffers.NodeOffset);
+            shader.SetBuffer(kernelInit, "_PageTableBuffer", buffers.PageTableBuffer); // New
+            shader.SetInt("_NodeOffset", buffers.PageTableOffset); // Changed
             
             shader.Dispatch(kernelInit, 74, 1, 1);
 
@@ -41,9 +42,10 @@ namespace VoxelEngine.Core.Generators
             shader.SetBuffer(kernelBuild, "_BrickDataBuffer", buffers.BrickDataBuffer);
             
             shader.SetBuffer(kernelBuild, "_CounterBuffer", buffers.CounterBuffer);
+            shader.SetBuffer(kernelBuild, "_PageTableBuffer", buffers.PageTableBuffer); // New
             
-            shader.SetInt("_NodeOffset", buffers.NodeOffset);
-            shader.SetInt("_PayloadOffset", buffers.PayloadOffset);
+            shader.SetInt("_NodeOffset", buffers.PageTableOffset); // Changed
+            shader.SetInt("_PayloadOffset", buffers.PageTableOffset); // Changed (Assuming Payload shares PageTable logic)
             shader.SetInt("_BrickOffset", buffers.BrickDataOffset); 
 
             shader.SetInt("_GridSize", resolution); 
@@ -106,7 +108,8 @@ namespace VoxelEngine.Core.Generators
 
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);
-            shader.SetInt("_NodeOffset", buffers.NodeOffset); 
+            shader.SetBuffer(kernelProp, "_PageTableBuffer", buffers.PageTableBuffer); // New
+            shader.SetInt("_NodeOffset", buffers.PageTableOffset); 
 
             DispatchLOD(shader, kernelProp, 73, 512);
             DispatchLOD(shader, kernelProp, 9, 64);

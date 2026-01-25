@@ -90,14 +90,15 @@ namespace VoxelEngine.Core.Rendering
             leafCompute.SetBuffer(kernel, "_NodeBuffer", _volume.NodeBuffer);
             leafCompute.SetBuffer(kernel, "_PayloadBuffer", _volume.PayloadBuffer);
             leafCompute.SetBuffer(kernel, "_BrickDataBuffer", _volume.BrickDataBuffer);
+            leafCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer); // New
             leafCompute.SetBuffer(kernel, "_LeafAppendBuffer", _appendBuffer);
 
             leafCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin);
             leafCompute.SetFloat("_ChunkWorldSize", _volume.WorldSize);
             leafCompute.SetInt("_GridSize", _volume.Resolution);
             
-            leafCompute.SetInt("_NodeOffset", _volume.BufferManager.NodeOffset);
-            leafCompute.SetInt("_PayloadOffset", _volume.BufferManager.PayloadOffset);
+            leafCompute.SetInt("_NodeOffset", _volume.BufferManager.PageTableOffset); // Changed
+            leafCompute.SetInt("_PayloadOffset", _volume.BufferManager.PageTableOffset); // Changed
             leafCompute.SetInt("_BrickOffset", _volume.BufferManager.BrickDataOffset);
             
             leafCompute.SetInt("_TargetMaterialId", targetMaterialId);

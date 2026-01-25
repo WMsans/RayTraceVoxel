@@ -8,6 +8,7 @@ namespace VoxelEngine.Core.Buffers
     {
         public GraphicsBuffer NodeBuffer { get; private set; }
         public GraphicsBuffer PayloadBuffer { get; private set; }
+        public GraphicsBuffer PageTableBuffer { get; private set; } // New
         
         // Merged Buffer: [Packed uint] per voxel
         public GraphicsBuffer BrickDataBuffer { get; private set; }
@@ -17,11 +18,13 @@ namespace VoxelEngine.Core.Buffers
         public int NodeOffset { get; private set; }
         public int PayloadOffset { get; private set; }
         public int BrickDataOffset { get; private set; }
+        public int PageTableOffset { get; private set; } // New
 
         public SVOBufferManager(
             GraphicsBuffer nodes, int nodeOffset,
             GraphicsBuffer payloads, int payloadOffset,
-            GraphicsBuffer brickData, int brickDataOffset) 
+            GraphicsBuffer brickData, int brickDataOffset,
+            GraphicsBuffer pageTable, int pageTableOffset) 
         {
             NodeBuffer = nodes;
             NodeOffset = nodeOffset;
@@ -31,6 +34,9 @@ namespace VoxelEngine.Core.Buffers
             
             BrickDataBuffer = brickData;
             BrickDataOffset = brickDataOffset;
+
+            PageTableBuffer = pageTable;
+            PageTableOffset = pageTableOffset;
 
             CounterBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 3, sizeof(uint));
             ResetCounters();

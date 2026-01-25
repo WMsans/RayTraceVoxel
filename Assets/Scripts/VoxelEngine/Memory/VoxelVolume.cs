@@ -60,21 +60,26 @@ namespace VoxelEngine.Core
         public int MaxBricks => _maxBricks;
         public bool IsReady => BufferManager != null;
         
+        private int[] _allocatedPages;
+        public int[] AllocatedPages => _allocatedPages;
+        
         // --- Events ---
         public event Action OnRegenerationComplete;
 
         private void OnEnable() { VoxelVolumeRegistry.Register(this); }
         private void OnDisable() { VoxelVolumeRegistry.Unregister(this); }
 
-        public void AssignMemorySlice(VoxelVolumePool pool, int nodeOffset, int payloadOffset, int brickOffset, int nodes, int bricks)
+        public void AssignMemorySlice(VoxelVolumePool pool, int nodeOffset, int payloadOffset, int brickOffset, int nodes, int bricks, int pageTableOffset, int[] pages)
         {
             _maxNodes = nodes;
             _maxBricks = bricks;
+            _allocatedPages = pages;
             
             BufferManager = new SVOBufferManager(
                 pool.GlobalNodeBuffer, nodeOffset,
                 pool.GlobalPayloadBuffer, payloadOffset,
-                pool.GlobalBrickDataBuffer, brickOffset // Single Buffer
+                pool.GlobalBrickDataBuffer, brickOffset,
+                pool.GlobalPageTableBuffer, pageTableOffset
             );
         }
 

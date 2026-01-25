@@ -12,6 +12,7 @@ RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<uint> _BrickDataBuffer; 
 
 RWStructuredBuffer<uint> _CounterBuffer;
+StructuredBuffer<uint> _PageTableBuffer; // New
 
 // Dynamic SDF Buffers
 StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
@@ -187,7 +188,7 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
-    _NodeBuffer[_NodeOffset + id] = node;
+    _NodeBuffer[GetPhysicalIndex(id, _NodeOffset, _PageTableBuffer)] = node;
 }
 
 [numthreads(4, 4, 4)]
@@ -332,30 +333,30 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 
         VoxelPayload payload;
         payload.brickDataIndex = brickPtr;
-        _PayloadBuffer[_PayloadOffset + payloadIndex] = payload;
+        _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)] = payload;
 
         uint nodeIndex = GetNodeIndex(4, id);
 
         // Pack Payload (16) | Material (8)
         uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = packed;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = packed;
 
         if (voxelCount > 0)
         {
             float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
-            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
+            _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
         }
         else
         {
-            _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+            _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
         }
     }
     else
     {
         // Empty Brick
         uint nodeIndex = GetNodeIndex(4, id);
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = 0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
     }
 }
 
@@ -365,11 +366,11 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
 {
     if (id >= _TargetLevelCount) return;
     uint nodeIndex = _TargetLevelOffset + id;
-    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
 
     if (node.topology == 0)
     {
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
         return;
     }
 
@@ -380,7 +381,7 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
 
     for (int i = 0; i < 8; i++)
     {
-        SVONode child = _NodeBuffer[_NodeOffset + childBasePtr + i];
+        SVONode child = _NodeBuffer[GetPhysicalIndex(childBasePtr + i, _NodeOffset, _PageTableBuffer)];
         float4 c = UnpackColor(child.lodColor);
         if (c.a > 0.0) 
         {
@@ -399,13 +400,13 @@ void PropagateLOD(uint id : SV_DispatchThreadID)
     {
         float3 avgColor = acc.rgb / count;
         float nodeDensity = acc.a / 8.0;
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = PackColor(float4(avgColor, nodeDensity));
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(avgColor, nodeDensity));
         // Pack Material back (Internal nodes have Payload=0)
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = (maxMaterial & 0xFF) << 16;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = (maxMaterial & 0xFF) << 16;
     }
     else
     {
-        _NodeBuffer[_NodeOffset + nodeIndex].lodColor = 0;
-        _NodeBuffer[_NodeOffset + nodeIndex].packedInfo = 0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = 0;
     }
 }

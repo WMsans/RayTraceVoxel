@@ -42,6 +42,7 @@ namespace VoxelEngine.Core.Streaming
         public GraphicsBuffer GlobalNodeBuffer { get; private set; }
         public GraphicsBuffer GlobalPayloadBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickDataBuffer { get; private set; }
+        public GraphicsBuffer GlobalPageTableBuffer { get; private set; } // New
         
         public GraphicsBuffer ChunkBuffer { get; private set; }
 
@@ -61,7 +62,8 @@ namespace VoxelEngine.Core.Streaming
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
         
-        private VoxelMemoryAllocator _nodeAllocator;
+        private PhysicalPageAllocator _nodeAllocator; // Changed
+        private VoxelMemoryAllocator _pageTableAllocator; // New
         private VoxelMemoryAllocator _brickAllocator;
         
         public int VisibleChunkCount { get; private set; }
@@ -77,16 +79,24 @@ namespace VoxelEngine.Core.Streaming
         private void InitializeGlobalBuffers()
         {
             int totalNodes = poolSize * maxNodesPerVolume;
+            // Ensure totalNodes is multiple of PAGE_SIZE for safety
+            int pageSize = SVONode.PAGE_SIZE;
+            if (totalNodes % pageSize != 0) totalNodes = ((totalNodes / pageSize) + 1) * pageSize;
+            
+            int totalPages = totalNodes / pageSize;
+
             int totalBricks = poolSize * maxBricksPerVolume; 
             int totalBrickVoxels = totalBricks * SVONode.BRICK_VOXEL_COUNT;
 
-            Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes, {totalBricks/1000}k Bricks. BrickData: {totalBrickVoxels * 4 / 1024 / 1024} MB");
+            Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes ({totalPages} Pages), {totalBricks/1000}k Bricks. BrickData: {totalBrickVoxels * 4 / 1024 / 1024} MB");
 
             GlobalNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<SVONode>());
             GlobalPayloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<VoxelPayload>());
             GlobalBrickDataBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
+            GlobalPageTableBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalPages, sizeof(uint));
             
-            _nodeAllocator = new VoxelMemoryAllocator(totalNodes);
+            _nodeAllocator = new PhysicalPageAllocator(totalPages, pageSize);
+            _pageTableAllocator = new VoxelMemoryAllocator(totalPages); // Allocates slots in Page Table
             _brickAllocator = new VoxelMemoryAllocator(totalBrickVoxels);
 
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
@@ -111,8 +121,6 @@ namespace VoxelEngine.Core.Streaming
             {
                 VoxelVolume vol = Instantiate(prefab, poolContainer);
                 vol.gameObject.name = $"Volume_Pool_{i}";
-                // No pre-allocation
-                
                 vol.gameObject.SetActive(false);
                 _pool.Enqueue(vol);
             }
@@ -125,23 +133,45 @@ namespace VoxelEngine.Core.Streaming
             if (requestedNodes < 0) requestedNodes = maxNodesPerVolume;
             if (requestedBricks < 0) requestedBricks = maxBricksPerVolume;
             
+            int pageSize = SVONode.PAGE_SIZE;
+            int pagesNeeded = Mathf.CeilToInt((float)requestedNodes / pageSize);
+            
             // Attempt Allocation
-            if (!_nodeAllocator.Allocate(requestedNodes, out int nodeOffset))
+            if (!_nodeAllocator.Allocate(pagesNeeded, out int[] pages))
             {
-                Debug.LogWarning("VoxelVolumePool: Failed to allocate nodes.");
+                Debug.LogWarning("VoxelVolumePool: Failed to allocate pages.");
                 return null;
             }
             
+            if (!_pageTableAllocator.Allocate(pagesNeeded, out int pageTableOffset))
+            {
+                Debug.LogWarning("VoxelVolumePool: Failed to allocate page table entries.");
+                _nodeAllocator.Free(pages);
+                return null;
+            }
+            
+            // Update Page Table Buffer
+            // We map Virtual Page i (0..pagesNeeded-1) -> Physical Page Offset
+            int[] pageTableData = new int[pagesNeeded];
+            for (int i = 0; i < pagesNeeded; i++)
+            {
+                pageTableData[i] = pages[i] * pageSize; // Store byte/element offset? Element offset usually.
+            }
+            GlobalPageTableBuffer.SetData(pageTableData, 0, pageTableOffset, pagesNeeded);
+
             int brickVoxels = requestedBricks * SVONode.BRICK_VOXEL_COUNT;
             if (!_brickAllocator.Allocate(brickVoxels, out int brickOffset))
             {
                 Debug.LogWarning("VoxelVolumePool: Failed to allocate bricks.");
-                _nodeAllocator.Free(nodeOffset, requestedNodes); // Rollback
+                _nodeAllocator.Free(pages);
+                _pageTableAllocator.Free(pageTableOffset, pagesNeeded);
                 return null;
             }
 
             VoxelVolume vol = _pool.Dequeue();
-            vol.AssignMemorySlice(this, nodeOffset, nodeOffset, brickOffset, requestedNodes, requestedBricks);
+            // Note: nodeOffset is effectively 0 relative to virtual space, or we can use it if we want offset within first page? 
+            // Usually we start at 0. Passing 0 for nodeOffset.
+            vol.AssignMemorySlice(this, 0, 0, brickOffset, requestedNodes, requestedBricks, pageTableOffset, pages);
 
             vol.transform.position = position;
             float scale = size / vol.Resolution; 
@@ -159,7 +189,8 @@ namespace VoxelEngine.Core.Streaming
             {
                 if (vol.IsReady)
                 {
-                    _nodeAllocator.Free(vol.BufferManager.NodeOffset, vol.MaxNodes);
+                    _nodeAllocator.Free(vol.AllocatedPages);
+                    _pageTableAllocator.Free(vol.BufferManager.PageTableOffset, vol.AllocatedPages.Length);
                     _brickAllocator.Free(vol.BufferManager.BrickDataOffset, vol.MaxBricks * SVONode.BRICK_VOXEL_COUNT);
                 }
                 
@@ -189,9 +220,11 @@ namespace VoxelEngine.Core.Streaming
 
                 ChunkDef def = new ChunkDef();
                 def.boundsMin = vol.WorldBounds.min;
+                // Reuse nodeOffset field for PageTableOffset
+                def.nodeOffset = (uint)vol.BufferManager.PageTableOffset; 
                 def.boundsMax = vol.WorldBounds.max;
-                def.nodeOffset = (uint)vol.BufferManager.NodeOffset;
-                def.payloadOffset = (uint)vol.BufferManager.PayloadOffset;
+                // payloadOffset is now implicitly handled via paging same as nodes
+                def.payloadOffset = (uint)vol.BufferManager.PageTableOffset; 
                 def.brickDataOffset = (uint)vol.BufferManager.BrickDataOffset;
                 def.worldToLocal = vol.transform.worldToLocalMatrix;
                 def.localToWorld = vol.transform.localToWorldMatrix;

@@ -7,6 +7,8 @@
 #define BRICK_STORAGE_SIZE 6 // BRICK_SIZE + 2*PADDING
 #define BRICK_VOXEL_COUNT 216 // 6*6*6
 
+#define PAGE_SIZE 2048
+
 // Packing Constants
 #define MAX_SDF_RANGE 4.0 // Clamp SDF to +/- 4.0 voxels before packing (8.0 range / 255 ~= 0.03 precision)
 
@@ -53,14 +55,24 @@ struct VoxelLight
 struct ChunkDef
 {
     float3 boundsMin;
-    uint nodeOffset;
+    uint pageTableOffset;
     float3 boundsMax;
-    uint payloadOffset;
+    uint payloadPageTableOffset;
     uint brickOffset;
     float3 padding; 
     float4x4 worldToLocal;
     float4x4 localToWorld;
 };
+
+// ... existing code ...
+
+uint GetPhysicalIndex(uint virtualIndex, uint pageTableOffset, StructuredBuffer<uint> pageTable)
+{
+    uint pageID = virtualIndex / PAGE_SIZE;
+    uint offsetInPage = virtualIndex % PAGE_SIZE;
+    uint physicalPageStart = pageTable[pageTableOffset + pageID];
+    return physicalPageStart + offsetInPage;
+}
 
 struct SDFObject
 {
