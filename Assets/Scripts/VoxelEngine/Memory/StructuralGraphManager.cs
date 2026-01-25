@@ -70,7 +70,10 @@ namespace VoxelEngine.Core.Structural
 
             // 4. (Future Phase 3) Trigger Floating Search here
             // CheckFloatingIslands(node);
-            Debug.Log($"[Structural] Updated Node {coord}. Connectivity: {node.InternalConnectivityMask:X}");
+            if (showInternalMask)
+            {
+                Debug.Log($"[Structural] Updated Node {coord}. Connectivity: {node.InternalConnectivityMask:X}");
+            }
         }
 
         private void UpdateNeighbors(StructuralNode node)
