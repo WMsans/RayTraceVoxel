@@ -3,6 +3,7 @@ using UnityEngine;
 using System.Runtime.InteropServices;
 using VoxelEngine.Core.Buffers;
 using VoxelEngine.Core.Data;
+using VoxelEngine.Core.Memory;
 using Unity.Burst;
 using Unity.Jobs;
 using Unity.Collections;
@@ -59,6 +60,10 @@ namespace VoxelEngine.Core.Streaming
 
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
+        
+        private VoxelMemoryAllocator _nodeAllocator;
+        private VoxelMemoryAllocator _brickAllocator;
+        
         public int VisibleChunkCount { get; private set; }
 
         private void Awake()
@@ -80,6 +85,9 @@ namespace VoxelEngine.Core.Streaming
             GlobalNodeBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<SVONode>());
             GlobalPayloadBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalNodes, Marshal.SizeOf<VoxelPayload>());
             GlobalBrickDataBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalBrickVoxels, sizeof(uint));
+            
+            _nodeAllocator = new VoxelMemoryAllocator(totalNodes);
+            _brickAllocator = new VoxelMemoryAllocator(totalBrickVoxels);
 
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
             
@@ -103,20 +111,38 @@ namespace VoxelEngine.Core.Streaming
             {
                 VoxelVolume vol = Instantiate(prefab, poolContainer);
                 vol.gameObject.name = $"Volume_Pool_{i}";
-                int nodeOffset = i * maxNodesPerVolume;
-                int payloadOffset = i * maxNodesPerVolume;
-                int brickOffset = i * maxBricksPerVolume * SVONode.BRICK_VOXEL_COUNT;
+                // No pre-allocation
                 
-                vol.AssignMemorySlice(this, nodeOffset, payloadOffset, brickOffset, maxNodesPerVolume, maxBricksPerVolume);
                 vol.gameObject.SetActive(false);
                 _pool.Enqueue(vol);
             }
         }
 
-        public VoxelVolume GetVolume(Vector3 position, float size)
+        public VoxelVolume GetVolume(Vector3 position, float size, int requestedNodes = -1, int requestedBricks = -1)
         {
             if (_pool.Count == 0) return null;
+            
+            if (requestedNodes < 0) requestedNodes = maxNodesPerVolume;
+            if (requestedBricks < 0) requestedBricks = maxBricksPerVolume;
+            
+            // Attempt Allocation
+            if (!_nodeAllocator.Allocate(requestedNodes, out int nodeOffset))
+            {
+                Debug.LogWarning("VoxelVolumePool: Failed to allocate nodes.");
+                return null;
+            }
+            
+            int brickVoxels = requestedBricks * SVONode.BRICK_VOXEL_COUNT;
+            if (!_brickAllocator.Allocate(brickVoxels, out int brickOffset))
+            {
+                Debug.LogWarning("VoxelVolumePool: Failed to allocate bricks.");
+                _nodeAllocator.Free(nodeOffset, requestedNodes); // Rollback
+                return null;
+            }
+
             VoxelVolume vol = _pool.Dequeue();
+            vol.AssignMemorySlice(this, nodeOffset, nodeOffset, brickOffset, requestedNodes, requestedBricks);
+
             vol.transform.position = position;
             float scale = size / vol.Resolution; 
             vol.transform.localScale = Vector3.one * scale;
@@ -131,6 +157,12 @@ namespace VoxelEngine.Core.Streaming
             if (vol == null) return;
             if (_activeVolumes.Remove(vol))
             {
+                if (vol.IsReady)
+                {
+                    _nodeAllocator.Free(vol.BufferManager.NodeOffset, vol.MaxNodes);
+                    _brickAllocator.Free(vol.BufferManager.BrickDataOffset, vol.MaxBricks * SVONode.BRICK_VOXEL_COUNT);
+                }
+                
                 vol.OnReturnToPool();
                 vol.transform.SetParent(poolContainer); 
                 _pool.Enqueue(vol);
