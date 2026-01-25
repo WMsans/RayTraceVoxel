@@ -14,7 +14,6 @@ namespace VoxelEngine.Core.Generators
             
             int kernelInit = shader.FindKernel("InitDenseStructure");
             shader.SetBuffer(kernelInit, "_NodeBuffer", buffers.NodeBuffer);
-            shader.SetBuffer(kernelInit, "_PageTable", buffers.PageTableBuffer); // Added
             shader.SetBuffer(kernelInit, "_CounterBuffer", buffers.CounterBuffer);
             shader.SetInt("_NodeOffset", buffers.NodeOffset);
             
@@ -37,7 +36,6 @@ namespace VoxelEngine.Core.Generators
             
             shader.SetBuffer(kernelBuild, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kernelBuild, "_PayloadBuffer", buffers.PayloadBuffer);
-            shader.SetBuffer(kernelBuild, "_PageTable", buffers.PageTableBuffer); // Added
             
             // Merged Buffer Binding
             shader.SetBuffer(kernelBuild, "_BrickDataBuffer", buffers.BrickDataBuffer);
@@ -108,7 +106,6 @@ namespace VoxelEngine.Core.Generators
 
             int kernelProp = shader.FindKernel("PropagateLOD");
             shader.SetBuffer(kernelProp, "_NodeBuffer", buffers.NodeBuffer);
-            shader.SetBuffer(kernelProp, "_PageTable", buffers.PageTableBuffer); // Added
             shader.SetInt("_NodeOffset", buffers.NodeOffset); 
 
             DispatchLOD(shader, kernelProp, 73, 512);

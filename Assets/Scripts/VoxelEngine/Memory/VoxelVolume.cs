@@ -72,7 +72,7 @@ namespace VoxelEngine.Core
             _maxBricks = bricks;
             
             BufferManager = new SVOBufferManager(
-                pool.GlobalNodeBuffer, pool.GlobalNodePageTable, nodeOffset,
+                pool.GlobalNodeBuffer, nodeOffset,
                 pool.GlobalPayloadBuffer, payloadOffset,
                 pool.GlobalBrickDataBuffer, brickOffset // Single Buffer
             );
@@ -86,19 +86,7 @@ namespace VoxelEngine.Core
             Regenerate();
         }
 
-        public void OnReturnToPool() 
-        { 
-            this.gameObject.SetActive(false); 
-        }
-
-        public void ReleaseMemory()
-        {
-            if (BufferManager != null)
-            {
-                BufferManager.Dispose();
-                BufferManager = null;
-            }
-        }
+        public void OnReturnToPool() { this.gameObject.SetActive(false); }
 
         public void Regenerate()
         {
