@@ -1,0 +1,112 @@
+#pragma kernel ExtractTopology
+
+#include "../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+StructuredBuffer<SVONode> _GlobalNodeBuffer;
+StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
+StructuredBuffer<uint> _GlobalBrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer;
+
+// Output: Packed bitmask. Each uint holds 32 bits.
+// Buffer size should be ceil(TotalVoxels / 32)
+RWStructuredBuffer<uint> _TopologyBuffer;
+
+uint _Resolution; // Voxel Grid Resolution (e.g. 256)
+uint _PageTableOffset;
+uint _BrickOffset;
+
+// Helper to resolve virtual page index to physical index
+uint GetPhysIdx(uint virtualIndex)
+{
+    uint pageID = virtualIndex / PAGE_SIZE;
+    uint offsetInPage = virtualIndex % PAGE_SIZE;
+    uint physicalPageStart = _PageTableBuffer[_PageTableOffset + pageID];
+    return physicalPageStart + offsetInPage;
+}
+
+// Function to query a single voxel
+bool IsVoxelSolid(uint3 pos)
+{
+    uint nodeIndex = 0; 
+    float nodeSize = _Resolution; 
+    float3 nodePos = float3(0,0,0);
+    
+    // Traverse until we hit a leaf (Brick) or empty space
+    // We assume max depth 8 is sufficient for typical resolutions (up to 2048)
+    for (int depth = 0; depth < 8; depth++)
+    {
+        float halfSize = nodeSize * 0.5;
+        float3 center = nodePos + halfSize;
+        int octant = 0;
+        if (pos.x >= center.x) octant |= 1;
+        if (pos.y >= center.y) octant |= 2;
+        if (pos.z >= center.z) octant |= 4;
+
+        // Fetch Node
+        SVONode node = _GlobalNodeBuffer[GetPhysIdx(nodeIndex)];
+        uint childMask = (node.topology >> 24) & 0xFF;
+        
+        // Check child existence
+        if ((childMask & (1 << octant)) != 0)
+        {
+            uint childBase = node.topology & 0xFFFFFF;
+            uint maskBefore = childMask & ((1 << octant) - 1);
+            uint childNodeIndex = childBase + countbits(maskBefore);
+            
+            nodeIndex = childNodeIndex;
+            nodeSize = halfSize;
+            nodePos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+            
+            // Leaf check
+            if (nodeSize <= BRICK_SIZE)
+            {
+                SVONode leafNode = _GlobalNodeBuffer[GetPhysIdx(nodeIndex)];
+                
+                // Solid Optimization
+                if ((leafNode.packedInfo & NODE_FLAG_SOLID) != 0) return true;
+                
+                uint payloadIndex, matID;
+                UnpackNode(leafNode, payloadIndex, matID);
+                
+                if (payloadIndex != 0)
+                {
+                    VoxelPayload payload = _GlobalPayloadBuffer[GetPhysIdx(payloadIndex)];
+                    uint brickPtr = payload.brickDataIndex;
+                    
+                    // Sample Brick
+                    float3 localPos = pos - nodePos;
+                    uint3 p = (uint3)localPos + 1; // + Padding
+                    
+                    uint idx = _BrickOffset + brickPtr + 
+                               p.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + 
+                               p.y * BRICK_STORAGE_SIZE + 
+                               p.x;
+                               
+                    float s; float3 n; uint m;
+                    UnpackVoxelData(_GlobalBrickDataBuffer[idx], s, n, m);
+                    return (m != 0); 
+                }
+                return false; 
+            }
+        }
+        else
+        {
+            return false; // Empty space
+        }
+    }
+    return false;
+}
+
+[numthreads(8, 8, 8)]
+void ExtractTopology(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= _Resolution)) return;
+
+    if (IsVoxelSolid(id))
+    {
+        uint idx = id.z * _Resolution * _Resolution + id.y * _Resolution + id.x;
+        uint wordIdx = idx / 32;
+        uint bitIdx = idx % 32;
+        InterlockedOr(_TopologyBuffer[wordIdx], 1u << bitIdx);
+    }
+}
