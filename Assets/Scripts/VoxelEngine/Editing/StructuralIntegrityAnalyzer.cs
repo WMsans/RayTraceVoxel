@@ -89,6 +89,10 @@ namespace VoxelEngine.Core.Editing
                 resolution * resolution, -(resolution * resolution)
             };
 
+            int totalSolid = 0;
+            for(int i=0; i<totalVoxels; i++) { if(IsSolid(i)) totalSolid++; }
+            Debug.Log($"[Structural Analysis] Total Solid Voxels: {totalSolid}");
+
             for (int i = 0; i < totalVoxels; i++)
             {
                 if (!visited[i] && IsSolid(i))
@@ -138,7 +142,7 @@ namespace VoxelEngine.Core.Editing
                     componentSizes.Add(size);
                 }
             }
-            Debug.Log(componentSizes.Count);
+            
             // Report Results
             if (componentSizes.Count > 1)
             {

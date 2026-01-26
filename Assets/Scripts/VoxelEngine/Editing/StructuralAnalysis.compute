@@ -84,7 +84,8 @@ bool IsVoxelSolid(uint3 pos)
                                
                     float s; float3 n; uint m;
                     UnpackVoxelData(_GlobalBrickDataBuffer[idx], s, n, m);
-                    return (m != 0); 
+                    // Check SDF for solidity (EPSILON from Raytracer is 0.01)
+                    return s < 0.01; 
                 }
                 return false; 
             }
