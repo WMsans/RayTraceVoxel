@@ -7,6 +7,7 @@
 StructuredBuffer<SVONode> _GlobalNodeBuffer;
 StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
 StructuredBuffer<uint> _GlobalBrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer; // New
 
 // --- TLAS (Chunk Map) ---
 StructuredBuffer<ChunkDef> _ChunkBuffer;
@@ -131,7 +132,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
             if (pos.y >= center.y) octant |= 2;
             if (pos.z >= center.z) octant |= 4;
 
-            SVONode node = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
+            SVONode node = _GlobalNodeBuffer[GetPhysicalIndex(nodeIndex, chunk.pageTableOffset, _PageTableBuffer)];
             uint childMask = (node.topology >> 24) & 0xFF;
             
             if ((childMask & (1 << octant)) != 0)
@@ -160,7 +161,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
         
         if (hitLeaf)
         {
-            SVONode leafNode = _GlobalNodeBuffer[chunk.nodeOffset + nodeIndex];
+            SVONode leafNode = _GlobalNodeBuffer[GetPhysicalIndex(nodeIndex, chunk.pageTableOffset, _PageTableBuffer)];
             float2 tLeaf = IntersectBox(rayOriginNode, rayDir, nodePos, nodePos + nodeSize);
             
             uint payloadIndex, matID;
@@ -168,7 +169,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
             
             if (payloadIndex != 0)
             {
-                VoxelPayload payload = _GlobalPayloadBuffer[chunk.payloadOffset + payloadIndex];
+                VoxelPayload payload = _GlobalPayloadBuffer[GetPhysicalIndex(payloadIndex, chunk.payloadPageTableOffset, _PageTableBuffer)];
                 uint brickPtr = payload.brickDataIndex;
             
                 float tMarch = max(tCurrent, tLeaf.x);

@@ -11,6 +11,7 @@ RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<uint> _BrickDataBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
+StructuredBuffer<uint> _PageTableBuffer; // New
 
 // Stores flattened voxel data for the requested brick range.
 // Size = (RangeX * RangeY * RangeZ) * 216
@@ -58,8 +59,8 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
     // 2. Get Node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
     // Apply NodeOffset
-    uint globalNodeIndex = _NodeOffset + nodeIndex;
-    SVONode node = _NodeBuffer[globalNodeIndex];
+    // uint globalNodeIndex = _NodeOffset + nodeIndex;
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
 
     // 3. Check if Empty (Payload Index == 0)
     uint existingPayload = node.packedInfo & 0xFFFF;
@@ -79,7 +80,7 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
         // 5. Initialize Payload
         VoxelPayload pl;
         pl.brickDataIndex = newBrickVoxelPtr;
-        _PayloadBuffer[_PayloadOffset + newPayloadIdx] = pl;
+        _PayloadBuffer[GetPhysicalIndex(newPayloadIdx, _PayloadOffset, _PageTableBuffer)] = pl;
         
         // 6. Initialize Brick Data to "Air"
         // We must fill the new 4x4x4 block with safe default values 
@@ -95,7 +96,7 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
         // 7. Link Node to New Payload
         // Preserve existing upper bits (though usually 0 for empty nodes)
         uint newPackedInfo = (newPayloadIdx & 0xFFFF) | (node.packedInfo & 0xFFFF0000);
-        _NodeBuffer[globalNodeIndex].packedInfo = newPackedInfo;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = newPackedInfo;
     }
 }
 
@@ -108,13 +109,13 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
     
     // Find the node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
-    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
     if (payloadIdx == 0) return;
     // Should be allocated now if intersecting
     
-    VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
     uint brickPtr = payload.brickDataIndex;
     
     // Iterate over voxels in the brick (6x6x6)
@@ -205,7 +206,7 @@ void ExtractBricks(uint3 id : SV_DispatchThreadID)
 
     // 1. Resolve SVO Node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
-    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
     
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
@@ -226,7 +227,7 @@ void ExtractBricks(uint3 id : SV_DispatchThreadID)
     }
 
     // 3. Read Existing Brick Data
-    VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIdx];
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
     uint brickPtr = payload.brickDataIndex;
 
     // Iterate 6x6x6

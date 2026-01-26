@@ -18,6 +18,8 @@ namespace VoxelEngine.Core.Data
         public const int BRICK_PADDING = 1;     // Padding on each side
         public const int BRICK_STORAGE_SIZE = 6; // 4 + 1 + 1
         public const int BRICK_VOXEL_COUNT = 216; // 6 * 6 * 6
+        
+        public const int PAGE_SIZE = 2048;
     }
 
     [StructLayout(LayoutKind.Sequential)]

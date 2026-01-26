@@ -71,8 +71,8 @@ namespace VoxelEngine.Core.Editing
             _shader.SetInts("_MaxBrickIndex", new int[] { maxBrickId.x, maxBrickId.y, maxBrickId.z });
             _shader.SetFloat("_GridSize", (float)vol.Resolution);
             _shader.SetInt("_MaxBricks", vol.MaxBricks);
-            _shader.SetInt("_NodeOffset", vol.BufferManager.NodeOffset);
-            _shader.SetInt("_PayloadOffset", vol.BufferManager.PayloadOffset);
+            _shader.SetInt("_NodeOffset", vol.BufferManager.PageTableOffset); // Changed
+            _shader.SetInt("_PayloadOffset", vol.BufferManager.PageTableOffset); // Changed
             _shader.SetInt("_BrickOffset", vol.BufferManager.BrickDataOffset);
             _shader.SetVector("_BrushPosition", brushPosVoxel);
             _shader.SetVector("_BrushBounds", brushBoundsVoxel);
@@ -86,10 +86,12 @@ namespace VoxelEngine.Core.Editing
             _shader.SetBuffer(kernelAlloc, "_CounterBuffer", vol.CounterBuffer);
             _shader.SetBuffer(kernelAlloc, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelAlloc, "_BrickDataBuffer", vol.BrickDataBuffer);
+            _shader.SetBuffer(kernelAlloc, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); // New
             
             _shader.SetBuffer(kernelEdit, "_NodeBuffer", vol.NodeBuffer);
             _shader.SetBuffer(kernelEdit, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelEdit, "_BrickDataBuffer", vol.BrickDataBuffer);
+            _shader.SetBuffer(kernelEdit, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); // New
 
             // 6. DISPATCH: Apply Edits to VRAM
             _shader.Dispatch(kernelAlloc, Mathf.CeilToInt(rangeX / 8.0f), Mathf.CeilToInt(rangeY / 8.0f), Mathf.CeilToInt(rangeZ / 8.0f));
@@ -109,6 +111,7 @@ namespace VoxelEngine.Core.Editing
             _shader.SetBuffer(kernelExtract, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelExtract, "_BrickDataBuffer", vol.BrickDataBuffer);
             _shader.SetBuffer(kernelExtract, "_ReadbackBuffer", readbackBuffer);
+            _shader.SetBuffer(kernelExtract, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); // New
             
             // Use same dispatch dimensions as Edit
             _shader.Dispatch(kernelExtract, Mathf.CeilToInt(rangeX / 4.0f), Mathf.CeilToInt(rangeY / 4.0f), Mathf.CeilToInt(rangeZ / 4.0f));

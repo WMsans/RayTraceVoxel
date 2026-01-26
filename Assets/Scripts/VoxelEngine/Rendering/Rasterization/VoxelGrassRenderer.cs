@@ -117,14 +117,15 @@ namespace VoxelEngine.Core.Rendering
             grassCompute.SetBuffer(kernel, "_NodeBuffer", _volume.NodeBuffer);
             grassCompute.SetBuffer(kernel, "_PayloadBuffer", _volume.PayloadBuffer);
             grassCompute.SetBuffer(kernel, "_BrickDataBuffer", _volume.BrickDataBuffer);
+            grassCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer); // New
             grassCompute.SetBuffer(kernel, "_GrassAppendBuffer", _grassAppendBuffer);
 
             grassCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin);
             grassCompute.SetFloat("_ChunkWorldSize", _volume.WorldSize);
             grassCompute.SetInt("_GridSize", _volume.Resolution);
             
-            grassCompute.SetInt("_NodeOffset", _volume.BufferManager.NodeOffset);
-            grassCompute.SetInt("_PayloadOffset", _volume.BufferManager.PayloadOffset);
+            grassCompute.SetInt("_NodeOffset", _volume.BufferManager.PageTableOffset); // Changed
+            grassCompute.SetInt("_PayloadOffset", _volume.BufferManager.PageTableOffset); // Changed
             grassCompute.SetInt("_BrickOffset", _volume.BufferManager.BrickDataOffset);
             
             grassCompute.SetInt("_TargetMaterialId", targetMaterialId);

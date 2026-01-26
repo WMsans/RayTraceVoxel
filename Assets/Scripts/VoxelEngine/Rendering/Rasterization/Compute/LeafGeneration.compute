@@ -2,10 +2,10 @@
 
 #include "../../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
-// --- Inputs ---
 StructuredBuffer<SVONode> _NodeBuffer;
 StructuredBuffer<VoxelPayload> _PayloadBuffer;
 StructuredBuffer<uint> _BrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer; // New
 
 // --- Outputs ---
 // We reuse the GrassInstance struct layout: Position (12), Rotation (4), PackedData (4)
@@ -41,14 +41,14 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
 
     // 2. Resolve SVO Node
     uint nodeIndex = GetNodeIndex(4, id);
-    SVONode node = _NodeBuffer[_NodeOffset + nodeIndex];
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
     uint payloadIndex, matID;
     UnpackNode(node, payloadIndex, matID);
 
     if (payloadIndex == 0) return;
 
     // 3. Get Brick Data
-    VoxelPayload payload = _PayloadBuffer[_PayloadOffset + payloadIndex];
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)];
     uint brickPtr = payload.brickDataIndex;
 
     // 4. Iterate Voxels
