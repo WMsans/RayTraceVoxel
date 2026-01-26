@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using Unity.Collections;
+using Unity.Mathematics;
 using System.Collections.Generic;
 using VoxelEngine.Core;
 
@@ -18,9 +19,13 @@ namespace VoxelEngine.Core.Editing
         private int _pendingReadbacks = 0;
         private Dictionary<Vector3Int, VoxelVolume> _chunkMap = new Dictionary<Vector3Int, VoxelVolume>();
 
-        public void AnalyzeWorld()
+        private Bounds? _currentQueryBounds;
+
+        public void AnalyzeWorld(Bounds? queryBounds = null)
         {
             if (analysisShader == null) return;
+            
+            _currentQueryBounds = queryBounds;
             
             // 1. Reset State
             foreach(var kvp in _volumeData) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
@@ -111,73 +116,151 @@ namespace VoxelEngine.Core.Editing
         {
             _floatingVoxelPositions.Clear();
             
-            // Tracking visited voxels globally: Dictionary<(Volume, Index), bool> is too slow.
-            // Using BitArray per volume in a dictionary.
-            Dictionary<VoxelVolume, System.Collections.BitArray> visitedMap = new Dictionary<VoxelVolume, System.Collections.BitArray>();
+            // Global visited set for floating clusters to avoid duplicates
+            // We use a string key "VolName_Index" or similar, but Dictionary<Vol, BitArray> is better.
+            Dictionary<VoxelVolume, System.Collections.BitArray> globalFloatingVisited = new Dictionary<VoxelVolume, System.Collections.BitArray>();
             
             foreach(var kvp in _volumeData)
             {
                 int total = kvp.Key.Resolution * kvp.Key.Resolution * kvp.Key.Resolution;
-                visitedMap[kvp.Key] = new System.Collections.BitArray(total);
+                globalFloatingVisited[kvp.Key] = new System.Collections.BitArray(total);
             }
 
             int floatingCount = 0;
             
-            // iterate all volumes, all voxels
-            foreach (var kvp in _volumeData)
-            {
-                VoxelVolume vol = kvp.Key;
-                NativeArray<uint> data = kvp.Value;
-                int res = vol.Resolution;
-                int totalVoxels = res * res * res;
-                var visited = visitedMap[vol];
-                
-                _debugVoxelSize = vol.WorldSize / res; // update debug size
+            // Define Seeds
+            // If Bounds are provided, we only seed from Solid voxels within the Bounds.
+            // Otherwise, we iterate the world (Full Scan).
+            
+            List<(VoxelVolume, int)> seeds = new List<(VoxelVolume, int)>();
 
-                for (int i = 0; i < totalVoxels; i++)
+            if (_currentQueryBounds.HasValue)
+            {
+                Bounds query = _currentQueryBounds.Value;
+                // Dilate query slightly to capture surface
+                query.Expand(2.0f); 
+
+                foreach (var kvp in _volumeData)
                 {
-                    if (visited[i]) continue;
+                    VoxelVolume vol = kvp.Key;
+                    if (!vol.WorldBounds.Intersects(query)) continue;
                     
-                    if (IsSolid(data, i))
+                    NativeArray<uint> data = kvp.Value;
+                    int res = vol.Resolution;
+                    float voxelSize = vol.WorldSize / res;
+                    
+                    // Convert World Bounds to Local Voxel Range
+                    Vector3 localMin = vol.transform.InverseTransformPoint(query.min);
+                    Vector3 localMax = vol.transform.InverseTransformPoint(query.max);
+                    
+                    // Handle rotation/scale implications on AABB (simplified)
+                    Vector3 min = Vector3.Min(localMin, localMax);
+                    Vector3 max = Vector3.Max(localMin, localMax);
+                    
+                    int3 minIdx = (int3)math.floor(min / voxelSize);
+                    int3 maxIdx = (int3)math.ceil(max / voxelSize);
+                    
+                    minIdx = math.clamp(minIdx, 0, res - 1);
+                    maxIdx = math.clamp(maxIdx, 0, res - 1);
+                    
+                    for (int z = minIdx.z; z <= maxIdx.z; z++)
+                    for (int y = minIdx.y; y <= maxIdx.y; y++)
+                    for (int x = minIdx.x; x <= maxIdx.x; x++)
                     {
-                        // Start DFS
-                        List<(VoxelVolume, int)> component = new List<(VoxelVolume, int)>();
-                        bool isGrounded = false;
-                        
-                        Stack<(VoxelVolume, int)> stack = new Stack<(VoxelVolume, int)>();
-                        stack.Push((vol, i));
-                        visited[i] = true;
-                        
-                        while(stack.Count > 0)
+                        int idx = z * (res * res) + y * res + x;
+                        if (IsSolid(data, idx))
                         {
-                            var current = stack.Pop();
-                            VoxelVolume cVol = current.Item1;
-                            int cIdx = current.Item2;
-                            
-                            component.Add(current);
-                            
-                            // Check Grounded
-                            Vector3 worldPos = GetWorldPos(cVol, cIdx);
-                            if (worldPos.y < 10.0f) isGrounded = true;
-                            
-                            // Neighbors
-                            CheckNeighbors(cVol, cIdx, stack, visitedMap);
-                        }
-                        
-                        if (!isGrounded)
-                        {
-                            // Mark all as floating
-                            floatingCount += component.Count;
-                            foreach(var item in component)
-                            {
-                                _floatingVoxelPositions.Add(GetWorldPos(item.Item1, item.Item2));
-                            }
+                            seeds.Add((vol, idx));
                         }
                     }
                 }
             }
+            else
+            {
+                // Full Scan
+                foreach (var kvp in _volumeData)
+                {
+                    VoxelVolume vol = kvp.Key;
+                    NativeArray<uint> data = kvp.Value;
+                    int total = vol.Resolution * vol.Resolution * vol.Resolution;
+                    for (int i = 0; i < total; i++)
+                    {
+                        if (IsSolid(data, i)) seeds.Add((vol, i));
+                    }
+                }
+            }
+
+            // Local Visited Set for the current search (to handle Pruning correctly)
+            // If we prune, we don't mark global visited. 
+            // If we find floating, we mark global visited.
             
-            Debug.Log($"[Structural Analysis] Global Scan Complete. Floating Voxels: {floatingCount}");
+            // Optimization: If full scan, we use global visited strictly.
+            // If partial scan, we need local visited for pruned branches.
+            
+            foreach (var seed in seeds)
+            {
+                VoxelVolume seedVol = seed.Item1;
+                int seedIdx = seed.Item2;
+                
+                // Already processed as part of a Floating cluster?
+                if (globalFloatingVisited[seedVol][seedIdx]) continue;
+                
+                // Start DFS
+                List<(VoxelVolume, int)> currentComponent = new List<(VoxelVolume, int)>();
+                
+                // We need a way to track visited for THIS traversal.
+                // Reusing global visited for grounded paths is dangerous if we prune.
+                // So we use a temporary HashSet for the current path.
+                HashSet<(VoxelVolume, int)> pathVisited = new HashSet<(VoxelVolume, int)>();
+                
+                bool isGrounded = false;
+                
+                Stack<(VoxelVolume, int)> stack = new Stack<(VoxelVolume, int)>();
+                stack.Push((seedVol, seedIdx));
+                pathVisited.Add((seedVol, seedIdx));
+                
+                while(stack.Count > 0)
+                {
+                    var current = stack.Pop();
+                    VoxelVolume cVol = current.Item1;
+                    int cIdx = current.Item2;
+                    
+                    currentComponent.Add(current);
+                    
+                    // Check Grounded
+                    Vector3 worldPos = GetWorldPos(cVol, cIdx);
+                    if (worldPos.y <= 10.0f) 
+                    {
+                        isGrounded = true;
+                        break; // PRUNE: Stop searching this component immediately.
+                    }
+                    
+                    // Neighbors
+                    // Bias: We want to go DOWN first. Stack is LIFO.
+                    // So we push UP/SIDES first, and DOWN last.
+                    CheckNeighborsBias(cVol, cIdx, stack, pathVisited, globalFloatingVisited);
+                }
+                
+                if (!isGrounded)
+                {
+                    // It's Floating!
+                    floatingCount += currentComponent.Count;
+                    foreach(var item in currentComponent)
+                    {
+                        _floatingVoxelPositions.Add(GetWorldPos(item.Item1, item.Item2));
+                        // Mark as visited globally so we don't re-scan this island
+                        globalFloatingVisited[item.Item1][item.Item2] = true;
+                    }
+                }
+                else
+                {
+                    // It's Grounded (and Pruned).
+                    // We discard the 'pathVisited' implicitly.
+                    // Next seed might re-traverse part of this, but will also prune quickly.
+                }
+            }
+            
+            Debug.Log($"[Structural Analysis] Scan Complete. Seeds: {seeds.Count}. Floating Voxels: {floatingCount}");
 
             // Cleanup NativeArrays
             foreach(var kvp in _volumeData)
@@ -187,7 +270,7 @@ namespace VoxelEngine.Core.Editing
             _volumeData.Clear();
         }
         
-        private void CheckNeighbors(VoxelVolume vol, int idx, Stack<(VoxelVolume, int)> stack, Dictionary<VoxelVolume, System.Collections.BitArray> visitedMap)
+        private void CheckNeighborsBias(VoxelVolume vol, int idx, Stack<(VoxelVolume, int)> stack, HashSet<(VoxelVolume, int)> pathVisited, Dictionary<VoxelVolume, System.Collections.BitArray> globalVisited)
         {
             int res = vol.Resolution;
             int z = idx / (res * res);
@@ -195,13 +278,18 @@ namespace VoxelEngine.Core.Editing
             int y = rem / res;
             int x = rem % res;
             
-            // 6 Directions
+            // LIFO Order: Push least preferred first.
+            // Preferred: Down (Y-1).
+            // Order: Up, Sides, Down.
+            
+            CheckDir(x, y + 1, z); // Up
+            
             CheckDir(x + 1, y, z);
             CheckDir(x - 1, y, z);
-            CheckDir(x, y + 1, z);
-            CheckDir(x, y - 1, z);
             CheckDir(x, y, z + 1);
             CheckDir(x, y, z - 1);
+            
+            CheckDir(x, y - 1, z); // Down (Popped first)
             
             void CheckDir(int nx, int ny, int nz)
             {
@@ -223,36 +311,30 @@ namespace VoxelEngine.Core.Editing
                 
                 if (crossed)
                 {
-                    // Find neighbor volume
                     Vector3Int currentCoord = Vector3Int.RoundToInt(vol.WorldOrigin);
-                    // Assuming volume size is what dictates the grid step. 
-                    // WorldSize should be same as 'size' in map.
-                    // For simplicity, assuming Resolution * VoxelSize matches the grid step implicitly
-                    // or that WorldOrigin jumps by WorldSize.
-                    // The map key was created with RoundToInt(WorldOrigin).
-                    // So we need to add (WorldSize * offset).
-                    
-                    int step = Mathf.RoundToInt(vol.WorldSize); // Assuming uniform size
+                    int step = Mathf.RoundToInt(vol.WorldSize); 
                     Vector3Int targetCoord = currentCoord + (neighborOffset * step);
                     
-                    if (!_chunkMap.TryGetValue(targetCoord, out targetVol)) return; // No neighbor
+                    if (!_chunkMap.TryGetValue(targetCoord, out targetVol)) return;
                 }
                 
-                // Check Bounds (Safety, though wrapped coords should be valid)
+                // Check Bounds
                 if (tx >= 0 && tx < targetVol.Resolution && 
                     ty >= 0 && ty < targetVol.Resolution && 
                     tz >= 0 && tz < targetVol.Resolution)
                 {
                     int tIdx = tz * (res * res) + ty * res + tx;
+                    var key = (targetVol, tIdx);
                     
-                    if (visitedMap.ContainsKey(targetVol) && !visitedMap[targetVol][tIdx])
+                    // Check if already visited in this path OR globally visited as floating
+                    if (pathVisited.Contains(key)) return;
+                    if (globalVisited.ContainsKey(targetVol) && globalVisited[targetVol][tIdx]) return;
+                    
+                    // Check Solidity
+                    if (_volumeData.ContainsKey(targetVol) && IsSolid(_volumeData[targetVol], tIdx))
                     {
-                        // Check Solidity
-                        if (_volumeData.ContainsKey(targetVol) && IsSolid(_volumeData[targetVol], tIdx))
-                        {
-                            visitedMap[targetVol][tIdx] = true;
-                            stack.Push((targetVol, tIdx));
-                        }
+                        pathVisited.Add(key);
+                        stack.Push(key);
                     }
                 }
             }
