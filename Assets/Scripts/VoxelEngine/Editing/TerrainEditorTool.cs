@@ -116,7 +116,7 @@ namespace VoxelEngine.Core.Editing
                     // Phase 1: Structural Integrity Analysis
                     if (op == BrushOp.Subtract && structuralAnalyzer != null)
                     {
-                        structuralAnalyzer.Analyze(volume);
+                        structuralAnalyzer.AnalyzeWorld();
                     }
                 }
             }
