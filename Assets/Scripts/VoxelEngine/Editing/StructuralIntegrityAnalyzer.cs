@@ -16,6 +16,7 @@ namespace VoxelEngine.Core.Editing
         
         // Global Analysis State
         private Dictionary<VoxelVolume, NativeArray<uint>> _volumeData = new Dictionary<VoxelVolume, NativeArray<uint>>();
+        private Dictionary<VoxelVolume, NativeArray<uint>> _volumeActiveBricks = new Dictionary<VoxelVolume, NativeArray<uint>>();
         private int _pendingReadbacks = 0;
         private Dictionary<Vector3Int, VoxelVolume> _chunkMap = new Dictionary<Vector3Int, VoxelVolume>();
 
@@ -29,7 +30,9 @@ namespace VoxelEngine.Core.Editing
             
             // 1. Reset State
             foreach(var kvp in _volumeData) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
+            foreach(var kvp in _volumeActiveBricks) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
             _volumeData.Clear();
+            _volumeActiveBricks.Clear();
             _chunkMap.Clear();
             
             var volumes = VoxelVolumeRegistry.Volumes;
@@ -42,11 +45,6 @@ namespace VoxelEngine.Core.Editing
             {
                 if (!vol.gameObject.activeInHierarchy || !vol.IsReady) continue;
 
-                // Map Chunk Coordinate for neighbor lookup
-                // Assuming volume is axis aligned and integer coordinates match typical chunking
-                // We use WorldOrigin rounded to nearest integer as key logic, or better:
-                // If VoxelEditManager.Instance exists, use its helper, otherwise manual.
-                // Assuming standard grid snapping:
                 Vector3Int coord = Vector3Int.RoundToInt(vol.WorldOrigin); 
                 if (!_chunkMap.ContainsKey(coord)) _chunkMap.Add(coord, vol);
 
@@ -58,52 +56,97 @@ namespace VoxelEngine.Core.Editing
         {
             int res = volume.Resolution;
             int totalVoxels = res * res * res;
-            int bufferSize = Mathf.CeilToInt(totalVoxels / 32.0f);
+            int bitmaskSize = Mathf.CeilToInt(totalVoxels / 32.0f);
 
-            ComputeBuffer topologyBuffer = new ComputeBuffer(bufferSize, 4);
-            // Clear buffer (0 = Air) -> relying on driver/API default or explict clear if needed?
-            // Safer to clear:
-            uint[] clearData = new uint[bufferSize];
+            ComputeBuffer topologyBuffer = new ComputeBuffer(bitmaskSize, 4);
+            uint[] clearData = new uint[bitmaskSize];
             topologyBuffer.SetData(clearData); 
+            
+            // Active Bricks Buffer
+            int bricksPerDim = res / 4;
+            int maxBricks = bricksPerDim * bricksPerDim * bricksPerDim;
+            ComputeBuffer activeBrickBuffer = new ComputeBuffer(maxBricks, sizeof(uint), ComputeBufferType.Append);
+            activeBrickBuffer.SetCounterValue(0);
 
-            int kernel = analysisShader.FindKernel("ExtractTopology");
+            int kernel = analysisShader.FindKernel("AnalyzeBricks");
 
             analysisShader.SetBuffer(kernel, "_GlobalNodeBuffer", volume.NodeBuffer);
             analysisShader.SetBuffer(kernel, "_GlobalPayloadBuffer", volume.PayloadBuffer);
             analysisShader.SetBuffer(kernel, "_GlobalBrickDataBuffer", volume.BrickDataBuffer);
             analysisShader.SetBuffer(kernel, "_PageTableBuffer", volume.BufferManager.PageTableBuffer);
             analysisShader.SetBuffer(kernel, "_TopologyBuffer", topologyBuffer);
+            analysisShader.SetBuffer(kernel, "_ActiveBrickBuffer", activeBrickBuffer);
 
             analysisShader.SetInt("_Resolution", res);
             analysisShader.SetInt("_PageTableOffset", volume.BufferManager.PageTableOffset);
             analysisShader.SetInt("_BrickOffset", volume.BufferManager.BrickDataOffset);
 
-            int threadGroups = Mathf.CeilToInt(res / 8.0f);
-            analysisShader.Dispatch(kernel, threadGroups, threadGroups, threadGroups);
+            // Dispatch: Threads = Bricks. GroupSize = 4. 
+            // We want one thread per brick.
+            // BricksPerDim / 4
+            int groups = Mathf.CeilToInt(bricksPerDim / 4.0f);
+            analysisShader.Dispatch(kernel, groups, groups, groups);
 
+            // Get Count
+            ComputeBuffer countBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.IndirectArguments);
+            ComputeBuffer.CopyCount(activeBrickBuffer, countBuffer, 0);
+            
             _pendingReadbacks++;
-            AsyncGPUReadback.Request(topologyBuffer, (request) => OnReadback(request, topologyBuffer, volume));
+            
+            // Read Count
+            AsyncGPUReadback.Request(countBuffer, (req) => OnCountReadback(req, countBuffer, activeBrickBuffer, topologyBuffer, volume));
         }
 
-        private void OnReadback(AsyncGPUReadbackRequest request, ComputeBuffer bufferToRelease, VoxelVolume vol)
+        private void OnCountReadback(AsyncGPUReadbackRequest request, ComputeBuffer countBuf, ComputeBuffer activeBuf, ComputeBuffer topoBuf, VoxelVolume vol)
         {
-            bufferToRelease.Release();
-            _pendingReadbacks--;
-
-            if (request.hasError)
+            int count = 0;
+            if (!request.hasError)
             {
-                Debug.LogError($"Analysis Readback Failed for {vol.name}");
+                count = (int)request.GetData<uint>()[0];
             }
-            else
+            countBuf.Release();
+            
+            // Read Active Bricks (Limit to Count if possible, but AsyncGPUReadback size is fixed to buffer usually unless partial)
+            // We'll read full and slice later, or just read full.
+            AsyncGPUReadback.Request(activeBuf, (req) => OnDataReadback(req, activeBuf, topoBuf, vol, count));
+        }
+
+        private void OnDataReadback(AsyncGPUReadbackRequest brickReq, ComputeBuffer brickBuf, ComputeBuffer topoBuf, VoxelVolume vol, int brickCount)
+        {
+            brickBuf.Release(); // Done with GPU buffer
+            
+            NativeArray<uint> brickData = new NativeArray<uint>(0, Allocator.Persistent);
+            if (!brickReq.hasError && brickCount > 0)
             {
-                // Store data (persistent allocator needed since we wait for others)
-                NativeArray<uint> raw = request.GetData<uint>();
-                NativeArray<uint> persistentCopy = new NativeArray<uint>(raw, Allocator.Persistent);
+                var allData = brickReq.GetData<uint>();
+                // Copy only valid count
+                brickData = new NativeArray<uint>(brickCount, Allocator.Persistent);
+                NativeArray<uint>.Copy(allData, brickData, brickCount);
+            }
+            
+            // Read Topology
+            AsyncGPUReadback.Request(topoBuf, (topoReq) => OnFinalReadback(topoReq, topoBuf, vol, brickData));
+        }
+
+        private void OnFinalReadback(AsyncGPUReadbackRequest topoReq, ComputeBuffer topoBuf, VoxelVolume vol, NativeArray<uint> brickData)
+        {
+            topoBuf.Release();
+            _pendingReadbacks--;
+            
+            if (!topoReq.hasError)
+            {
+                NativeArray<uint> topoRaw = topoReq.GetData<uint>();
+                NativeArray<uint> persistentTopo = new NativeArray<uint>(topoRaw, Allocator.Persistent);
                 
                 lock(_volumeData)
                 {
-                    _volumeData[vol] = persistentCopy;
+                    _volumeData[vol] = persistentTopo;
+                    _volumeActiveBricks[vol] = brickData;
                 }
+            }
+            else
+            {
+                if (brickData.IsCreated) brickData.Dispose();
             }
             
             if (_pendingReadbacks <= 0)
@@ -116,8 +159,6 @@ namespace VoxelEngine.Core.Editing
         {
             _floatingVoxelPositions.Clear();
             
-            // Global visited set for floating clusters to avoid duplicates
-            // We use a string key "VolName_Index" or similar, but Dictionary<Vol, BitArray> is better.
             Dictionary<VoxelVolume, System.Collections.BitArray> globalFloatingVisited = new Dictionary<VoxelVolume, System.Collections.BitArray>();
             
             foreach(var kvp in _volumeData)
@@ -127,17 +168,12 @@ namespace VoxelEngine.Core.Editing
             }
 
             int floatingCount = 0;
-            
-            // Define Seeds
-            // If Bounds are provided, we only seed from Solid voxels within the Bounds.
-            // Otherwise, we iterate the world (Full Scan).
-            
             List<(VoxelVolume, int)> seeds = new List<(VoxelVolume, int)>();
 
             if (_currentQueryBounds.HasValue)
             {
+                // [Bounds Logic preserved: Iterates Volume Data + Bitmask within bounds]
                 Bounds query = _currentQueryBounds.Value;
-                // Dilate query slightly to capture surface
                 query.Expand(2.0f); 
 
                 foreach (var kvp in _volumeData)
@@ -149,11 +185,9 @@ namespace VoxelEngine.Core.Editing
                     int res = vol.Resolution;
                     float voxelSize = vol.WorldSize / res;
                     
-                    // Convert World Bounds to Local Voxel Range
                     Vector3 localMin = vol.transform.InverseTransformPoint(query.min);
                     Vector3 localMax = vol.transform.InverseTransformPoint(query.max);
                     
-                    // Handle rotation/scale implications on AABB (simplified)
                     Vector3 min = Vector3.Min(localMin, localMax);
                     Vector3 max = Vector3.Max(localMin, localMax);
                     
@@ -177,42 +211,61 @@ namespace VoxelEngine.Core.Editing
             }
             else
             {
-                // Full Scan
-                foreach (var kvp in _volumeData)
+                // Full Scan Optimized with Active Bricks
+                // We assume _volumeActiveBricks is populated
+                foreach (var kvp in _volumeActiveBricks)
                 {
                     VoxelVolume vol = kvp.Key;
-                    NativeArray<uint> data = kvp.Value;
-                    int total = vol.Resolution * vol.Resolution * vol.Resolution;
-                    for (int i = 0; i < total; i++)
+                    NativeArray<uint> bricks = kvp.Value;
+                    if (!bricks.IsCreated) continue;
+                    
+                    NativeArray<uint> topoData = _volumeData[vol];
+                    int res = vol.Resolution;
+                    int brickSize = 4; // Hardcoded matches shader
+
+                    for (int i = 0; i < bricks.Length; i++)
                     {
-                        if (IsSolid(data, i)) seeds.Add((vol, i));
+                        uint packed = bricks[i];
+                        int bx = (int)(packed & 0x3FF);
+                        int by = (int)((packed >> 10) & 0x3FF);
+                        int bz = (int)((packed >> 20) & 0x3FF);
+                        
+                        int startX = bx * brickSize;
+                        int startY = by * brickSize;
+                        int startZ = bz * brickSize;
+                        
+                        // Iterate voxels in this brick
+                        for (int z = 0; z < brickSize; z++)
+                        for (int y = 0; y < brickSize; y++)
+                        for (int x = 0; x < brickSize; x++)
+                        {
+                            int vx = startX + x;
+                            int vy = startY + y;
+                            int vz = startZ + z;
+                            
+                            int idx = vz * (res * res) + vy * res + vx;
+                            
+                            // Double check solidity using bitmask (already populated)
+                            if (IsSolid(topoData, idx))
+                            {
+                                seeds.Add((vol, idx));
+                            }
+                        }
                     }
                 }
             }
-
-            // Local Visited Set for the current search (to handle Pruning correctly)
-            // If we prune, we don't mark global visited. 
-            // If we find floating, we mark global visited.
             
-            // Optimization: If full scan, we use global visited strictly.
-            // If partial scan, we need local visited for pruned branches.
+            // ... [Rest of DFS Logic]
             
             foreach (var seed in seeds)
             {
                 VoxelVolume seedVol = seed.Item1;
                 int seedIdx = seed.Item2;
                 
-                // Already processed as part of a Floating cluster?
                 if (globalFloatingVisited[seedVol][seedIdx]) continue;
                 
-                // Start DFS
                 List<(VoxelVolume, int)> currentComponent = new List<(VoxelVolume, int)>();
-                
-                // We need a way to track visited for THIS traversal.
-                // Reusing global visited for grounded paths is dangerous if we prune.
-                // So we use a temporary HashSet for the current path.
                 HashSet<(VoxelVolume, int)> pathVisited = new HashSet<(VoxelVolume, int)>();
-                
                 bool isGrounded = false;
                 
                 Stack<(VoxelVolume, int)> stack = new Stack<(VoxelVolume, int)>();
@@ -227,47 +280,34 @@ namespace VoxelEngine.Core.Editing
                     
                     currentComponent.Add(current);
                     
-                    // Check Grounded
                     Vector3 worldPos = GetWorldPos(cVol, cIdx);
                     if (worldPos.y <= 10.0f) 
                     {
                         isGrounded = true;
-                        break; // PRUNE: Stop searching this component immediately.
+                        break; 
                     }
                     
-                    // Neighbors
-                    // Bias: We want to go DOWN first. Stack is LIFO.
-                    // So we push UP/SIDES first, and DOWN last.
                     CheckNeighborsBias(cVol, cIdx, stack, pathVisited, globalFloatingVisited);
                 }
                 
                 if (!isGrounded)
                 {
-                    // It's Floating!
                     floatingCount += currentComponent.Count;
                     foreach(var item in currentComponent)
                     {
                         _floatingVoxelPositions.Add(GetWorldPos(item.Item1, item.Item2));
-                        // Mark as visited globally so we don't re-scan this island
                         globalFloatingVisited[item.Item1][item.Item2] = true;
                     }
-                }
-                else
-                {
-                    // It's Grounded (and Pruned).
-                    // We discard the 'pathVisited' implicitly.
-                    // Next seed might re-traverse part of this, but will also prune quickly.
                 }
             }
             
             Debug.Log($"[Structural Analysis] Scan Complete. Seeds: {seeds.Count}. Floating Voxels: {floatingCount}");
 
             // Cleanup NativeArrays
-            foreach(var kvp in _volumeData)
-            {
-                if(kvp.Value.IsCreated) kvp.Value.Dispose();
-            }
+            foreach(var kvp in _volumeData) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
+            foreach(var kvp in _volumeActiveBricks) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
             _volumeData.Clear();
+            _volumeActiveBricks.Clear();
         }
         
         private void CheckNeighborsBias(VoxelVolume vol, int idx, Stack<(VoxelVolume, int)> stack, HashSet<(VoxelVolume, int)> pathVisited, Dictionary<VoxelVolume, System.Collections.BitArray> globalVisited)
