@@ -96,52 +96,51 @@ namespace VoxelEngine.Core.Editing
             
             for (int i = 0; i < totalVoxels; i++)
             {
-                if (!visited[i] && IsSolid(i))
-                {
-                    // Found a new component
-                    List<int> currentComponent = new List<int>();
-                    Queue<int> q = new Queue<int>();
-                    
-                    q.Enqueue(i);
-                    visited[i] = true;
-                    
-                    while (q.Count > 0)
-                    {
-                        int curr = q.Dequeue();
-                        currentComponent.Add(curr);
-                        
-                        // Check 6 neighbors
-                        int z = curr / (resolution * resolution);
-                        int rem = curr % (resolution * resolution);
-                        int y = rem / resolution;
-                        int x = rem % resolution;
-
-                        // Neighbors
-                        // X+
-                        if (x < resolution - 1) CheckNeighbor(curr + 1);
-                        // X-
-                        if (x > 0) CheckNeighbor(curr - 1);
-                        // Y+
-                        if (y < resolution - 1) CheckNeighbor(curr + resolution);
-                        // Y-
-                        if (y > 0) CheckNeighbor(curr - resolution);
-                        // Z+
-                        if (z < resolution - 1) CheckNeighbor(curr + resolution * resolution);
-                        // Z-                      
-                        if (z > 0) CheckNeighbor(curr - resolution * resolution);
-
-                        void CheckNeighbor(int nIdx)
-                        {
-                            if (!visited[nIdx] && IsSolid(nIdx))
-                            {
-                                visited[nIdx] = true;
-                                q.Enqueue(nIdx);
-                            }
-                        }
-                    }
-                    components.Add(currentComponent);
-                }
-            }
+                                if (!visited[i] && IsSolid(i))
+                                {
+                                    // Found a new component
+                                    List<int> currentComponent = new List<int>();
+                                    Stack<int> s = new Stack<int>();
+                                    
+                                    s.Push(i);
+                                    visited[i] = true;
+                                    
+                                    while (s.Count > 0)
+                                    {
+                                        int curr = s.Pop();
+                                        currentComponent.Add(curr);
+                                        
+                                        // Check 6 neighbors
+                                        int z = curr / (resolution * resolution);
+                                        int rem = curr % (resolution * resolution);
+                                        int y = rem / resolution;
+                                        int x = rem % resolution;
+                
+                                        // Neighbors
+                                        // X+
+                                        if (x < resolution - 1) CheckNeighbor(curr + 1);
+                                        // X-
+                                        if (x > 0) CheckNeighbor(curr - 1);
+                                        // Y+
+                                        if (y < resolution - 1) CheckNeighbor(curr + resolution);
+                                        // Y-
+                                        if (y > 0) CheckNeighbor(curr - resolution);
+                                        // Z+
+                                        if (z < resolution - 1) CheckNeighbor(curr + resolution * resolution);
+                                        // Z-
+                                        if (z > 0) CheckNeighbor(curr - resolution * resolution);
+                
+                                        void CheckNeighbor(int nIdx)
+                                        {
+                                            if (!visited[nIdx] && IsSolid(nIdx))
+                                            {
+                                                visited[nIdx] = true;
+                                                s.Push(nIdx);
+                                            }
+                                        }
+                                    }
+                                    components.Add(currentComponent);
+                                }            }
             
             _floatingVoxelPositions.Clear();
 
