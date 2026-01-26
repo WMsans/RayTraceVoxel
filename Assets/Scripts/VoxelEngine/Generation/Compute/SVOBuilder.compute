@@ -15,7 +15,6 @@ StructuredBuffer<uint> _PageTableBuffer;
 StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
 StructuredBuffer<int> _SDFObjectIndexBuffer;
 
-// --- Edit Buffers ---
 struct EditInfo {
     int3 globalGridPos;
     int dataIndex;
@@ -39,7 +38,6 @@ int _NumDynamicObjects;
 uint _TargetLevelOffset;
 uint _TargetLevelCount;
 
-// [Keep SampleEdit and ApplyEdits helper functions exactly as they were...]
 bool SampleEdit(float3 pos, out float e_sdf, out float3 e_norm, out uint e_mat) {
     e_sdf = MAX_SDF_RANGE; e_norm = float3(0,1,0); e_mat = 0;
     if (_EditCount == 0) return false;
@@ -61,6 +59,7 @@ bool SampleEdit(float3 pos, out float e_sdf, out float3 e_norm, out uint e_mat) 
     }
     return false;
 }
+
 void ApplyEdits(inout GenerationContext ctx, float3 pos, float voxelSize) {
     if (_EditCount == 0) return;
     if (voxelSize <= _GlobalVoxelSize * 1.01) {
@@ -74,6 +73,7 @@ void ApplyEdits(inout GenerationContext ctx, float3 pos, float voxelSize) {
         float startOffset = -voxelSize * 0.5 + step * 0.5;
         float accumSDF = 0; float3 accumNorm = 0; bool anyEditFound = false;
         uint dominantMaterial = ctx.material;
+        [loop] // Force loop to prevent unrolling issues with dynamic bounds
         for (int z = 0; z < samplesPerAxis; z++) {
             for (int y = 0; y < samplesPerAxis; y++) {
                 for (int x = 0; x < samplesPerAxis; x++) {
@@ -100,7 +100,6 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
 {
     if (id == 0) _CounterBuffer[0] = 4681;
     if (id >= 4681) return;
-    
     SVONode node;
     node.packedInfo = 0;
     node.topology = 0;
@@ -137,24 +136,20 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     float3 brickMin = _ChunkWorldOrigin + ((brickOriginLocal - BRICK_PADDING) * scale);
     float3 brickMax = _ChunkWorldOrigin + ((brickOriginLocal + BRICK_SIZE + BRICK_PADDING) * scale);
 
-    // 2. LBVH Traversal (Pre-pass)
+    // 2. LBVH Traversal
     uint activeObjects[32];
     for(int i=0; i<32; i++) activeObjects[i] = 0;
     int activeCount = 0;
 
-    if (_NumDynamicObjects > 0)
-    {
+    if (_NumDynamicObjects > 0) {
         int stack[32];
         int stackPtr = 0;
-        stack[0] = 0; // Root
+        stack[0] = 0; 
         stackPtr++;
-        while(stackPtr > 0 && activeCount < 32)
-        {
+        while(stackPtr > 0 && activeCount < 32) {
             int nodeIdx = stack[--stackPtr];
             LBVHNode node = _LBVHNodeBuffer[nodeIdx];
-            
-            if (all(max(brickMin, node.boundsMin) <= min(brickMax, node.boundsMax)))
-            {
+            if (all(max(brickMin, node.boundsMin) <= min(brickMax, node.boundsMax))) {
                 if (node.leftChild < 0) {
                     int objIdx = ~node.leftChild;
                     int realIdx = _SDFObjectIndexBuffer[objIdx];
@@ -168,8 +163,7 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             }
         }
     }
-
-    // Sort active objects for determinism
+    // Sort
     for (int k = 1; k < activeCount; k++) {
         uint key = activeObjects[k];
         int j = k - 1;
@@ -180,32 +174,75 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         activeObjects[j + 1] = key;
     }
 
-    // Pre-check for emptiness
     float worldRadius = 3.0 * scale;
     GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0);
     ApplyEdits(centerCtx, brickCenterWorld, scale);
     ApplyDynamicObjects(centerCtx, brickCenterWorld, activeObjects, activeCount);
     
-    if (centerCtx.sdf < worldRadius) // Conservative check if potentially solid
+    // If potentially solid (inside terrain bounds)
+    if (centerCtx.sdf < worldRadius)
     {
-        // --- Temporary Storage to check for Uniformity ---
-        uint tempBuffer[BRICK_VOXEL_COUNT];
+        uint nodeIndex = GetNodeIndex(4, id);
+
+        // --- PASS 1: Check Uniformity (No Allocation) ---
         bool isFullSolid = true;
+        bool isUniformMat = true;
         uint commonMat = 0;
-        bool matUniform = true;
-        bool firstSolidFound = false;
+        bool firstSample = true;
+
+        [loop]
+        for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+            for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+                for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
+                    int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+                    float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
+                    float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
+                    
+                    // Generate without writing
+                    GenerationContext vCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    ApplyEdits(vCtx, voxelPosWorld, scale);
+                    ApplyDynamicObjects(vCtx, voxelPosWorld, activeObjects, activeCount);
+                    
+                    if (vCtx.sdf >= 0.0) { isFullSolid = false; break; } // Hit Air
+                    
+                    uint mat = vCtx.material;
+                    if (mat == 0) mat = 1;
+
+                    if (firstSample) {
+                        commonMat = mat;
+                        firstSample = false;
+                    } else if (mat != commonMat) {
+                        isUniformMat = false;
+                        break;
+                    }
+                }
+                if (!isFullSolid || !isUniformMat) break;
+            }
+            if (!isFullSolid || !isUniformMat) break;
+        }
+
+        // --- OPTIMIZATION: Fully Solid & Uniform ---
+        if (isFullSolid && isUniformMat && !firstSample)
+        {
+             // Write Flag, Skip Allocation
+             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = NODE_FLAG_SOLID | ((commonMat & 0xFF) << 16);
+             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(1,1,1,1));
+             return; 
+        }
+
+        // --- PASS 2: Allocate & Write (Mixed/Surface) ---
+        uint brickPtr;
+        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
 
         float4 accumulatedColor = 0;
         float voxelCount = 0;
         uint detectedMaterial = 0;
 
-        for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
-        {
-            for (uint y = 0; y < BRICK_STORAGE_SIZE; y++)
-            {
-                for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
-                {
-                    int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+        [loop]
+        for (uint z2 = 0; z2 < BRICK_STORAGE_SIZE; z2++) {
+            for (uint y2 = 0; y2 < BRICK_STORAGE_SIZE; y2++) {
+                for (uint x2 = 0; x2 < BRICK_STORAGE_SIZE; x2++) {
+                    int3 voxelOffset = int3(x2, y2, z2) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
                     float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
@@ -217,61 +254,24 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1;
 
-                    // Uniformity Check:
-                    // If any voxel has sdf >= 0 (Air/Surface), the brick is NOT fully solid.
-                    if (sdf >= 0.0) isFullSolid = false;
-                    
-                    if (!firstSolidFound) {
-                        commonMat = mat;
-                        firstSolidFound = true;
-                    } else if (mat != commonMat) {
-                        matUniform = false;
-                    }
+                    // Direct Write
+                    uint packedData = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
+                    uint idx = _BrickOffset + brickPtr + (z2 * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y2 * BRICK_STORAGE_SIZE + x2);
+                    _BrickDataBuffer[idx] = packedData;
 
-                    // Store packed data locally
-                    tempBuffer[z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x] = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
-
-                    // Accumulate for LOD (Inner 4x4x4 only)
-                    if (x >= BRICK_PADDING && x < BRICK_STORAGE_SIZE - BRICK_PADDING &&
-                        y >= BRICK_PADDING && y < BRICK_STORAGE_SIZE - BRICK_PADDING &&
-                        z >= BRICK_PADDING && z < BRICK_STORAGE_SIZE - BRICK_PADDING)
+                    // LOD
+                    if (x2 >= BRICK_PADDING && x2 < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        y2 >= BRICK_PADDING && y2 < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        z2 >= BRICK_PADDING && z2 < BRICK_STORAGE_SIZE - BRICK_PADDING)
                     {
-                        if (sdf < 0) 
-                        {
-                             float3 col = float3(1.0, 1.0, 1.0);
-                             accumulatedColor += float4(col, 1.0);
+                        if (sdf < 0) {
+                             accumulatedColor += 1.0; // White for now
                              voxelCount += 1.0;
                              detectedMaterial = mat;
                         }
                     }
                 }
             }
-        }
-
-        uint nodeIndex = GetNodeIndex(4, id);
-
-        // --- OPTIMIZATION: Completely Solid & Uniform Material ---
-        // If all 216 voxels are solid (SDF < 0) and share the same material,
-        // we can flag this node as solid and SKIP allocating the brick buffer.
-        // This saves VRAM and tells the Raytracer to treat it as a solid block.
-        if (isFullSolid && matUniform)
-        {
-             // Flag the node, store material, NO PAYLOAD
-             // PackedInfo: [Flag 1] ... [Material 8] [Payload 16=0]
-             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = NODE_FLAG_SOLID | ((commonMat & 0xFF) << 16);
-             
-             // Still write LOD color for distant viewing
-             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(1,1,1,1));
-             return; // EXIT EARLY
-        }
-
-        // --- Standard Allocation (Surface or Mixed) ---
-        uint brickPtr;
-        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
-
-        // Copy from temp buffer to global buffer
-        for(uint i=0; i<BRICK_VOXEL_COUNT; i++) {
-            _BrickDataBuffer[_BrickOffset + brickPtr + i] = tempBuffer[i];
         }
 
         uint payloadIndex;
@@ -285,19 +285,15 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = packed;
 
-        if (voxelCount > 0)
-        {
+        if (voxelCount > 0) {
             float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
-        }
-        else
-        {
+        } else {
             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
         }
     }
     else
     {
-        // Empty Brick
         uint nodeIndex = GetNodeIndex(4, id);
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = 0;
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;

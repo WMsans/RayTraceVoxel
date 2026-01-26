@@ -49,36 +49,27 @@ float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
 
 void ApplyDynamicObjects(inout GenerationContext ctx, float3 worldPos, uint activeObjects[32], int activeCount)
 {
-    // Iterate over the culled list of objects (Must be sorted by index for deterministic CSG)
-    for(int i = 0; i < activeCount; i++)
+    if (activeCount > 0)
     {
-        SDFObject obj = _SDFObjectBuffer[activeObjects[i]];
-        float3 objGradient;
-        float d = EvaluateSDFObject(obj, worldPos, objGradient);
+        for(int i = 0; i < activeCount; i++)
+        {
+            SDFObject obj = _SDFObjectBuffer[activeObjects[i]];
+            float3 objGradient;
+            float d = EvaluateSDFObject(obj, worldPos, objGradient);
 
-        // --- Combine ---
-        if (obj.operation == 0) // Union
-        {
-            UnionSmooth(ctx, d, objGradient, obj.materialId, obj.blendFactor);
-        }
-        else if (obj.operation == 1) // Subtract
-        {
-            // Smooth Subtraction: smax(ctx.sdf, -d, k)
-            // Implementation: mix(ctx.sdf, -d, h) + k * h * (1.0 - h)
-            // where h is the mixing factor based on distance.
-            float k = obj.blendFactor;
-            float d1 = ctx.sdf;
-            float d2 = d;
-            // h approaches 1.0 when -d2 > d1 (Subtractor is dominant)
-            float h = clamp( 0.5 - 0.5 * (d1 + d2) / k, 0.0, 1.0 );
-            ctx.sdf = lerp( d1, -d2, h ) + k * h * (1.0 - h);
-            // Correct Gradient Blending
-            // When h -> 1, we are inside the subtraction, normal should be inverted object normal
-            ctx.gradient = lerp(ctx.gradient, -objGradient, h);
-            // Material Logic:
-            // Usually, subtraction keeps the original material (we are cutting into it).
-            // However, if you want the "cut" surface to have a specific texture, uncomment below:
-            // if (h > 0.5) ctx.material = obj.materialId;
+            if (obj.operation == 0) 
+            {
+                UnionSmooth(ctx, d, objGradient, obj.materialId, obj.blendFactor);
+            }
+            else if (obj.operation == 1) 
+            {
+                float k = obj.blendFactor;
+                float d1 = ctx.sdf;
+                float d2 = d;
+                float h = clamp( 0.5 - 0.5 * (d1 + d2) / k, 0.0, 1.0 );
+                ctx.sdf = lerp( d1, -d2, h ) + k * h * (1.0 - h);
+                ctx.gradient = lerp(ctx.gradient, -objGradient, h);
+            }
         }
     }
 }

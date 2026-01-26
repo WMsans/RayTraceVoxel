@@ -55,8 +55,13 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
     float gridSz = 64.0;
     
     HitInfo result;
-    result.hit = false; result.pos = 0; result.normal = 0; result.matId = 0;
-    result.isLOD = false; result.lodColor = 0; result.brickId = 0; 
+    result.hit = false; 
+    result.pos = 0; 
+    result.normal = 0; 
+    result.matId = 0;
+    result.isLOD = false; 
+    result.lodColor = 0; 
+    result.brickId = 0; 
     
     while (tCurrent < tEnd && iter < _MaxIterations)
     {
