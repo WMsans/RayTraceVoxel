@@ -10,14 +10,19 @@
 #define PAGE_SIZE 2048
 
 // Packing Constants
-#define MAX_SDF_RANGE 4.0 // Clamp SDF to +/- 4.0 voxels before packing (8.0 range / 255 ~= 0.03 precision)
+#define MAX_SDF_RANGE 4.0 // Clamp SDF to +/- 4.0 voxels before packing
+
+// --- FLAGS ---
+// Bit 31 of packedInfo indicates a uniform solid node (no payload/brick data)
+#define NODE_FLAG_SOLID (1u << 31)
 
 // Structs
 struct SVONode 
 { 
     uint topology;
     uint lodColor; 
-    uint packedInfo; // [Payload 16] [Material 8] [Unused 8]
+    uint packedInfo; // [Flag 1] [Unused 7] [Material 8] [Payload 16] 
+    // Note: bit 31 is Flag. Payload is bits 0-15. Material is 16-23.
 };
 
 // Helper to unpack node info
@@ -29,7 +34,7 @@ void UnpackNode(SVONode node, out uint payloadIndex, out uint materialID)
 
 struct VoxelPayload 
 { 
-    uint brickDataIndex; // Points to start of brick in GlobalBrickDataBuffer
+    uint brickDataIndex;
 };
 
 struct VoxelTypeGPU
@@ -63,8 +68,6 @@ struct ChunkDef
     float4x4 worldToLocal;
     float4x4 localToWorld;
 };
-
-// ... existing code ...
 
 uint GetPhysicalIndex(uint virtualIndex, uint pageTableOffset, StructuredBuffer<uint> pageTable)
 {
@@ -101,11 +104,10 @@ struct LBVHNode
     int rightChild;
 };
 
-// --- TLAS Structs ---
 struct TLASCell
 {
-    uint offset; // Start index in the ChunkIndexBuffer
-    uint count;  // Number of chunks
+    uint offset;
+    uint count;
 };
 
 // --- Math Helpers ---
@@ -164,17 +166,11 @@ float4 UnpackColor(uint packedCol)
     return float4(r, g, b, a);
 }
 
-// --- NEW: Aggressive Packing Functions ---
-
 // Octahedral Encoding (16-bit)
-// Maps normalized vector to 2 bytes
 uint PackNormalOct(float3 n)
 {
-    // Project to octahedron
     n /= (abs(n.x) + abs(n.y) + abs(n.z));
     float2 oct = n.z >= 0 ? n.xy : (1.0 - abs(n.yx)) * (n.xy >= 0 ? 1.0 : -1.0);
-    
-    // Map -1..1 to 0..255
     uint2 packed = (uint2)(saturate(oct * 0.5 + 0.5) * 255.0);
     return packed.x | (packed.y << 8);
 }
@@ -193,28 +189,19 @@ float3 UnpackNormalOct(uint p)
 // Packs Material(8), SDF(8), Normal(16) -> uint(32)
 uint PackVoxelData(float sdf, float3 normal, uint materialID)
 {
-    // 1. Material (8 bits)
     uint mat = materialID & 0xFF;
-    
-    // 2. SDF (8 bits SNORM) -> Range +/- MAX_SDF_RANGE
     float normalizedSDF = clamp(sdf / MAX_SDF_RANGE, -1.0, 1.0);
     uint sdfInt = (uint)((normalizedSDF * 0.5 + 0.5) * 255.0);
-    
-    // 3. Normal (16 bits)
     uint norm = PackNormalOct(normal);
-    
-    // Layout: [Normal 16] [SDF 8] [Mat 8]
     return mat | (sdfInt << 8) | (norm << 16);
 }
 
 void UnpackVoxelData(uint data, out float sdf, out float3 normal, out uint materialID)
 {
     materialID = data & 0xFF;
-    
     uint sdfInt = (data >> 8) & 0xFF;
     float normalizedSDF = (sdfInt / 255.0) * 2.0 - 1.0;
     sdf = normalizedSDF * MAX_SDF_RANGE;
-    
     normal = UnpackNormalOct(data >> 16);
 }
 

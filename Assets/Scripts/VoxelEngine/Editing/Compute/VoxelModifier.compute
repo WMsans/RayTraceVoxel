@@ -6,28 +6,20 @@
 
 #include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
-// --- Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
 RWStructuredBuffer<uint> _BrickDataBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
-StructuredBuffer<uint> _PageTableBuffer; // New
-
-// Stores flattened voxel data for the requested brick range.
-// Size = (RangeX * RangeY * RangeZ) * 216
+StructuredBuffer<uint> _PageTableBuffer; 
 RWStructuredBuffer<uint> _ReadbackBuffer; 
 
-// --- Uniforms ---
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
 float _GridSize;
 int _MaxBricks;
-
-// Offsets for Global Buffers
 int _NodeOffset;
 int _PayloadOffset;
 int _BrickOffset;
-
 float3 _BrushPosition; 
 float3 _BrushBounds;   
 float _BrushRadius;    
@@ -35,9 +27,7 @@ int _BrushMaterialId;
 int _BrushOp; 
 float _Smoothness;
 
-// --- Helpers ---
-int GetLeafNodeIndex(int3 gridPos)
-{
+int GetLeafNodeIndex(int3 gridPos) {
     uint level = 4;
     uint index = GetNodeIndex(level, (uint3)gridPos); 
     return index;
@@ -49,124 +39,105 @@ void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
     int3 brickIdx = _MinBrickIndex + (int3)id;
     if (any(brickIdx > _MaxBrickIndex)) return;
 
-    // 1. Check Intersection with Brush
-    // Calculate Brick Center in Voxel Coords (Bricks are 4x4x4)
     float3 brickCenter = (float3)brickIdx * 4.0 + 2.0;
-    // Conservative radius check: Brick Radius (~3.5) + Brush Radius
     float dist = length(brickCenter - _BrushPosition);
     if (dist > (_BrushRadius + 4.0)) return;
 
-    // 2. Get Node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
-    // Apply NodeOffset
-    // uint globalNodeIndex = _NodeOffset + nodeIndex;
     SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
-
-    // 3. Check if Empty (Payload Index == 0)
+    
+    // Check Payload and Flag
     uint existingPayload = node.packedInfo & 0xFFFF;
+    bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+
+    // Allocate if Empty OR Optimized Solid
     if (existingPayload == 0)
     {
-        // 4. Allocate New Resources
         uint newPayloadIdx;
         InterlockedAdd(_CounterBuffer[1], 1, newPayloadIdx);
-        newPayloadIdx += 1; // 1-based index (0 is null)
+        newPayloadIdx += 1; 
 
         uint newBrickVoxelPtr;
         InterlockedAdd(_CounterBuffer[2], 216, newBrickVoxelPtr);
         
-        // Safety Check: Prevent overwriting if pool is full
         if ((newBrickVoxelPtr + 216) > ((uint)_MaxBricks * 216)) return;
-
-        // 5. Initialize Payload
+        
         VoxelPayload pl;
         pl.brickDataIndex = newBrickVoxelPtr;
         _PayloadBuffer[GetPhysicalIndex(newPayloadIdx, _PayloadOffset, _PageTableBuffer)] = pl;
         
-        // 6. Initialize Brick Data to "Air"
-        // We must fill the new 4x4x4 block with safe default values 
-        // so the edit kernel can blend correctly.
-        // MAX_SDF_RANGE (4.0) represents empty space. 
-        // Normal Up (0,1,0), Material 0.
-        uint packedAir = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
-        for (uint i = 0; i < 216; i++)
+        // --- INITIALIZATION LOGIC ---
+        uint packedFill;
+        if (isOptimizedSolid)
         {
-            _BrickDataBuffer[_BrickOffset + newBrickVoxelPtr + i] = packedAir;
+            // If it was optimized solid, fill with SOLID matter (-4.0 SDF)
+            // Use material from the optimized node
+            uint existingMat = (node.packedInfo >> 16) & 0xFF;
+            packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), existingMat);
+        }
+        else
+        {
+            // If it was empty/air, fill with AIR (4.0 SDF)
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
+        }
+
+        for (uint i = 0; i < 216; i++) {
+            _BrickDataBuffer[_BrickOffset + newBrickVoxelPtr + i] = packedFill;
         }
         
-        // 7. Link Node to New Payload
-        // Preserve existing upper bits (though usually 0 for empty nodes)
-        uint newPackedInfo = (newPayloadIdx & 0xFFFF) | (node.packedInfo & 0xFFFF0000);
+        // Link new payload, PRESERVE flags except the solid flag (clear it)
+        uint currentInfo = node.packedInfo & 0xFFFF0000;
+        currentInfo &= ~NODE_FLAG_SOLID; // Clear solid flag
+        
+        uint newPackedInfo = (newPayloadIdx & 0xFFFF) | currentInfo;
+        
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = newPackedInfo;
     }
 }
 
+// [Rest of file: EditVoxelsSphere, AllocateNodesCube, etc. remain unchanged]
 [numthreads(4, 4, 4)]
 void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
 {
-    // id corresponds to a BRICK in the range [0..rangeX, 0..rangeY, 0..rangeZ]
     int3 brickIdx = _MinBrickIndex + (int3)id;
     if (any(brickIdx > _MaxBrickIndex)) return;
-    
-    // Find the node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
     SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
     if (payloadIdx == 0) return;
-    // Should be allocated now if intersecting
     
     VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
     uint brickPtr = payload.brickDataIndex;
     
-    // Iterate over voxels in the brick (6x6x6)
-    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
-    {
-        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++)
-        {
-            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
-            {
+    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
                 uint voxelIdx = _BrickOffset + brickPtr + z*36 + y*6 + x;
                 uint packed = _BrickDataBuffer[voxelIdx];
-                
-                float sdf;
-                float3 norm;
-                uint mat;
+                float sdf; float3 norm; uint mat;
                 UnpackVoxelData(packed, sdf, norm, mat);
-                
-                // Reconstruct voxel position (Local to Volume in Voxel Units)
                 int3 voxelOffset = int3(x,y,z) - int3(1,1,1);
-                // Padding offset
                 float3 voxelPosLocal = (float3)brickIdx * 4.0 + (float3)voxelOffset;
-                
-                // --- SDF Logic ---
-                // _BrushPosition is now in Voxel Units
                 float3 diff = voxelPosLocal - _BrushPosition;
                 float distRaw = length(diff);
                 float dist = distRaw - _BrushRadius;
-                
-                // Calculate gradient (normal) for the sphere
                 float3 sphereNormal = (distRaw > 1e-5) ? diff / distRaw : float3(0,1,0);
 
-                if (_BrushOp == 0) // Add (Union)
-                {
+                if (_BrushOp == 0) {
                     float h = clamp( 0.5 + 0.5 * (sdf - dist) / _Smoothness, 0.0, 1.0 );
                     sdf = lerp( sdf, dist, h ) - _Smoothness * h * (1.0 - h);
-                    
                     norm = normalize(lerp(norm, sphereNormal, h));
                     if (h > 0.5) mat = _BrushMaterialId;
                 }
-                else if (_BrushOp == 1) // Subtract
-                {
+                else if (_BrushOp == 1) {
                     float h = clamp( 0.5 - 0.5 * (sdf + dist) / _Smoothness, 0.0, 1.0 );
                     sdf = lerp( sdf, -dist, h ) + _Smoothness * h * (1.0 - h);
-
                     norm = normalize(lerp(norm, -sphereNormal, h));
                 }
-                else if (_BrushOp == 2) // Paint
-                {
+                else if (_BrushOp == 2) {
                     if (dist < 0) mat = _BrushMaterialId;
                 }
-                
                 _BrickDataBuffer[voxelIdx] = PackVoxelData(sdf, norm, mat);
             }
         }
@@ -174,73 +145,52 @@ void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 8)]
-void AllocateNodesCube(uint3 id : SV_DispatchThreadID) 
-{
-    // TODO: Cube logic similar to Sphere
-}
+void AllocateNodesCube(uint3 id : SV_DispatchThreadID) { }
 
 [numthreads(4, 4, 4)]
-void EditVoxelsCube(uint3 id : SV_DispatchThreadID) 
-{
-    // TODO: Cube logic would go here
-}
+void EditVoxelsCube(uint3 id : SV_DispatchThreadID) { }
 
 [numthreads(4, 4, 4)]
 void ExtractBricks(uint3 id : SV_DispatchThreadID)
 {
-    // id corresponds to the offset within the dispatch range (0..Range-1)
     int3 brickIdx = _MinBrickIndex + (int3)id;
-    
-    // Bounds check against the requested range
     if (any(brickIdx > _MaxBrickIndex)) return;
-
-    // Calculate Linear Write Index for the Readback Buffer
-    // We assume the C# side reads the data in the same Z->Y->X order
     int3 range = (_MaxBrickIndex - _MinBrickIndex) + 1;
-    
-    // Safety check for dispatch over-run
     if (any(id >= (uint3)range)) return;
-
     uint brickLinearIdx = id.z * (range.x * range.y) + id.y * range.x + id.x;
-    uint writeStart = brickLinearIdx * BRICK_VOXEL_COUNT; // 216 voxels per brick
+    uint writeStart = brickLinearIdx * BRICK_VOXEL_COUNT;
 
-    // 1. Resolve SVO Node
     int nodeIndex = GetLeafNodeIndex(brickIdx);
     SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
     
     uint payloadIdx, matID;
     UnpackNode(node, payloadIdx, matID);
 
-    // 2. Check for Empty Node
+    // If payload is 0, we check if it is Empty or Solid Optimized
     if (payloadIdx == 0)
     {
-        // If the node is empty, we must write "Air" to the database
-        // so the edit manager knows this region is empty (or cleared).
-        // Air = SDF Max Range, Normal Up, Material 0
-        uint packedAir = PackVoxelData(MAX_SDF_RANGE, float3(0, 1, 0), 0);
-        
-        for (uint i = 0; i < BRICK_VOXEL_COUNT; i++)
-        {
-            _ReadbackBuffer[writeStart + i] = packedAir;
+        bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+        uint packedFill;
+
+        if (isOptimizedSolid)
+            packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), matID);
+        else
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0, 1, 0), 0);
+
+        for (uint i = 0; i < BRICK_VOXEL_COUNT; i++) {
+            _ReadbackBuffer[writeStart + i] = packedFill;
         }
         return;
     }
 
-    // 3. Read Existing Brick Data
     VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
     uint brickPtr = payload.brickDataIndex;
 
-    // Iterate 6x6x6
-    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
-    {
-        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++)
-        {
-            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++)
-            {
+    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
                 uint voxelIdx = _BrickOffset + brickPtr + (z * 36) + (y * 6) + x;
                 uint data = _BrickDataBuffer[voxelIdx];
-                
-                // Write to linear readback buffer
                 _ReadbackBuffer[writeStart + (z * 36) + (y * 6) + x] = data;
             }
         }

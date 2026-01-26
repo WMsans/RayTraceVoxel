@@ -8,16 +8,12 @@
 // --- Global Buffers ---
 RWStructuredBuffer<SVONode> _NodeBuffer;
 RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
-// [OPTIMIZATION] Merged Buffer (Replaces BrickBuffer, MaterialBuffer, NormalBuffer)
 RWStructuredBuffer<uint> _BrickDataBuffer; 
-
 RWStructuredBuffer<uint> _CounterBuffer;
-StructuredBuffer<uint> _PageTableBuffer; // New
+StructuredBuffer<uint> _PageTableBuffer;
 
-// Dynamic SDF Buffers
 StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
 StructuredBuffer<int> _SDFObjectIndexBuffer;
-// _SDFObjectBuffer is defined in GeneratorPipeline.hlsl
 
 // --- Edit Buffers ---
 struct EditInfo {
@@ -43,115 +39,58 @@ int _NumDynamicObjects;
 uint _TargetLevelOffset;
 uint _TargetLevelCount;
 
-bool SampleEdit(float3 pos, out float e_sdf, out float3 e_norm, out uint e_mat)
-{
-    // Initialize outs
-    e_sdf = MAX_SDF_RANGE;
-    e_norm = float3(0,1,0);
-    e_mat = 0;
-
+// [Keep SampleEdit and ApplyEdits helper functions exactly as they were...]
+bool SampleEdit(float3 pos, out float e_sdf, out float3 e_norm, out uint e_mat) {
+    e_sdf = MAX_SDF_RANGE; e_norm = float3(0,1,0); e_mat = 0;
     if (_EditCount == 0) return false;
-    
-    float globalBrickSizeWorld = (float)_GlobalBrickSize * _GlobalVoxelSize; 
+    float globalBrickSizeWorld = (float)_GlobalBrickSize * _GlobalVoxelSize;
     if (globalBrickSizeWorld <= 0.001) return false;
-
     int3 globalGridPos = floor(pos / globalBrickSizeWorld);
-
-    for (int i = 0; i < _EditCount; i++)
-    {
+    for (int i = 0; i < _EditCount; i++) {
         EditInfo info = _EditInfoBuffer[i];
-        if (all(info.globalGridPos == globalGridPos))
-        {
+        if (all(info.globalGridPos == globalGridPos)) {
              float3 brickOrigin = (float3)globalGridPos * globalBrickSizeWorld;
              float3 localPos = pos - brickOrigin; 
-             
              int3 idx = (int3)floor(localPos / _GlobalVoxelSize) + int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
              idx = clamp(idx, 0, BRICK_STORAGE_SIZE - 1);
-             
              uint flatIdx = info.dataIndex + (idx.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + idx.y * BRICK_STORAGE_SIZE + idx.x);
              uint packedData = _EditVoxelBuffer[flatIdx];
-             
              UnpackVoxelData(packedData, e_sdf, e_norm, e_mat);
              return true;
         }
     }
     return false;
 }
-
-void ApplyEdits(inout GenerationContext ctx, float3 pos, float voxelSize)
-{
+void ApplyEdits(inout GenerationContext ctx, float3 pos, float voxelSize) {
     if (_EditCount == 0) return;
-
-    // Threshold: if current voxel is roughly same size as edit voxel (or smaller), use point sampling.
-    if (voxelSize <= _GlobalVoxelSize * 1.01)
-    {
+    if (voxelSize <= _GlobalVoxelSize * 1.01) {
         float e_sdf; float3 e_norm; uint e_mat;
-        if (SampleEdit(pos, e_sdf, e_norm, e_mat))
-        {
-            ctx.sdf = e_sdf;
-            ctx.gradient = e_norm;
-            ctx.material = e_mat;
+        if (SampleEdit(pos, e_sdf, e_norm, e_mat)) {
+            ctx.sdf = e_sdf; ctx.gradient = e_norm; ctx.material = e_mat;
         }
-    }
-    else
-    {
-        // --- Downsampling Strategy ---
-        // When generating low-LOD chunks (voxelSize > editVoxelSize),
-        // we must average the high-res edits to prevent aliasing/disappearing edits.
-        
+    } else {
         int samplesPerAxis = clamp(ceil(voxelSize / _GlobalVoxelSize), 1, 4);
         float step = voxelSize / (float)samplesPerAxis;
         float startOffset = -voxelSize * 0.5 + step * 0.5;
-        
-        float accumSDF = 0;
-        float3 accumNorm = 0;
-        bool anyEditFound = false;
-        
+        float accumSDF = 0; float3 accumNorm = 0; bool anyEditFound = false;
         uint dominantMaterial = ctx.material;
-        
-        // We iterate over the sub-voxel grid
-        for (int z = 0; z < samplesPerAxis; z++) 
-        {
-            for (int y = 0; y < samplesPerAxis; y++) 
-            {
-                for (int x = 0; x < samplesPerAxis; x++) 
-                {
+        for (int z = 0; z < samplesPerAxis; z++) {
+            for (int y = 0; y < samplesPerAxis; y++) {
+                for (int x = 0; x < samplesPerAxis; x++) {
                      float3 offset = float3(x,y,z) * step + startOffset;
                      float3 samplePos = pos + offset;
-                     
                      float e_sdf; float3 e_norm; uint e_mat;
                      bool isEdited = SampleEdit(samplePos, e_sdf, e_norm, e_mat);
-                     
-                     float sampleVal;
-                     float3 sampleGrad;
-                     
-                     if (isEdited) 
-                     {
-                         sampleVal = e_sdf;
-                         sampleGrad = e_norm;
-                         if (e_mat != 0) dominantMaterial = e_mat; // Capture edit material
-                         anyEditFound = true;
-                     } 
-                     else 
-                     {
-                         // Approximation: Use Plane equation from center point for procedural terrain
-                         // This avoids running the expensive GeneratorPipeline for every sample.
-                         sampleVal = ctx.sdf + dot(ctx.gradient, offset);
-                         sampleGrad = ctx.gradient;
-                     }
-                     
-                     accumSDF += sampleVal;
-                     accumNorm += sampleGrad;
+                     float sampleVal; float3 sampleGrad;
+                     if (isEdited) { sampleVal = e_sdf; sampleGrad = e_norm; if (e_mat != 0) dominantMaterial = e_mat; anyEditFound = true; } 
+                     else { sampleVal = ctx.sdf + dot(ctx.gradient, offset); sampleGrad = ctx.gradient; }
+                     accumSDF += sampleVal; accumNorm += sampleGrad;
                 }
             }
         }
-        
-        if (anyEditFound) 
-        {
+        if (anyEditFound) {
              float count = (float)(samplesPerAxis * samplesPerAxis * samplesPerAxis);
-             ctx.sdf = accumSDF / count;
-             ctx.gradient = normalize(accumNorm);
-             ctx.material = dominantMaterial;
+             ctx.sdf = accumSDF / count; ctx.gradient = normalize(accumNorm); ctx.material = dominantMaterial;
         }
     }
 }
@@ -168,23 +107,17 @@ void InitDenseStructure(uint id : SV_DispatchThreadID)
     node.lodColor = 0;
     uint level = 0;
     uint indexInLevel = id;
-    if (id >= 585) { level = 4; indexInLevel = id - 585;
-    }
-    else if (id >= 73) { level = 3; indexInLevel = id - 73;
-    }
-    else if (id >= 9) { level = 2; indexInLevel = id - 9;
-    }
-    else if (id >= 1) { level = 1; indexInLevel = id - 1;
-    }
+    if (id >= 585) { level = 4; indexInLevel = id - 585; }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
 
-    if (level < 4)
-    {
+    if (level < 4) {
         uint nextLevelOffset = 0;
         if (level == 0) nextLevelOffset = 1;
         if (level == 1) nextLevelOffset = 9;
         if (level == 2) nextLevelOffset = 73;
         if (level == 3) nextLevelOffset = 585;
-
         uint childPtr = nextLevelOffset + (indexInLevel * 8);
         node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
     }
@@ -196,14 +129,11 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
 {
     uint bricksAxis = _GridSize / BRICK_SIZE;
     if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
-
-    // 1. Calculate Brick Bounds in World Space
+    
     float3 brickOriginLocal = id * BRICK_SIZE;
     float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
-    float brickWorldRadius = (float)BRICK_SIZE * scale * 0.87;
-
     float3 brickMin = _ChunkWorldOrigin + ((brickOriginLocal - BRICK_PADDING) * scale);
     float3 brickMax = _ChunkWorldOrigin + ((brickOriginLocal + BRICK_SIZE + BRICK_PADDING) * scale);
 
@@ -218,7 +148,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         int stackPtr = 0;
         stack[0] = 0; // Root
         stackPtr++;
-
         while(stackPtr > 0 && activeCount < 32)
         {
             int nodeIdx = stack[--stackPtr];
@@ -226,16 +155,12 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             
             if (all(max(brickMin, node.boundsMin) <= min(brickMax, node.boundsMax)))
             {
-                if (node.leftChild < 0) // Leaf
-                {
+                if (node.leftChild < 0) {
                     int objIdx = ~node.leftChild;
                     int realIdx = _SDFObjectIndexBuffer[objIdx];
                     activeObjects[activeCount++] = realIdx;
-                }
-                else // Internal
-                {
-                    if(stackPtr < 30) 
-                    {
+                } else {
+                    if(stackPtr < 30) {
                         stack[stackPtr++] = node.leftChild;
                         stack[stackPtr++] = node.rightChild;
                     }
@@ -244,48 +169,36 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    // [FIX] SORT ACTIVE OBJECTS
-    // The BVH traversal returns objects in spatial order.
-    // CSG operations must be deterministic (creation order).
-    // We perform a simple Insertion Sort on the indices.
-    // Since N <= 32, this is very fast.
-    for (int k = 1; k < activeCount; k++)
-    {
+    // Sort active objects for determinism
+    for (int k = 1; k < activeCount; k++) {
         uint key = activeObjects[k];
         int j = k - 1;
-        while (j >= 0 && activeObjects[j] > key)
-        {
+        while (j >= 0 && activeObjects[j] > key) {
             activeObjects[j + 1] = activeObjects[j];
             j = j - 1;
         }
         activeObjects[j + 1] = key;
     }
-    // [END FIX]
 
-    // [OPTIMIZATION DISABLED] Early-Out for Terrain
-    // The "Tubes" are floating 3D structures. The heightmap optimization (GetHeight)
-    // assumes a single surface and incorrectly culls the air where tubes reside.
-    // We disable this optimization to ensure 3D structures are generated correctly.
-    
+    // Pre-check for emptiness
     float worldRadius = 3.0 * scale;
-
-    // 3. Evaluate SDF at Brick Center
-    // Terrain -> Edits -> Dynamic SDF
-    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0); // 0 objects
+    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0);
     ApplyEdits(centerCtx, brickCenterWorld, scale);
     ApplyDynamicObjects(centerCtx, brickCenterWorld, activeObjects, activeCount);
-
-    if (centerCtx.sdf < worldRadius)
+    
+    if (centerCtx.sdf < worldRadius) // Conservative check if potentially solid
     {
-        uint brickPtr;
-        // Allocate 216 voxels (6x6x6)
-        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
-        
+        // --- Temporary Storage to check for Uniformity ---
+        uint tempBuffer[BRICK_VOXEL_COUNT];
+        bool isFullSolid = true;
+        uint commonMat = 0;
+        bool matUniform = true;
+        bool firstSolidFound = false;
+
         float4 accumulatedColor = 0;
         float voxelCount = 0;
         uint detectedMaterial = 0;
 
-        // Iterate over storage size (6x6x6)
         for (uint z = 0; z < BRICK_STORAGE_SIZE; z++)
         {
             for (uint y = 0; y < BRICK_STORAGE_SIZE; y++)
@@ -296,7 +209,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
-                    // Per-Voxel Logic
                     GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
                     ApplyEdits(voxelCtx, voxelPosWorld, scale);
                     ApplyDynamicObjects(voxelCtx, voxelPosWorld, activeObjects, activeCount);
@@ -305,10 +217,19 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     uint mat = voxelCtx.material;
                     if (mat == 0) mat = 1;
 
-                    // [OPTIMIZATION] Pack Data
-                    uint packedData = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
-                    uint idx = _BrickOffset + brickPtr + (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x);
-                    _BrickDataBuffer[idx] = packedData;
+                    // Uniformity Check:
+                    // If any voxel has sdf >= 0 (Air/Surface), the brick is NOT fully solid.
+                    if (sdf >= 0.0) isFullSolid = false;
+                    
+                    if (!firstSolidFound) {
+                        commonMat = mat;
+                        firstSolidFound = true;
+                    } else if (mat != commonMat) {
+                        matUniform = false;
+                    }
+
+                    // Store packed data locally
+                    tempBuffer[z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y * BRICK_STORAGE_SIZE + x] = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
 
                     // Accumulate for LOD (Inner 4x4x4 only)
                     if (x >= BRICK_PADDING && x < BRICK_STORAGE_SIZE - BRICK_PADDING &&
@@ -327,6 +248,32 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
             }
         }
 
+        uint nodeIndex = GetNodeIndex(4, id);
+
+        // --- OPTIMIZATION: Completely Solid & Uniform Material ---
+        // If all 216 voxels are solid (SDF < 0) and share the same material,
+        // we can flag this node as solid and SKIP allocating the brick buffer.
+        // This saves VRAM and tells the Raytracer to treat it as a solid block.
+        if (isFullSolid && matUniform)
+        {
+             // Flag the node, store material, NO PAYLOAD
+             // PackedInfo: [Flag 1] ... [Material 8] [Payload 16=0]
+             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = NODE_FLAG_SOLID | ((commonMat & 0xFF) << 16);
+             
+             // Still write LOD color for distant viewing
+             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(1,1,1,1));
+             return; // EXIT EARLY
+        }
+
+        // --- Standard Allocation (Surface or Mixed) ---
+        uint brickPtr;
+        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
+
+        // Copy from temp buffer to global buffer
+        for(uint i=0; i<BRICK_VOXEL_COUNT; i++) {
+            _BrickDataBuffer[_BrickOffset + brickPtr + i] = tempBuffer[i];
+        }
+
         uint payloadIndex;
         InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
         payloadIndex += 1; 
@@ -335,9 +282,6 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
         payload.brickDataIndex = brickPtr;
         _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)] = payload;
 
-        uint nodeIndex = GetNodeIndex(4, id);
-
-        // Pack Payload (16) | Material (8)
         uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = packed;
 
@@ -360,52 +304,34 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     }
 }
 
-
+// [PropagateLOD remains unchanged]
 [numthreads(64, 1, 1)]
 void PropagateLOD(uint id : SV_DispatchThreadID)
 {
     if (id >= _TargetLevelCount) return;
     uint nodeIndex = _TargetLevelOffset + id;
     SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
-
-    if (node.topology == 0)
-    {
+    if (node.topology == 0) {
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
         return;
     }
-
     uint childBasePtr = node.topology & 0xFFFFFF; 
-    float4 acc = 0;
-    float count = 0;
-    uint maxMaterial = 0;
-
-    for (int i = 0; i < 8; i++)
-    {
+    float4 acc = 0; float count = 0; uint maxMaterial = 0;
+    for (int i = 0; i < 8; i++) {
         SVONode child = _NodeBuffer[GetPhysicalIndex(childBasePtr + i, _NodeOffset, _PageTableBuffer)];
         float4 c = UnpackColor(child.lodColor);
-        if (c.a > 0.0) 
-        {
-            acc.rgb += c.rgb;
-            acc.a += c.a;
-            count += 1.0;
-            
-            // Unpack Material from child
+        if (c.a > 0.0) {
+            acc.rgb += c.rgb; acc.a += c.a; count += 1.0;
             uint childPayload, childMat;
             UnpackNode(child, childPayload, childMat);
             if (childMat != 0) maxMaterial = childMat;
         }
     }
-
-    if (count > 0.0)
-    {
-        float3 avgColor = acc.rgb / count;
-        float nodeDensity = acc.a / 8.0;
+    if (count > 0.0) {
+        float3 avgColor = acc.rgb / count; float nodeDensity = acc.a / 8.0;
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(avgColor, nodeDensity));
-        // Pack Material back (Internal nodes have Payload=0)
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = (maxMaterial & 0xFF) << 16;
-    }
-    else
-    {
+    } else {
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
         _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = 0;
     }
