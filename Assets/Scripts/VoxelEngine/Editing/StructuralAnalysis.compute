@@ -1,0 +1,137 @@
+#pragma kernel AnalyzeBricks
+
+#include "../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+StructuredBuffer<SVONode> _GlobalNodeBuffer;
+StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
+StructuredBuffer<uint> _GlobalBrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer;
+
+// Bitmask: 1 bit per voxel
+RWStructuredBuffer<uint> _TopologyBuffer;
+
+// Active Bricks: Packed uint (x | y<<10 | z<<20)
+AppendStructuredBuffer<uint> _ActiveBrickBuffer;
+
+uint _Resolution; 
+uint _PageTableOffset;
+uint _BrickOffset;
+
+uint GetPhysIdx(uint virtualIndex)
+{
+    uint pageID = virtualIndex / PAGE_SIZE;
+    uint offsetInPage = virtualIndex % PAGE_SIZE;
+    uint physicalPageStart = _PageTableBuffer[_PageTableOffset + pageID];
+    return physicalPageStart + offsetInPage;
+}
+
+[numthreads(4, 4, 4)]
+void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
+{
+    // id is the BRICK coordinate (0 .. Res/4)
+    uint bricksPerDim = _Resolution / BRICK_SIZE;
+    if (any(id >= bricksPerDim)) return;
+
+    // 1. Traverse SVO to find this Brick's Leaf Node
+    // We traverse to the center of the brick
+    float3 nodePos = float3(0,0,0);
+    float nodeSize = _Resolution;
+    uint nodeIndex = 0;
+    
+    float3 targetPos = id * BRICK_SIZE + (BRICK_SIZE * 0.5);
+    
+    bool hitLeaf = false;
+    SVONode leafNode;
+    
+    // Max depth 10 safety
+    for (int depth = 0; depth < 10; depth++)
+    {
+        float halfSize = nodeSize * 0.5;
+        float3 center = nodePos + halfSize;
+        int octant = 0;
+        if (targetPos.x >= center.x) octant |= 1;
+        if (targetPos.y >= center.y) octant |= 2;
+        if (targetPos.z >= center.z) octant |= 4;
+
+        SVONode node = _GlobalNodeBuffer[GetPhysIdx(nodeIndex)];
+        uint childMask = (node.topology >> 24) & 0xFF;
+        
+        if ((childMask & (1 << octant)) != 0)
+        {
+            uint childBase = node.topology & 0xFFFFFF;
+            uint maskBefore = childMask & ((1 << octant) - 1);
+            nodeIndex = childBase + countbits(maskBefore);
+            
+            nodePos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+            nodeSize = halfSize;
+            
+            if (nodeSize <= BRICK_SIZE + 0.01) // Reached Brick Level
+            {
+                hitLeaf = true;
+                leafNode = _GlobalNodeBuffer[GetPhysIdx(nodeIndex)];
+                break;
+            }
+        }
+        else
+        {
+            // Empty branch
+            return; 
+        }
+    }
+
+    if (!hitLeaf) return;
+
+    // 2. Found Active Brick - Append to List
+    uint packedBrickCoord = id.x | (id.y << 10) | (id.z << 20);
+    _ActiveBrickBuffer.Append(packedBrickCoord);
+
+    // 3. Process Voxels in this Brick
+    bool isSolidNode = (leafNode.packedInfo & NODE_FLAG_SOLID) != 0;
+    uint payloadIndex, matID;
+    UnpackNode(leafNode, payloadIndex, matID);
+    
+    uint brickPtr = 0;
+    if (!isSolidNode && payloadIndex != 0)
+    {
+        VoxelPayload payload = _GlobalPayloadBuffer[GetPhysIdx(payloadIndex)];
+        brickPtr = payload.brickDataIndex;
+    }
+    
+    // Iterate voxels within brick (4x4x4)
+    for (uint z = 0; z < BRICK_SIZE; z++)
+    for (uint y = 0; y < BRICK_SIZE; y++)
+    for (uint x = 0; x < BRICK_SIZE; x++)
+    {
+        uint3 voxelLocal = uint3(x, y, z);
+        uint3 voxelGlobal = id * BRICK_SIZE + voxelLocal;
+        
+        bool isVoxelSolid = false;
+        
+        if (isSolidNode)
+        {
+            isVoxelSolid = true;
+        }
+        else if (brickPtr != 0)
+        {
+            // Sample Brick Data
+            // Add padding
+            uint3 p = voxelLocal + 1; 
+            uint idx = _BrickOffset + brickPtr + 
+                       p.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + 
+                       p.y * BRICK_STORAGE_SIZE + 
+                       p.x;
+            
+            float s; float3 n; uint m;
+            UnpackVoxelData(_GlobalBrickDataBuffer[idx], s, n, m);
+            if (s < 0.01) isVoxelSolid = true;
+        }
+        
+        if (isVoxelSolid)
+        {
+            uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+            uint wordIdx = flatIdx / 32;
+            uint bitIdx = flatIdx % 32;
+            InterlockedOr(_TopologyBuffer[wordIdx], 1u << bitIdx);
+        }
+    }
+}
