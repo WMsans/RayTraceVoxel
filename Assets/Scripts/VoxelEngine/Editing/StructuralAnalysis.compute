@@ -9,13 +9,11 @@ StructuredBuffer<SVONode> _GlobalNodeBuffer;
 StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
 StructuredBuffer<uint> _GlobalBrickDataBuffer;
 StructuredBuffer<uint> _PageTableBuffer;
-
 // Bitmask: 1 bit per voxel
 RWStructuredBuffer<uint> _TopologyBuffer;
 
 // Stability: 1 uint per voxel (0 = Unstable, 1 = Stable)
 RWStructuredBuffer<uint> _StabilityBuffer;
-
 // Active Bricks: Packed uint (x | y<<10 | z<<20)
 // For AnalyzeBricks: Output (Append)
 // For Others: Input (Structured)
@@ -33,6 +31,16 @@ uint _PageTableOffset;
 uint _BrickOffset;
 float _GroundThresholdY; // Voxel Y threshold for stability
 
+// --- Neighbor Chunk References ---
+StructuredBuffer<SVONode> _NeighborNodeBuffer;
+StructuredBuffer<VoxelPayload> _NeighborPayloadBuffer;
+StructuredBuffer<uint> _NeighborBrickDataBuffer;
+StructuredBuffer<uint> _NeighborPageTableBuffer;
+uint _NeighborPageTableOffset;
+uint _NeighborBrickOffset;
+uint _NeighborResolution;
+int _HasNeighbor;
+
 uint GetPhysIdx(uint virtualIndex)
 {
     uint pageID = virtualIndex / PAGE_SIZE;
@@ -41,9 +49,101 @@ uint GetPhysIdx(uint virtualIndex)
     return physicalPageStart + offsetInPage;
 }
 
+uint GetNeighborPhysIdx(uint virtualIndex)
+{
+    uint pageID = virtualIndex / PAGE_SIZE;
+    uint offsetInPage = virtualIndex % PAGE_SIZE;
+    uint physicalPageStart = _NeighborPageTableBuffer[_NeighborPageTableOffset + pageID];
+    return physicalPageStart + offsetInPage;
+}
+
 bool IsSolid(uint idx)
 {
     return (_TopologyBuffer[idx / 32u] & (1u << (idx % 32u))) != 0;
+}
+
+// Checks if a voxel in the neighbor volume is solid
+bool IsNeighborSolid(uint3 neighborPos)
+{
+    if (any(neighborPos >= _NeighborResolution)) return false;
+
+    float3 nodePos = float3(0,0,0);
+    float nodeSize = _NeighborResolution;
+    uint nodeIndex = 0;
+    
+    // Center of the voxel we are checking
+    float3 targetPos = neighborPos + 0.5f;
+    bool hitLeaf = false;
+    SVONode leafNode;
+    
+    // Traverse Neighbor SVO
+    for (int depth = 0; depth < 10; depth++)
+    {
+        float halfSize = nodeSize * 0.5;
+        float3 center = nodePos + halfSize;
+        int octant = 0;
+        if (targetPos.x >= center.x) octant |= 1;
+        if (targetPos.y >= center.y) octant |= 2;
+        if (targetPos.z >= center.z) octant |= 4;
+
+        SVONode node = _NeighborNodeBuffer[GetNeighborPhysIdx(nodeIndex)];
+        uint childMask = (node.topology >> 24) & 0xFF;
+        
+        if ((childMask & (1u << octant)) != 0)
+        {
+            uint childBase = node.topology & 0xFFFFFF;
+            uint maskBefore = childMask & ((1u << octant) - 1u);
+            nodeIndex = childBase + countbits(maskBefore);
+            nodePos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
+            nodeSize = halfSize;
+            
+            if (nodeSize <= BRICK_SIZE + 0.01f) // Reached Brick Level
+            {
+                hitLeaf = true;
+                leafNode = _NeighborNodeBuffer[GetNeighborPhysIdx(nodeIndex)];
+                break;
+            }
+        }
+        else
+        {
+            return false; // Empty space in SVO
+        }
+    }
+
+    if (!hitLeaf) return false;
+
+    // Check specific voxel in the brick
+    bool isSolidNode = (leafNode.packedInfo & NODE_FLAG_SOLID) != 0;
+    if (isSolidNode) return true;
+
+    uint payloadIndex, matID;
+    UnpackNode(leafNode, payloadIndex, matID);
+    
+    if (payloadIndex == 0) return false;
+
+    VoxelPayload payload = _NeighborPayloadBuffer[GetNeighborPhysIdx(payloadIndex)];
+    uint brickPtr = payload.brickDataIndex;
+    
+    if (brickPtr == 0) return false;
+
+    // Determine local coordinate inside the brick
+    // We need to know which brick 'targetPos' lands in.
+    // targetPos is global coord in neighbor.
+    // Brick coord:
+    uint3 brickOrigin = (uint3)(targetPos / BRICK_SIZE) * BRICK_SIZE;
+    uint3 voxelLocal = neighborPos - brickOrigin;
+    
+    // Apply padding offset (1) for storage lookup
+    uint3 p = voxelLocal + 1u;
+    uint idx = _NeighborBrickOffset + brickPtr + 
+               p.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + 
+               p.y * BRICK_STORAGE_SIZE + 
+               p.x;
+               
+    float s; float3 n; uint m;
+    UnpackVoxelData(_NeighborBrickDataBuffer[idx], s, n, m);
+    
+    return (s < 0.01f); // Assuming SDF < 0 is solid
 }
 
 [numthreads(4, 4, 4)]
@@ -59,7 +159,6 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
     uint nodeIndex = 0;
     
     float3 targetPos = id * BRICK_SIZE + (BRICK_SIZE * 0.5);
-    
     bool hitLeaf = false;
     SVONode leafNode;
     
@@ -81,7 +180,6 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
             uint childBase = node.topology & 0xFFFFFF;
             uint maskBefore = childMask & ((1u << octant) - 1u);
             nodeIndex = childBase + countbits(maskBefore);
-            
             nodePos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
             nodeSize = halfSize;
             
@@ -94,12 +192,11 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
         }
         else
         {
-            return; 
+            return;
         }
     }
 
     if (!hitLeaf) return;
-
     // 2. Found Active Brick - Append to List
     uint packedBrickCoord = id.x | (id.y << 10) | (id.z << 20);
     _ActiveBrickBuffer.Append(packedBrickCoord);
@@ -124,19 +221,17 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
         uint3 voxelGlobal = id * BRICK_SIZE + voxelLocal;
         
         bool isVoxelSolid = false;
-        
         if (isSolidNode)
         {
             isVoxelSolid = true;
         }
         else if (brickPtr != 0)
         {
-            uint3 p = voxelLocal + 1u; 
+            uint3 p = voxelLocal + 1u;
             uint idx = _BrickOffset + brickPtr + 
                        p.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + 
                        p.y * BRICK_STORAGE_SIZE + 
                        p.x;
-            
             float s; float3 n; uint m;
             UnpackVoxelData(_GlobalBrickDataBuffer[idx], s, n, m);
             if (s < 0.01f) isVoxelSolid = true;
@@ -161,29 +256,46 @@ void InitStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID
     uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
     
     if (any(voxelGlobal >= _Resolution)) return;
-    
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
     if (IsSolid(flatIdx))
     {
+        // 1. Check if below ground threshold (Physical Ground)
         if ((float)voxelGlobal.y <= _GroundThresholdY)
         {
             _StabilityBuffer[flatIdx] = 1;
         }
-        // If the ground is physically below this volume (threshold < 0), 
-        // we treat the bottom boundary as stable (connected to the volume below).
-        else if (_GroundThresholdY < 0.0 && voxelGlobal.y == 0)
+        // 2. If at the bottom boundary (y=0), check connection to Neighbor Volume
+        else if (voxelGlobal.y == 0)
         {
-             _StabilityBuffer[flatIdx] = 1;
+            if (_HasNeighbor)
+            {
+                // Check if the voxel directly below (Top of neighbor) is solid
+                uint3 neighborPos = uint3(voxelGlobal.x, _NeighborResolution - 1, voxelGlobal.z);
+                if (IsNeighborSolid(neighborPos))
+                {
+                    _StabilityBuffer[flatIdx] = 1;
+                }
+                else
+                {
+                    _StabilityBuffer[flatIdx] = 0;
+                }
+            }
+            else
+            {
+                // No neighbor and above ground -> Unstable
+                _StabilityBuffer[flatIdx] = 0;
+            }
         }
         else
         {
+            // Internal voxel above ground -> Unstable (until propagated)
             _StabilityBuffer[flatIdx] = 0;
         }
     }
     else
     {
-        _StabilityBuffer[flatIdx] = 0; // Not stable if not solid (effectively)
+        _StabilityBuffer[flatIdx] = 0;
     }
 }
 
@@ -195,7 +307,6 @@ void PropagateStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThr
     uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
     
     if (any(voxelGlobal >= _Resolution)) return;
-    
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
     // If solid and not yet stable
@@ -211,7 +322,6 @@ void PropagateStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThr
             uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z + 1u),
             uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z - 1u)
         };
-        
         bool becameStable = false;
         
         for (int i = 0; i < 6; i++)
@@ -244,7 +354,6 @@ void CollectFloating(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThread
     uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
     
     if (any(voxelGlobal >= _Resolution)) return;
-    
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
     if (IsSolid(flatIdx) && _StabilityBuffer[flatIdx] == 0)

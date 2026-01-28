@@ -3,6 +3,7 @@ using UnityEngine.Rendering;
 using Unity.Collections;
 using Unity.Mathematics;
 using System.Collections.Generic;
+using System.Linq;
 using VoxelEngine.Core;
 
 namespace VoxelEngine.Core.Editing
@@ -129,18 +130,7 @@ namespace VoxelEngine.Core.Editing
             int res = vol.Resolution;
             int totalVoxels = res * res * res;
             
-            // 4 bytes per voxel for stability (1 = Stable, 0 = Unstable)
             _stabilityBuffer = new ComputeBuffer(totalVoxels, 4); 
-            // Initialize with 0? Or rely on Init kernel. 
-            // It's safer to clear or rely on Init covering everything.
-            // InitStability only runs on Active Bricks.
-            // We need to clear it first because we sparsely write to it? 
-            // Actually, if we only check IsSolid && Stability==0, and IsSolid implies ActiveBrick, then valid voxels are covered.
-            // But to be safe against garbage data:
-            // _stabilityBuffer.SetData(new uint[totalVoxels]); // Slow on CPU for large vol?
-            // Let's assume InitStability and Logic covers it. 
-            // Actually, if a voxel is NOT in an active brick, it is NOT solid, so it won't trigger floating check.
-            
             _changeFlagBuffer = new ComputeBuffer(1, 4);
             _floatingVoxelOutput = new ComputeBuffer(totalVoxels, 12, ComputeBufferType.Append); // Max reasonable floating (Full size to be safe)
             _floatingVoxelOutput.SetCounterValue(0);
@@ -158,6 +148,49 @@ namespace VoxelEngine.Core.Editing
             analysisShader.SetBuffer(initKernel, "_TopologyBuffer", _topologyBuffer);
             analysisShader.SetBuffer(initKernel, "_StabilityBuffer", _stabilityBuffer);
             analysisShader.SetInt("_Resolution", res);
+
+            // Find the volume directly below the current one
+            Vector3 targetOrigin = vol.WorldOrigin - new Vector3(0, vol.WorldSize, 0);
+            VoxelVolume bottomNeighbor = null;
+            
+            // Simple linear search (can be optimized with a spatial hash if needed)
+            foreach (var v in VoxelVolumeRegistry.Volumes)
+            {
+                if (v == vol) continue;
+                // Check if origin matches (allowing small epsilon for float errors)
+                if (Vector3.Distance(v.WorldOrigin, targetOrigin) < (voxelSize * 0.5f))
+                {
+                    if (v.IsReady)
+                    {
+                        bottomNeighbor = v;
+                        break;
+                    }
+                }
+            }
+
+            if (bottomNeighbor != null)
+            {
+                analysisShader.SetInt("_HasNeighbor", 1);
+                analysisShader.SetInt("_NeighborResolution", bottomNeighbor.Resolution);
+                
+                // Bind Neighbor Buffers
+                analysisShader.SetBuffer(initKernel, "_NeighborNodeBuffer", bottomNeighbor.NodeBuffer);
+                analysisShader.SetBuffer(initKernel, "_NeighborPayloadBuffer", bottomNeighbor.PayloadBuffer);
+                analysisShader.SetBuffer(initKernel, "_NeighborBrickDataBuffer", bottomNeighbor.BrickDataBuffer);
+                analysisShader.SetBuffer(initKernel, "_NeighborPageTableBuffer", bottomNeighbor.BufferManager.PageTableBuffer);
+                
+                analysisShader.SetInt("_NeighborPageTableOffset", bottomNeighbor.BufferManager.PageTableOffset);
+                analysisShader.SetInt("_NeighborBrickOffset", bottomNeighbor.BufferManager.BrickDataOffset);
+            }
+            else
+            {
+                analysisShader.SetInt("_HasNeighbor", 0);
+                // Bind dummy buffers (current vol) to prevent API validation errors
+                analysisShader.SetBuffer(initKernel, "_NeighborNodeBuffer", vol.NodeBuffer);
+                analysisShader.SetBuffer(initKernel, "_NeighborPayloadBuffer", vol.PayloadBuffer);
+                analysisShader.SetBuffer(initKernel, "_NeighborBrickDataBuffer", vol.BrickDataBuffer);
+                analysisShader.SetBuffer(initKernel, "_NeighborPageTableBuffer", vol.BufferManager.PageTableBuffer);
+            }
 
             // Group count = brickCount. Each group handles 1 brick (64 threads).
             analysisShader.Dispatch(initKernel, brickCount, 1, 1);
@@ -265,8 +298,6 @@ namespace VoxelEngine.Core.Editing
                      Debug.LogWarning($"[Structural Analysis] Floating voxel count ({count}) exceeded buffer size ({data.Length}). Truncating.");
                 }
 
-                // Only copy the valid elements
-                // Note: GetData returns the whole buffer usually. We loop up to count.
                 for (int i = 0; i < readCount; i++)
                 {
                     float3 voxelPos = data[i];
