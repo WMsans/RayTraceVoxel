@@ -1,4 +1,7 @@
 #pragma kernel AnalyzeBricks
+#pragma kernel InitStability
+#pragma kernel PropagateStability
+#pragma kernel CollectFloating
 
 #include "../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
@@ -10,12 +13,25 @@ StructuredBuffer<uint> _PageTableBuffer;
 // Bitmask: 1 bit per voxel
 RWStructuredBuffer<uint> _TopologyBuffer;
 
+// Stability: 1 uint per voxel (0 = Unstable, 1 = Stable)
+RWStructuredBuffer<uint> _StabilityBuffer;
+
 // Active Bricks: Packed uint (x | y<<10 | z<<20)
+// For AnalyzeBricks: Output (Append)
+// For Others: Input (Structured)
 AppendStructuredBuffer<uint> _ActiveBrickBuffer;
+StructuredBuffer<uint> _ActiveBricksInput;
+
+// Output for floating voxels
+AppendStructuredBuffer<float3> _FloatingVoxelOutput;
+
+// Change Flag for Propagation
+RWStructuredBuffer<uint> _ChangeFlagBuffer;
 
 uint _Resolution; 
 uint _PageTableOffset;
 uint _BrickOffset;
+float _GroundThresholdY; // Voxel Y threshold for stability
 
 uint GetPhysIdx(uint virtualIndex)
 {
@@ -23,6 +39,11 @@ uint GetPhysIdx(uint virtualIndex)
     uint offsetInPage = virtualIndex % PAGE_SIZE;
     uint physicalPageStart = _PageTableBuffer[_PageTableOffset + pageID];
     return physicalPageStart + offsetInPage;
+}
+
+bool IsSolid(uint idx)
+{
+    return (_TopologyBuffer[idx / 32u] & (1u << (idx % 32u))) != 0;
 }
 
 [numthreads(4, 4, 4)]
@@ -33,7 +54,6 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
     if (any(id >= bricksPerDim)) return;
 
     // 1. Traverse SVO to find this Brick's Leaf Node
-    // We traverse to the center of the brick
     float3 nodePos = float3(0,0,0);
     float nodeSize = _Resolution;
     uint nodeIndex = 0;
@@ -56,16 +76,16 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
         SVONode node = _GlobalNodeBuffer[GetPhysIdx(nodeIndex)];
         uint childMask = (node.topology >> 24) & 0xFF;
         
-        if ((childMask & (1 << octant)) != 0)
+        if ((childMask & (1u << octant)) != 0)
         {
             uint childBase = node.topology & 0xFFFFFF;
-            uint maskBefore = childMask & ((1 << octant) - 1);
+            uint maskBefore = childMask & ((1u << octant) - 1u);
             nodeIndex = childBase + countbits(maskBefore);
             
             nodePos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
             nodeSize = halfSize;
             
-            if (nodeSize <= BRICK_SIZE + 0.01) // Reached Brick Level
+            if (nodeSize <= BRICK_SIZE + 0.01f) // Reached Brick Level
             {
                 hitLeaf = true;
                 leafNode = _GlobalNodeBuffer[GetPhysIdx(nodeIndex)];
@@ -74,7 +94,6 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
         }
         else
         {
-            // Empty branch
             return; 
         }
     }
@@ -97,7 +116,6 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
         brickPtr = payload.brickDataIndex;
     }
     
-    // Iterate voxels within brick (4x4x4)
     for (uint z = 0; z < BRICK_SIZE; z++)
     for (uint y = 0; y < BRICK_SIZE; y++)
     for (uint x = 0; x < BRICK_SIZE; x++)
@@ -113,9 +131,7 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
         }
         else if (brickPtr != 0)
         {
-            // Sample Brick Data
-            // Add padding
-            uint3 p = voxelLocal + 1; 
+            uint3 p = voxelLocal + 1u; 
             uint idx = _BrickOffset + brickPtr + 
                        p.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + 
                        p.y * BRICK_STORAGE_SIZE + 
@@ -123,15 +139,116 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
             
             float s; float3 n; uint m;
             UnpackVoxelData(_GlobalBrickDataBuffer[idx], s, n, m);
-            if (s < 0.01) isVoxelSolid = true;
+            if (s < 0.01f) isVoxelSolid = true;
         }
         
         if (isVoxelSolid)
         {
             uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
-            uint wordIdx = flatIdx / 32;
-            uint bitIdx = flatIdx % 32;
+            uint wordIdx = flatIdx / 32u;
+            uint bitIdx = flatIdx % 32u;
             InterlockedOr(_TopologyBuffer[wordIdx], 1u << bitIdx);
         }
+    }
+}
+
+[numthreads(4, 4, 4)]
+void InitStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+{
+    // One group per active brick
+    uint packedBrick = _ActiveBricksInput[groupID.x];
+    uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
+    uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
+    
+    if (any(voxelGlobal >= _Resolution)) return;
+    
+    uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+    
+    if (IsSolid(flatIdx))
+    {
+        if ((float)voxelGlobal.y <= _GroundThresholdY)
+        {
+            _StabilityBuffer[flatIdx] = 1;
+        }
+        // If the ground is physically below this volume (threshold < 0), 
+        // we treat the bottom boundary as stable (connected to the volume below).
+        else if (_GroundThresholdY < 0.0 && voxelGlobal.y == 0)
+        {
+             _StabilityBuffer[flatIdx] = 1;
+        }
+        else
+        {
+            _StabilityBuffer[flatIdx] = 0;
+        }
+    }
+    else
+    {
+        _StabilityBuffer[flatIdx] = 0; // Not stable if not solid (effectively)
+    }
+}
+
+[numthreads(4, 4, 4)]
+void PropagateStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+{
+    uint packedBrick = _ActiveBricksInput[groupID.x];
+    uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
+    uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
+    
+    if (any(voxelGlobal >= _Resolution)) return;
+    
+    uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+    
+    // If solid and not yet stable
+    if (IsSolid(flatIdx) && _StabilityBuffer[flatIdx] == 0)
+    {
+        // Check 6 neighbors
+        // Need to be careful about boundaries
+        uint3 neighbors[6] = {
+            uint3(voxelGlobal.x + 1u, voxelGlobal.y, voxelGlobal.z),
+            uint3(voxelGlobal.x - 1u, voxelGlobal.y, voxelGlobal.z),
+            uint3(voxelGlobal.x, voxelGlobal.y + 1u, voxelGlobal.z),
+            uint3(voxelGlobal.x, voxelGlobal.y - 1u, voxelGlobal.z),
+            uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z + 1u),
+            uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z - 1u)
+        };
+        
+        bool becameStable = false;
+        
+        for (int i = 0; i < 6; i++)
+        {
+            uint3 n = neighbors[i];
+            if (all(n < _Resolution))
+            {
+                uint nIdx = n.z * _Resolution * _Resolution + n.y * _Resolution + n.x;
+                if (_StabilityBuffer[nIdx] == 1)
+                {
+                    becameStable = true;
+                    break;
+                }
+            }
+        }
+        
+        if (becameStable)
+        {
+            _StabilityBuffer[flatIdx] = 1;
+            _ChangeFlagBuffer[0] = 1;
+        }
+    }
+}
+
+[numthreads(4, 4, 4)]
+void CollectFloating(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+{
+    uint packedBrick = _ActiveBricksInput[groupID.x];
+    uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
+    uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
+    
+    if (any(voxelGlobal >= _Resolution)) return;
+    
+    uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+    
+    if (IsSolid(flatIdx) && _StabilityBuffer[flatIdx] == 0)
+    {
+        _FloatingVoxelOutput.Append(float3(voxelGlobal));
     }
 }

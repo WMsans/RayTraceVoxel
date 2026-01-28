@@ -14,90 +14,216 @@ namespace VoxelEngine.Core.Editing
         private List<Vector3> _floatingVoxelPositions = new List<Vector3>();
         private float _debugVoxelSize = 1.0f;
         
-        // Global Analysis State
-        private Dictionary<VoxelVolume, NativeArray<uint>> _volumeData = new Dictionary<VoxelVolume, NativeArray<uint>>();
-        private Dictionary<VoxelVolume, NativeArray<uint>> _volumeActiveBricks = new Dictionary<VoxelVolume, NativeArray<uint>>();
-        private int _pendingReadbacks = 0;
-        private Dictionary<Vector3Int, VoxelVolume> _chunkMap = new Dictionary<Vector3Int, VoxelVolume>();
+        // Queue for processing volumes sequentially to save VRAM
+        private Queue<VoxelVolume> _analysisQueue = new Queue<VoxelVolume>();
+        private bool _isAnalyzing = false;
+        private int _currentPropagationIterations = 0;
+        private const int MAX_PROPAGATION_ITERATIONS = 2048; // Safety limit
+        private const float GROUND_THRESHOLD = 10.0f;
 
-        private Bounds? _currentQueryBounds;
+        // Active Buffers for current volume
+        private ComputeBuffer _topologyBuffer;
+        private ComputeBuffer _activeBrickBuffer;
+        private ComputeBuffer _stabilityBuffer;
+        private ComputeBuffer _changeFlagBuffer;
+        private ComputeBuffer _floatingVoxelOutput;
+        private ComputeBuffer _argsBuffer; // For indirect dispatch or count readback
 
         public void AnalyzeWorld(Bounds? queryBounds = null)
         {
             if (analysisShader == null) return;
-            
-            _currentQueryBounds = queryBounds;
-            
-            // 1. Reset State
-            foreach(var kvp in _volumeData) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
-            foreach(var kvp in _volumeActiveBricks) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
-            _volumeData.Clear();
-            _volumeActiveBricks.Clear();
-            _chunkMap.Clear();
-            
-            var volumes = VoxelVolumeRegistry.Volumes;
-            if (volumes.Count == 0) return;
+            if (_isAnalyzing) return; // Prevent concurrent runs
 
-            _pendingReadbacks = 0;
-            
-            // 2. Dispatch for all volumes
+            _floatingVoxelPositions.Clear();
+            _analysisQueue.Clear();
+
+            var volumes = VoxelVolumeRegistry.Volumes;
             foreach (var vol in volumes)
             {
-                if (!vol.gameObject.activeInHierarchy || !vol.IsReady) continue;
+                if (vol.gameObject.activeInHierarchy && vol.IsReady)
+                {
+                    _analysisQueue.Enqueue(vol);
+                }
+            }
 
-                Vector3Int coord = Vector3Int.RoundToInt(vol.WorldOrigin); 
-                if (!_chunkMap.ContainsKey(coord)) _chunkMap.Add(coord, vol);
-
-                DispatchVolume(vol);
+            if (_analysisQueue.Count > 0)
+            {
+                _isAnalyzing = true;
+                ProcessNextVolume();
             }
         }
-        
-        private void DispatchVolume(VoxelVolume volume)
+
+        private void ProcessNextVolume()
+        {
+            if (_analysisQueue.Count == 0)
+            {
+                _isAnalyzing = false;
+                Debug.Log($"[Structural Analysis] World Scan Complete. Floating Voxels: {_floatingVoxelPositions.Count}");
+                return;
+            }
+
+            VoxelVolume vol = _analysisQueue.Dequeue();
+            DispatchVolumeAnalysis(vol);
+        }
+
+        private void DispatchVolumeAnalysis(VoxelVolume volume)
         {
             int res = volume.Resolution;
             int totalVoxels = res * res * res;
             int bitmaskSize = Mathf.CeilToInt(totalVoxels / 32.0f);
 
-            ComputeBuffer topologyBuffer = new ComputeBuffer(bitmaskSize, 4);
-            uint[] clearData = new uint[bitmaskSize];
-            topologyBuffer.SetData(clearData); 
-            
-            // Active Bricks Buffer
+            // 1. Setup Buffers
+            _topologyBuffer = new ComputeBuffer(bitmaskSize, 4);
+            _topologyBuffer.SetData(new uint[bitmaskSize]); // Clear
+
             int bricksPerDim = res / 4;
             int maxBricks = bricksPerDim * bricksPerDim * bricksPerDim;
-            ComputeBuffer activeBrickBuffer = new ComputeBuffer(maxBricks, sizeof(uint), ComputeBufferType.Append);
-            activeBrickBuffer.SetCounterValue(0);
+            _activeBrickBuffer = new ComputeBuffer(maxBricks, sizeof(uint), ComputeBufferType.Append);
+            _activeBrickBuffer.SetCounterValue(0);
 
+            // 2. Dispatch AnalyzeBricks
             int kernel = analysisShader.FindKernel("AnalyzeBricks");
-
             analysisShader.SetBuffer(kernel, "_GlobalNodeBuffer", volume.NodeBuffer);
             analysisShader.SetBuffer(kernel, "_GlobalPayloadBuffer", volume.PayloadBuffer);
             analysisShader.SetBuffer(kernel, "_GlobalBrickDataBuffer", volume.BrickDataBuffer);
             analysisShader.SetBuffer(kernel, "_PageTableBuffer", volume.BufferManager.PageTableBuffer);
-            analysisShader.SetBuffer(kernel, "_TopologyBuffer", topologyBuffer);
-            analysisShader.SetBuffer(kernel, "_ActiveBrickBuffer", activeBrickBuffer);
+            analysisShader.SetBuffer(kernel, "_TopologyBuffer", _topologyBuffer);
+            analysisShader.SetBuffer(kernel, "_ActiveBrickBuffer", _activeBrickBuffer);
 
             analysisShader.SetInt("_Resolution", res);
             analysisShader.SetInt("_PageTableOffset", volume.BufferManager.PageTableOffset);
             analysisShader.SetInt("_BrickOffset", volume.BufferManager.BrickDataOffset);
 
-            // Dispatch: Threads = Bricks. GroupSize = 4. 
-            // We want one thread per brick.
-            // BricksPerDim / 4
             int groups = Mathf.CeilToInt(bricksPerDim / 4.0f);
             analysisShader.Dispatch(kernel, groups, groups, groups);
 
-            // Get Count
+            // 3. Read Brick Count
             ComputeBuffer countBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.IndirectArguments);
-            ComputeBuffer.CopyCount(activeBrickBuffer, countBuffer, 0);
-            
-            _pendingReadbacks++;
-            
-            // Read Count
-            AsyncGPUReadback.Request(countBuffer, (req) => OnCountReadback(req, countBuffer, activeBrickBuffer, topologyBuffer, volume));
+            ComputeBuffer.CopyCount(_activeBrickBuffer, countBuffer, 0);
+
+            AsyncGPUReadback.Request(countBuffer, (req) => OnBrickCountReadback(req, countBuffer, volume));
         }
 
-        private void OnCountReadback(AsyncGPUReadbackRequest request, ComputeBuffer countBuf, ComputeBuffer activeBuf, ComputeBuffer topoBuf, VoxelVolume vol)
+        private void OnBrickCountReadback(AsyncGPUReadbackRequest request, ComputeBuffer countBuf, VoxelVolume vol)
+        {
+            int brickCount = 0;
+            if (!request.hasError)
+            {
+                brickCount = (int)request.GetData<uint>()[0];
+            }
+            countBuf.Release();
+
+            if (brickCount == 0)
+            {
+                // Empty volume, cleanup and next
+                CleanupCurrentBuffers();
+                ProcessNextVolume();
+                return;
+            }
+
+            // 4. Setup Stability Buffers
+            int res = vol.Resolution;
+            int totalVoxels = res * res * res;
+            
+            // 4 bytes per voxel for stability (1 = Stable, 0 = Unstable)
+            _stabilityBuffer = new ComputeBuffer(totalVoxels, 4); 
+            // Initialize with 0? Or rely on Init kernel. 
+            // It's safer to clear or rely on Init covering everything.
+            // InitStability only runs on Active Bricks.
+            // We need to clear it first because we sparsely write to it? 
+            // Actually, if we only check IsSolid && Stability==0, and IsSolid implies ActiveBrick, then valid voxels are covered.
+            // But to be safe against garbage data:
+            // _stabilityBuffer.SetData(new uint[totalVoxels]); // Slow on CPU for large vol?
+            // Let's assume InitStability and Logic covers it. 
+            // Actually, if a voxel is NOT in an active brick, it is NOT solid, so it won't trigger floating check.
+            
+            _changeFlagBuffer = new ComputeBuffer(1, 4);
+            _floatingVoxelOutput = new ComputeBuffer(totalVoxels, 12, ComputeBufferType.Append); // Max reasonable floating (Full size to be safe)
+            _floatingVoxelOutput.SetCounterValue(0);
+
+            // Calculate Threshold
+            float voxelSize = vol.WorldSize / res;
+            float localThreshold = GROUND_THRESHOLD - vol.WorldOrigin.y;
+            float voxelThresholdY = localThreshold / voxelSize;
+
+            analysisShader.SetFloat("_GroundThresholdY", voxelThresholdY);
+
+            // 5. Init Stability
+            int initKernel = analysisShader.FindKernel("InitStability");
+            analysisShader.SetBuffer(initKernel, "_ActiveBricksInput", _activeBrickBuffer);
+            analysisShader.SetBuffer(initKernel, "_TopologyBuffer", _topologyBuffer);
+            analysisShader.SetBuffer(initKernel, "_StabilityBuffer", _stabilityBuffer);
+            analysisShader.SetInt("_Resolution", res);
+
+            // Group count = brickCount. Each group handles 1 brick (64 threads).
+            analysisShader.Dispatch(initKernel, brickCount, 1, 1);
+
+            // Start Propagation
+            _currentPropagationIterations = 0;
+            RunPropagationPass(vol, brickCount);
+        }
+
+        private void RunPropagationPass(VoxelVolume vol, int brickCount)
+        {
+            _changeFlagBuffer.SetData(new uint[] { 0 });
+
+            int propKernel = analysisShader.FindKernel("PropagateStability");
+            analysisShader.SetBuffer(propKernel, "_ActiveBricksInput", _activeBrickBuffer);
+            analysisShader.SetBuffer(propKernel, "_TopologyBuffer", _topologyBuffer);
+            analysisShader.SetBuffer(propKernel, "_StabilityBuffer", _stabilityBuffer);
+            analysisShader.SetBuffer(propKernel, "_ChangeFlagBuffer", _changeFlagBuffer);
+            analysisShader.SetInt("_Resolution", vol.Resolution);
+
+            analysisShader.Dispatch(propKernel, brickCount, 1, 1);
+
+            AsyncGPUReadback.Request(_changeFlagBuffer, (req) => OnPropagationReadback(req, vol, brickCount));
+        }
+
+        private void OnPropagationReadback(AsyncGPUReadbackRequest request, VoxelVolume vol, int brickCount)
+        {
+            if (request.hasError)
+            {
+                CleanupCurrentBuffers();
+                ProcessNextVolume();
+                return;
+            }
+
+            uint changed = request.GetData<uint>()[0];
+            _currentPropagationIterations++;
+
+            if (changed > 0 && _currentPropagationIterations < MAX_PROPAGATION_ITERATIONS)
+            {
+                RunPropagationPass(vol, brickCount);
+            }
+            else
+            {
+                if (_currentPropagationIterations >= MAX_PROPAGATION_ITERATIONS)
+                {
+                    Debug.LogWarning("[Structural Analysis] Max propagation iterations reached. Results may be incomplete.");
+                }
+                CollectResults(vol, brickCount);
+            }
+        }
+
+        private void CollectResults(VoxelVolume vol, int brickCount)
+        {
+            int collectKernel = analysisShader.FindKernel("CollectFloating");
+            analysisShader.SetBuffer(collectKernel, "_ActiveBricksInput", _activeBrickBuffer);
+            analysisShader.SetBuffer(collectKernel, "_TopologyBuffer", _topologyBuffer);
+            analysisShader.SetBuffer(collectKernel, "_StabilityBuffer", _stabilityBuffer);
+            analysisShader.SetBuffer(collectKernel, "_FloatingVoxelOutput", _floatingVoxelOutput);
+            analysisShader.SetInt("_Resolution", vol.Resolution);
+
+            analysisShader.Dispatch(collectKernel, brickCount, 1, 1);
+
+            // Read count
+            ComputeBuffer countBuf = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.IndirectArguments);
+            ComputeBuffer.CopyCount(_floatingVoxelOutput, countBuf, 0);
+
+            AsyncGPUReadback.Request(countBuf, (req) => OnFinalCountReadback(req, countBuf, vol));
+        }
+
+        private void OnFinalCountReadback(AsyncGPUReadbackRequest request, ComputeBuffer countBuf, VoxelVolume vol)
         {
             int count = 0;
             if (!request.hasError)
@@ -105,299 +231,64 @@ namespace VoxelEngine.Core.Editing
                 count = (int)request.GetData<uint>()[0];
             }
             countBuf.Release();
-            
-            // Read Active Bricks (Limit to Count if possible, but AsyncGPUReadback size is fixed to buffer usually unless partial)
-            // We'll read full and slice later, or just read full.
-            AsyncGPUReadback.Request(activeBuf, (req) => OnDataReadback(req, activeBuf, topoBuf, vol, count));
-        }
 
-        private void OnDataReadback(AsyncGPUReadbackRequest brickReq, ComputeBuffer brickBuf, ComputeBuffer topoBuf, VoxelVolume vol, int brickCount)
-        {
-            brickBuf.Release(); // Done with GPU buffer
-            
-            NativeArray<uint> brickData = new NativeArray<uint>(0, Allocator.Persistent);
-            if (!brickReq.hasError && brickCount > 0)
+            if (count > 0)
             {
-                var allData = brickReq.GetData<uint>();
-                // Copy only valid count
-                brickData = new NativeArray<uint>(brickCount, Allocator.Persistent);
-                NativeArray<uint>.Copy(allData, brickData, brickCount);
-            }
-            
-            // Read Topology
-            AsyncGPUReadback.Request(topoBuf, (topoReq) => OnFinalReadback(topoReq, topoBuf, vol, brickData));
-        }
-
-        private void OnFinalReadback(AsyncGPUReadbackRequest topoReq, ComputeBuffer topoBuf, VoxelVolume vol, NativeArray<uint> brickData)
-        {
-            topoBuf.Release();
-            _pendingReadbacks--;
-            
-            if (!topoReq.hasError)
-            {
-                NativeArray<uint> topoRaw = topoReq.GetData<uint>();
-                NativeArray<uint> persistentTopo = new NativeArray<uint>(topoRaw, Allocator.Persistent);
-                
-                lock(_volumeData)
-                {
-                    _volumeData[vol] = persistentTopo;
-                    _volumeActiveBricks[vol] = brickData;
-                }
+                AsyncGPUReadback.Request(_floatingVoxelOutput, (req) => OnFinalDataReadback(req, count, vol));
             }
             else
             {
-                if (brickData.IsCreated) brickData.Dispose();
-            }
-            
-            if (_pendingReadbacks <= 0)
-            {
-                PerformGlobalDFS();
+                CleanupCurrentBuffers();
+                ProcessNextVolume();
             }
         }
 
-        private void PerformGlobalDFS()
+        private void OnFinalDataReadback(AsyncGPUReadbackRequest request, int count, VoxelVolume vol)
         {
-            _floatingVoxelPositions.Clear();
-            
-            Dictionary<VoxelVolume, System.Collections.BitArray> globalFloatingVisited = new Dictionary<VoxelVolume, System.Collections.BitArray>();
-            
-            foreach(var kvp in _volumeData)
+            if (!request.hasError)
             {
-                int total = kvp.Key.Resolution * kvp.Key.Resolution * kvp.Key.Resolution;
-                globalFloatingVisited[kvp.Key] = new System.Collections.BitArray(total);
+                var data = request.GetData<float3>();
+                float scale = vol.WorldSize / vol.Resolution;
+                
+                int readCount = Mathf.Min(count, data.Length);
+                if (count > data.Length)
+                {
+                     Debug.LogWarning($"[Structural Analysis] Floating voxel count ({count}) exceeded buffer size ({data.Length}). Truncating.");
+                }
+
+                // Only copy the valid elements
+                // Note: GetData returns the whole buffer usually. We loop up to count.
+                for (int i = 0; i < readCount; i++)
+                {
+                    float3 voxelPos = data[i];
+                    Vector3 local = new Vector3(voxelPos.x + 0.5f, voxelPos.y + 0.5f, voxelPos.z + 0.5f);
+                    Vector3 worldPos = vol.WorldOrigin + (local * scale);
+                    _floatingVoxelPositions.Add(worldPos);
+                }
             }
 
-            int floatingCount = 0;
-            List<(VoxelVolume, int)> seeds = new List<(VoxelVolume, int)>();
-
-            if (_currentQueryBounds.HasValue)
-            {
-                // [Bounds Logic preserved: Iterates Volume Data + Bitmask within bounds]
-                Bounds query = _currentQueryBounds.Value;
-                query.Expand(2.0f); 
-
-                foreach (var kvp in _volumeData)
-                {
-                    VoxelVolume vol = kvp.Key;
-                    if (!vol.WorldBounds.Intersects(query)) continue;
-                    
-                    NativeArray<uint> data = kvp.Value;
-                    int res = vol.Resolution;
-                    float voxelSize = vol.WorldSize / res;
-                    
-                    Vector3 localMin = vol.transform.InverseTransformPoint(query.min);
-                    Vector3 localMax = vol.transform.InverseTransformPoint(query.max);
-                    
-                    Vector3 min = Vector3.Min(localMin, localMax);
-                    Vector3 max = Vector3.Max(localMin, localMax);
-                    
-                    int3 minIdx = (int3)math.floor(min / voxelSize);
-                    int3 maxIdx = (int3)math.ceil(max / voxelSize);
-                    
-                    minIdx = math.clamp(minIdx, 0, res - 1);
-                    maxIdx = math.clamp(maxIdx, 0, res - 1);
-                    
-                    for (int z = minIdx.z; z <= maxIdx.z; z++)
-                    for (int y = minIdx.y; y <= maxIdx.y; y++)
-                    for (int x = minIdx.x; x <= maxIdx.x; x++)
-                    {
-                        int idx = z * (res * res) + y * res + x;
-                        if (IsSolid(data, idx))
-                        {
-                            seeds.Add((vol, idx));
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // Full Scan Optimized with Active Bricks
-                // We assume _volumeActiveBricks is populated
-                foreach (var kvp in _volumeActiveBricks)
-                {
-                    VoxelVolume vol = kvp.Key;
-                    NativeArray<uint> bricks = kvp.Value;
-                    if (!bricks.IsCreated) continue;
-                    
-                    NativeArray<uint> topoData = _volumeData[vol];
-                    int res = vol.Resolution;
-                    int brickSize = 4; // Hardcoded matches shader
-
-                    for (int i = 0; i < bricks.Length; i++)
-                    {
-                        uint packed = bricks[i];
-                        int bx = (int)(packed & 0x3FF);
-                        int by = (int)((packed >> 10) & 0x3FF);
-                        int bz = (int)((packed >> 20) & 0x3FF);
-                        
-                        int startX = bx * brickSize;
-                        int startY = by * brickSize;
-                        int startZ = bz * brickSize;
-                        
-                        // Iterate voxels in this brick
-                        for (int z = 0; z < brickSize; z++)
-                        for (int y = 0; y < brickSize; y++)
-                        for (int x = 0; x < brickSize; x++)
-                        {
-                            int vx = startX + x;
-                            int vy = startY + y;
-                            int vz = startZ + z;
-                            
-                            int idx = vz * (res * res) + vy * res + vx;
-                            
-                            // Double check solidity using bitmask (already populated)
-                            if (IsSolid(topoData, idx))
-                            {
-                                seeds.Add((vol, idx));
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // ... [Rest of DFS Logic]
-            
-            foreach (var seed in seeds)
-            {
-                VoxelVolume seedVol = seed.Item1;
-                int seedIdx = seed.Item2;
-                
-                if (globalFloatingVisited[seedVol][seedIdx]) continue;
-                
-                List<(VoxelVolume, int)> currentComponent = new List<(VoxelVolume, int)>();
-                HashSet<(VoxelVolume, int)> pathVisited = new HashSet<(VoxelVolume, int)>();
-                bool isGrounded = false;
-                
-                Stack<(VoxelVolume, int)> stack = new Stack<(VoxelVolume, int)>();
-                stack.Push((seedVol, seedIdx));
-                pathVisited.Add((seedVol, seedIdx));
-                
-                while(stack.Count > 0)
-                {
-                    var current = stack.Pop();
-                    VoxelVolume cVol = current.Item1;
-                    int cIdx = current.Item2;
-                    
-                    currentComponent.Add(current);
-                    
-                    Vector3 worldPos = GetWorldPos(cVol, cIdx);
-                    if (worldPos.y <= 10.0f) 
-                    {
-                        isGrounded = true;
-                        break; 
-                    }
-                    
-                    CheckNeighborsBias(cVol, cIdx, stack, pathVisited, globalFloatingVisited);
-                }
-                
-                if (!isGrounded)
-                {
-                    floatingCount += currentComponent.Count;
-                    foreach(var item in currentComponent)
-                    {
-                        _floatingVoxelPositions.Add(GetWorldPos(item.Item1, item.Item2));
-                        globalFloatingVisited[item.Item1][item.Item2] = true;
-                    }
-                }
-            }
-            
-            Debug.Log($"[Structural Analysis] Scan Complete. Seeds: {seeds.Count}. Floating Voxels: {floatingCount}");
-
-            // Cleanup NativeArrays
-            foreach(var kvp in _volumeData) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
-            foreach(var kvp in _volumeActiveBricks) { if(kvp.Value.IsCreated) kvp.Value.Dispose(); }
-            _volumeData.Clear();
-            _volumeActiveBricks.Clear();
-        }
-        
-        private void CheckNeighborsBias(VoxelVolume vol, int idx, Stack<(VoxelVolume, int)> stack, HashSet<(VoxelVolume, int)> pathVisited, Dictionary<VoxelVolume, System.Collections.BitArray> globalVisited)
-        {
-            int res = vol.Resolution;
-            int z = idx / (res * res);
-            int rem = idx % (res * res);
-            int y = rem / res;
-            int x = rem % res;
-            
-            // LIFO Order: Push least preferred first.
-            // Preferred: Down (Y-1).
-            // Order: Up, Sides, Down.
-            
-            CheckDir(x, y + 1, z); // Up
-            
-            CheckDir(x + 1, y, z);
-            CheckDir(x - 1, y, z);
-            CheckDir(x, y, z + 1);
-            CheckDir(x, y, z - 1);
-            
-            CheckDir(x, y - 1, z); // Down (Popped first)
-            
-            void CheckDir(int nx, int ny, int nz)
-            {
-                VoxelVolume targetVol = vol;
-                int tx = nx, ty = ny, tz = nz;
-                
-                // Cross-chunk Logic
-                bool crossed = false;
-                Vector3Int neighborOffset = Vector3Int.zero;
-
-                if (nx >= res) { neighborOffset.x = 1; tx = 0; crossed = true; }
-                else if (nx < 0) { neighborOffset.x = -1; tx = res - 1; crossed = true; }
-                
-                if (ny >= res) { neighborOffset.y = 1; ty = 0; crossed = true; }
-                else if (ny < 0) { neighborOffset.y = -1; ty = res - 1; crossed = true; }
-                
-                if (nz >= res) { neighborOffset.z = 1; tz = 0; crossed = true; }
-                else if (nz < 0) { neighborOffset.z = -1; tz = res - 1; crossed = true; }
-                
-                if (crossed)
-                {
-                    Vector3Int currentCoord = Vector3Int.RoundToInt(vol.WorldOrigin);
-                    int step = Mathf.RoundToInt(vol.WorldSize); 
-                    Vector3Int targetCoord = currentCoord + (neighborOffset * step);
-                    
-                    if (!_chunkMap.TryGetValue(targetCoord, out targetVol)) return;
-                }
-                
-                // Check Bounds
-                if (tx >= 0 && tx < targetVol.Resolution && 
-                    ty >= 0 && ty < targetVol.Resolution && 
-                    tz >= 0 && tz < targetVol.Resolution)
-                {
-                    int tIdx = tz * (res * res) + ty * res + tx;
-                    var key = (targetVol, tIdx);
-                    
-                    // Check if already visited in this path OR globally visited as floating
-                    if (pathVisited.Contains(key)) return;
-                    if (globalVisited.ContainsKey(targetVol) && globalVisited[targetVol][tIdx]) return;
-                    
-                    // Check Solidity
-                    if (_volumeData.ContainsKey(targetVol) && IsSolid(_volumeData[targetVol], tIdx))
-                    {
-                        pathVisited.Add(key);
-                        stack.Push(key);
-                    }
-                }
-            }
+            CleanupCurrentBuffers();
+            ProcessNextVolume();
         }
 
-        private bool IsSolid(NativeArray<uint> data, int idx)
+        private void CleanupCurrentBuffers()
         {
-            if (!data.IsCreated) return false;
-            return (data[idx / 32] & (1u << (idx % 32))) != 0;
+            if (_topologyBuffer != null) _topologyBuffer.Release();
+            if (_activeBrickBuffer != null) _activeBrickBuffer.Release();
+            if (_stabilityBuffer != null) _stabilityBuffer.Release();
+            if (_changeFlagBuffer != null) _changeFlagBuffer.Release();
+            if (_floatingVoxelOutput != null) _floatingVoxelOutput.Release();
+            
+            _topologyBuffer = null;
+            _activeBrickBuffer = null;
+            _stabilityBuffer = null;
+            _changeFlagBuffer = null;
+            _floatingVoxelOutput = null;
         }
 
-        private Vector3 GetWorldPos(VoxelVolume vol, int idx)
+        private void OnDestroy()
         {
-            int res = vol.Resolution;
-            int z = idx / (res * res);
-            int rem = idx % (res * res);
-            int y = rem / res;
-            int x = rem % res;
-            
-            Vector3 local = new Vector3(x + 0.5f, y + 0.5f, z + 0.5f);
-            // Local to World requires scale factor
-            float scale = vol.WorldSize / res;
-            return vol.WorldOrigin + (local * scale);
+            CleanupCurrentBuffers();
         }
 
         private void OnDrawGizmos()
