@@ -13,6 +13,10 @@ namespace VoxelEngine.Core.Editing
         public ComputeShader voxelModifierShader;
         public StructuralIntegrityAnalyzer analyzer;
 
+        [Header("Settings")]
+        [Tooltip("If true, removes neighbors of floating voxels to ensure clean breaks and remove diagonal artifacts.")]
+        public bool erodeFloatingVoxels = true;
+
         private void Start()
         {
             if (analyzer != null)
@@ -33,21 +37,53 @@ namespace VoxelEngine.Core.Editing
             // 1. Prepare Data
             float worldToVoxelScale = vol.Resolution / vol.WorldSize;
             
-            List<Vector3> localVoxelPositions = new List<Vector3>(floatingVoxels.Count);
+            // Use a HashSet to store unique voxel indices (prevents duplicates from neighbor expansion)
+            HashSet<Vector3Int> voxelsToRemove = new HashSet<Vector3Int>();
             HashSet<Vector3Int> uniqueBricks = new HashSet<Vector3Int>();
 
             int resBricks = vol.Resolution / 4;
             Vector3Int maxBrickIdx = new Vector3Int(resBricks - 1, resBricks - 1, resBricks - 1);
 
+            // Define neighbors for erosion (6-way)
+            Vector3Int[] neighborOffsets = new Vector3Int[]
+            {
+                Vector3Int.zero, // Include self
+                Vector3Int.up, Vector3Int.down, 
+                Vector3Int.left, Vector3Int.right,
+                new Vector3Int(0, 0, 1), new Vector3Int(0, 0, -1)
+            };
+
             foreach (var worldPos in floatingVoxels)
             {
                 // Convert World -> Local Voxel Space
                 Vector3 localPos = (worldPos - vol.WorldOrigin) * worldToVoxelScale;
-                localVoxelPositions.Add(localPos);
+                Vector3Int centerIdx = Vector3Int.FloorToInt(localPos);
 
-                // Identify Bricks (including neighbors due to padding)
-                Vector3Int vIdx = Vector3Int.FloorToInt(localPos);
-                
+                // Expand selection if erosion is enabled
+                int iterations = erodeFloatingVoxels ? 7 : 1; 
+
+                for (int i = 0; i < iterations; i++)
+                {
+                    Vector3Int targetIdx = centerIdx + neighborOffsets[i];
+                    
+                    // Bounds Check
+                    if (targetIdx.x >= 0 && targetIdx.y >= 0 && targetIdx.z >= 0 &&
+                        targetIdx.x < vol.Resolution && targetIdx.y < vol.Resolution && targetIdx.z < vol.Resolution)
+                    {
+                        voxelsToRemove.Add(targetIdx);
+                    }
+                }
+            }
+
+            // Convert unique indices back to centered local positions and calculate bricks
+            List<Vector3> localVoxelPositions = new List<Vector3>(voxelsToRemove.Count);
+
+            foreach (var vIdx in voxelsToRemove)
+            {
+                // Add 0.5 to center the float position in the voxel
+                localVoxelPositions.Add(new Vector3(vIdx.x + 0.5f, vIdx.y + 0.5f, vIdx.z + 0.5f));
+
+                // Identify Brick
                 // Calculate brick range covering this voxel (accounting for 1-voxel padding)
                 // Brick B covers [B*4-1, B*4+4]. 
                 int minX = Mathf.CeilToInt((vIdx.x - 4) / 4.0f);
@@ -173,7 +209,7 @@ namespace VoxelEngine.Core.Editing
                 VoxelEditManager.Instance.RegisterEdit(globalBrick, brickData);
             }
             
-            Debug.Log($"[StructuralCleaner] Successfully removed {bricks.Length} floating bricks.");
+            Debug.Log($"[StructuralCleaner] Successfully removed {bricks.Length} floating bricks (including erosion).");
         }
     }
 }
