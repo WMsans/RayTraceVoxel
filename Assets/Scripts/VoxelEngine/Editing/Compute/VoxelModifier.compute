@@ -4,6 +4,8 @@
 #pragma kernel EditVoxelsCube
 #pragma kernel ExtractBricks
 #pragma kernel RemoveVoxelList
+#pragma kernel AllocateNodesList
+#pragma kernel ExtractBricksList
 
 #include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
@@ -15,6 +17,8 @@ StructuredBuffer<uint> _PageTableBuffer;
 RWStructuredBuffer<uint> _ReadbackBuffer; 
 StructuredBuffer<float3> _TargetPositions;
 int _TargetCount;
+StructuredBuffer<int3> _TargetBricks;
+int _TargetBrickCount;
 
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
@@ -234,4 +238,101 @@ void RemoveVoxelList(uint3 id : SV_DispatchThreadID)
     sdf = MAX_SDF_RANGE; 
 
     _BrickDataBuffer[voxelIdx] = PackVoxelData(sdf, norm, mat);
+}
+
+[numthreads(64, 1, 1)]
+void AllocateNodesList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetBrickCount) return;
+
+    int3 brickIdx = _TargetBricks[id.x];
+    if (any(brickIdx > _MaxBrickIndex)) return;
+
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint existingPayload = node.packedInfo & 0xFFFF;
+    bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+
+    if (existingPayload == 0)
+    {
+        uint newPayloadIdx;
+        InterlockedAdd(_CounterBuffer[1], 1, newPayloadIdx);
+        newPayloadIdx += 1; 
+
+        uint newBrickVoxelPtr;
+        InterlockedAdd(_CounterBuffer[2], 216, newBrickVoxelPtr);
+        
+        if ((newBrickVoxelPtr + 216) > ((uint)_MaxBricks * 216)) return;
+        
+        VoxelPayload pl;
+        pl.brickDataIndex = newBrickVoxelPtr;
+        _PayloadBuffer[GetPhysicalIndex(newPayloadIdx, _PayloadOffset, _PageTableBuffer)] = pl;
+        
+        uint packedFill;
+        if (isOptimizedSolid)
+        {
+            uint existingMat = (node.packedInfo >> 16) & 0xFF;
+            packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), existingMat);
+        }
+        else
+        {
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
+        }
+
+        for (uint i = 0; i < 216; i++) {
+            _BrickDataBuffer[_BrickOffset + newBrickVoxelPtr + i] = packedFill;
+        }
+        
+        uint currentInfo = node.packedInfo & 0xFFFF0000;
+        currentInfo &= ~NODE_FLAG_SOLID;
+        
+        uint newPackedInfo = (newPayloadIdx & 0xFFFF) | currentInfo;
+        
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = newPackedInfo;
+    }
+}
+
+[numthreads(64, 1, 1)]
+void ExtractBricksList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetBrickCount) return;
+    int3 brickIdx = _TargetBricks[id.x];
+    
+    uint writeStart = id.x * BRICK_VOXEL_COUNT;
+
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIdx, matID;
+    UnpackNode(node, payloadIdx, matID);
+
+    if (payloadIdx == 0)
+    {
+        bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+        uint packedFill;
+
+        if (isOptimizedSolid)
+            packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), matID);
+        else
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0, 1, 0), 0);
+
+        for (uint i = 0; i < BRICK_VOXEL_COUNT; i++) {
+            _ReadbackBuffer[writeStart + i] = packedFill;
+        }
+        return;
+    }
+
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+
+    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
+                uint voxelIdx = _BrickOffset + brickPtr + (z * 36) + (y * 6) + x;
+                uint data = _BrickDataBuffer[voxelIdx];
+                _ReadbackBuffer[writeStart + (z * 36) + (y * 6) + x] = data;
+            }
+        }
+    }
 }
