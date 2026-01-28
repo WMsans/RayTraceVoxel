@@ -42,6 +42,10 @@ namespace VoxelEngine.Core.Editing
             {
                 if (vol.gameObject.activeInHierarchy && vol.IsReady)
                 {
+                    if (queryBounds.HasValue && !queryBounds.Value.Intersects(vol.WorldBounds))
+                    {
+                        continue;
+                    }
                     _analysisQueue.Enqueue(vol);
                 }
             }
@@ -163,6 +167,8 @@ namespace VoxelEngine.Core.Editing
             RunPropagationPass(vol, brickCount);
         }
 
+        private const int PROPAGATION_BATCH_SIZE = 64;
+
         private void RunPropagationPass(VoxelVolume vol, int brickCount)
         {
             _changeFlagBuffer.SetData(new uint[] { 0 });
@@ -174,7 +180,10 @@ namespace VoxelEngine.Core.Editing
             analysisShader.SetBuffer(propKernel, "_ChangeFlagBuffer", _changeFlagBuffer);
             analysisShader.SetInt("_Resolution", vol.Resolution);
 
-            analysisShader.Dispatch(propKernel, brickCount, 1, 1);
+            for (int i = 0; i < PROPAGATION_BATCH_SIZE; i++)
+            {
+                analysisShader.Dispatch(propKernel, brickCount, 1, 1);
+            }
 
             AsyncGPUReadback.Request(_changeFlagBuffer, (req) => OnPropagationReadback(req, vol, brickCount));
         }
@@ -189,7 +198,7 @@ namespace VoxelEngine.Core.Editing
             }
 
             uint changed = request.GetData<uint>()[0];
-            _currentPropagationIterations++;
+            _currentPropagationIterations += PROPAGATION_BATCH_SIZE;
 
             if (changed > 0 && _currentPropagationIterations < MAX_PROPAGATION_ITERATIONS)
             {
