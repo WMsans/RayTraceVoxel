@@ -11,6 +11,8 @@ namespace VoxelEngine.Core.Editing
     public class StructuralIntegrityAnalyzer : MonoBehaviour
     {
         public ComputeShader analysisShader;
+
+        public event System.Action<VoxelVolume, List<Vector3>> OnAnalysisCompleted;
         
         private List<Vector3> _floatingVoxelPositions = new List<Vector3>();
         private float _debugVoxelSize = 1.0f;
@@ -293,17 +295,20 @@ namespace VoxelEngine.Core.Editing
                 float scale = vol.WorldSize / vol.Resolution;
                 
                 int readCount = Mathf.Min(count, data.Length);
-                if (count > data.Length)
-                {
-                     Debug.LogWarning($"[Structural Analysis] Floating voxel count ({count}) exceeded buffer size ({data.Length}). Truncating.");
-                }
-
+                List<Vector3> volumeFloatingVoxels = new List<Vector3>();
+                
                 for (int i = 0; i < readCount; i++)
                 {
                     float3 voxelPos = data[i];
                     Vector3 local = new Vector3(voxelPos.x + 0.5f, voxelPos.y + 0.5f, voxelPos.z + 0.5f);
                     Vector3 worldPos = vol.WorldOrigin + (local * scale);
+                    volumeFloatingVoxels.Add(worldPos);
                     _floatingVoxelPositions.Add(worldPos);
+                }
+
+                if (volumeFloatingVoxels.Count > 0)
+                {
+                    OnAnalysisCompleted?.Invoke(vol, volumeFloatingVoxels);
                 }
             }
 
