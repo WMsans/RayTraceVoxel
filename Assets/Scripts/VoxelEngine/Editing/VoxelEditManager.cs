@@ -21,11 +21,53 @@ namespace VoxelEngine.Core.Editing
 
         public int EditCount => _sparseDatabase.Count;
 
+        // Persistent Scratch Buffers
+        private GraphicsBuffer _editInfoBuffer;
+        private GraphicsBuffer _editVoxelBuffer;
+        private int[] _infoArray;
+        private uint[] _voxelArray;
+        private int _currentBufferSize = 0;
+
+        public GraphicsBuffer EditInfoBuffer => _editInfoBuffer;
+        public GraphicsBuffer EditVoxelBuffer => _editVoxelBuffer;
+        public int[] InfoArray => _infoArray;
+        public uint[] VoxelArray => _voxelArray;
+
         public struct EditData
         {
             public Vector3Int Coordinate;
             public uint[] VoxelData;
         }
+
+        protected override void OnDestroy()
+        {
+            base.OnDestroy();
+            _editInfoBuffer?.Release();
+            _editVoxelBuffer?.Release();
+        }
+
+        public void PrepareGPUBuffers(int count)
+        {
+            if (count <= 0) return;
+
+            if (_editInfoBuffer == null || _currentBufferSize < count)
+            {
+                _editInfoBuffer?.Release();
+                _editVoxelBuffer?.Release();
+
+                // Allocate with some headroom
+                int newSize = Mathf.Max(64, Mathf.NextPowerOfTwo(count));
+                _editInfoBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, newSize, 16);
+                _editVoxelBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, newSize * SVONode.BRICK_VOXEL_COUNT, 4);
+                
+                _infoArray = new int[newSize * 4];
+                _voxelArray = new uint[newSize * SVONode.BRICK_VOXEL_COUNT];
+                
+                _currentBufferSize = newSize;
+            }
+        }
+
+        private List<EditData> _cachedEdits = new List<EditData>();
 
         /// <summary>
         /// Retrieves all edits that intersect with the given world bounds.
@@ -34,7 +76,7 @@ namespace VoxelEngine.Core.Editing
         /// <returns>A list of EditData containing the coordinate and voxel data.</returns>
         public List<EditData> GetEdits(Bounds bounds)
         {
-            var results = new List<EditData>();
+            _cachedEdits.Clear();
             float brickWorldSize = SVONode.BRICK_SIZE * voxelSize;
             Vector3 brickSizeVec = Vector3.one * brickWorldSize;
 
@@ -45,10 +87,10 @@ namespace VoxelEngine.Core.Editing
 
                 if (bounds.Intersects(brickBounds))
                 {
-                    results.Add(new EditData { Coordinate = kvp.Key, VoxelData = kvp.Value });
+                    _cachedEdits.Add(new EditData { Coordinate = kvp.Key, VoxelData = kvp.Value });
                 }
             }
-            return results;
+            return _cachedEdits;
         }
 
         /// <summary>
