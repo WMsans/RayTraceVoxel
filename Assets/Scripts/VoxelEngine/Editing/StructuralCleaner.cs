@@ -36,16 +36,36 @@ namespace VoxelEngine.Core.Editing
             List<Vector3> localVoxelPositions = new List<Vector3>(floatingVoxels.Count);
             HashSet<Vector3Int> uniqueBricks = new HashSet<Vector3Int>();
 
+            int resBricks = vol.Resolution / 4;
+            Vector3Int maxBrickIdx = new Vector3Int(resBricks - 1, resBricks - 1, resBricks - 1);
+
             foreach (var worldPos in floatingVoxels)
             {
                 // Convert World -> Local Voxel Space
                 Vector3 localPos = (worldPos - vol.WorldOrigin) * worldToVoxelScale;
                 localVoxelPositions.Add(localPos);
 
-                // Identify Bricks
-                Vector3Int voxelIdx = Vector3Int.FloorToInt(localPos);
-                Vector3Int brickIdx = new Vector3Int(voxelIdx.x / 4, voxelIdx.y / 4, voxelIdx.z / 4);
-                uniqueBricks.Add(brickIdx);
+                // Identify Bricks (including neighbors due to padding)
+                Vector3Int vIdx = Vector3Int.FloorToInt(localPos);
+                
+                // Calculate brick range covering this voxel (accounting for 1-voxel padding)
+                // Brick B covers [B*4-1, B*4+4]. 
+                int minX = Mathf.CeilToInt((vIdx.x - 4) / 4.0f);
+                int maxX = Mathf.FloorToInt((vIdx.x + 1) / 4.0f);
+                int minY = Mathf.CeilToInt((vIdx.y - 4) / 4.0f);
+                int maxY = Mathf.FloorToInt((vIdx.y + 1) / 4.0f);
+                int minZ = Mathf.CeilToInt((vIdx.z - 4) / 4.0f);
+                int maxZ = Mathf.FloorToInt((vIdx.z + 1) / 4.0f);
+
+                // Clamp to volume bounds
+                minX = Mathf.Max(minX, 0); maxX = Mathf.Min(maxX, maxBrickIdx.x);
+                minY = Mathf.Max(minY, 0); maxY = Mathf.Min(maxY, maxBrickIdx.y);
+                minZ = Mathf.Max(minZ, 0); maxZ = Mathf.Min(maxZ, maxBrickIdx.z);
+
+                for (int x = minX; x <= maxX; x++)
+                    for (int y = minY; y <= maxY; y++)
+                        for (int z = minZ; z <= maxZ; z++)
+                            uniqueBricks.Add(new Vector3Int(x, y, z));
             }
 
             int voxelCount = localVoxelPositions.Count;
@@ -67,7 +87,6 @@ namespace VoxelEngine.Core.Editing
             voxelModifierShader.SetBuffer(kernelAlloc, "_TargetBricks", bricksBuffer);
             voxelModifierShader.SetInt("_TargetBrickCount", brickCount);
             
-            int resBricks = vol.Resolution / 4;
             voxelModifierShader.SetInts("_MaxBrickIndex", new int[] {resBricks-1, resBricks-1, resBricks-1});
             voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
              
