@@ -3,6 +3,7 @@
 #pragma kernel AllocateNodesCube
 #pragma kernel EditVoxelsCube
 #pragma kernel ExtractBricks
+#pragma kernel RemoveVoxelList
 
 #include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
@@ -12,6 +13,8 @@ RWStructuredBuffer<uint> _BrickDataBuffer;
 RWStructuredBuffer<uint> _CounterBuffer;
 StructuredBuffer<uint> _PageTableBuffer; 
 RWStructuredBuffer<uint> _ReadbackBuffer; 
+StructuredBuffer<float3> _TargetPositions;
+int _TargetCount;
 
 int3 _MinBrickIndex;
 int3 _MaxBrickIndex;
@@ -195,4 +198,40 @@ void ExtractBricks(uint3 id : SV_DispatchThreadID)
             }
         }
     }
+}
+
+[numthreads(64, 1, 1)]
+void RemoveVoxelList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetCount) return;
+
+    float3 worldPos = _TargetPositions[id.x];
+    int3 voxelPos = (int3)floor(worldPos);
+    int3 brickIdx = (int3)floor((float3)voxelPos / 4.0);
+    
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIdx, matID;
+    UnpackNode(node, payloadIdx, matID);
+    
+    if (payloadIdx == 0) return;
+
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+
+    int3 localPos = voxelPos - (brickIdx * 4);
+    int3 storagePos = localPos + int3(1, 1, 1);
+
+    if (any(storagePos < 0) || any(storagePos >= BRICK_STORAGE_SIZE)) return;
+
+    uint voxelIdx = _BrickOffset + brickPtr + (storagePos.z * 36) + (storagePos.y * 6) + storagePos.x;
+    
+    uint packed = _BrickDataBuffer[voxelIdx];
+    float sdf; float3 norm; uint mat;
+    UnpackVoxelData(packed, sdf, norm, mat);
+
+    sdf = MAX_SDF_RANGE; 
+
+    _BrickDataBuffer[voxelIdx] = PackVoxelData(sdf, norm, mat);
 }
