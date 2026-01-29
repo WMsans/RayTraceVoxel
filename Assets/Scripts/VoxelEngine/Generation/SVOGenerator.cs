@@ -65,11 +65,20 @@ namespace VoxelEngine.Core.Generators
             // --- Prepare Edits ---
             var editManager = VoxelEditManager.Instance;
             int editCount = 0;
+            float editVoxelSize = 1.0f;
 
             if (editManager != null)
             {
+                // Calculate LOD Level based on current chunk resolution
+                float currentVoxelSize = chunkSize / resolution;
+                int lodLevel = Mathf.RoundToInt(Mathf.Log(currentVoxelSize / editManager.voxelSize, 2));
+                lodLevel = Mathf.Max(0, lodLevel);
+                
+                // Effective voxel size for the edits we are retrieving
+                editVoxelSize = editManager.voxelSize * Mathf.Pow(2, lodLevel);
+
                 Bounds chunkBounds = new Bounds(chunkOrigin + Vector3.one * (chunkSize * 0.5f), Vector3.one * chunkSize);
-                var edits = editManager.GetEdits(chunkBounds);
+                var edits = editManager.GetEdits(chunkBounds, lodLevel);
                 editCount = edits.Count;
 
                 if (editCount > 0)
@@ -99,7 +108,7 @@ namespace VoxelEngine.Core.Generators
             shader.SetBuffer(kBuild, "_EditInfoBuffer", editCount > 0 ? editManager.EditInfoBuffer : buffers.NodeBuffer);
             shader.SetBuffer(kBuild, "_EditVoxelBuffer", editCount > 0 ? editManager.EditVoxelBuffer : buffers.NodeBuffer);
             shader.SetInt("_EditCount", editCount);
-            shader.SetFloat("_GlobalVoxelSize", editManager != null ? editManager.voxelSize : 1.0f);
+            shader.SetFloat("_GlobalVoxelSize", editVoxelSize);
             shader.SetInt("_GlobalBrickSize", 4);
 
             int numBricksPerAxis = Mathf.CeilToInt(resolution / 4.0f);
