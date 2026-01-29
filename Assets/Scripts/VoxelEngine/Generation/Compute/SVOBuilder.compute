@@ -54,6 +54,7 @@ bool SampleEdit(float3 pos, out float e_sdf, out float3 e_norm, out uint e_mat) 
              uint flatIdx = info.dataIndex + (idx.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + idx.y * BRICK_STORAGE_SIZE + idx.x);
              uint packedData = _EditVoxelBuffer[flatIdx];
              UnpackVoxelData(packedData, e_sdf, e_norm, e_mat);
+             if (e_mat == 255) return false; // Passthrough flag
              return true;
         }
     }

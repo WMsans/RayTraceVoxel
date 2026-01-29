@@ -18,6 +18,7 @@ namespace VoxelEngine.Core.Editing
         // Configuration
         private const int MAX_LOD = 6; // Deep enough for most chunks
         private const float MAX_SDF_RANGE = 4.0f;
+        private const uint MAT_PASSTHROUGH = 255; // Special flag: Voxel should be ignored (fallback to procedural)
 
         // Key: Global Brick Coordinate (at LOD X resolution)
         // Value: The full voxel data for that brick (6x6x6 flattened = 216 uints)
@@ -156,9 +157,6 @@ namespace VoxelEngine.Core.Editing
             int nextLevel = currentLevel + 1;
             
             // Calculate Parent Coordinate (integer division by 2)
-            // Note: Since BrickSize is constant (4), the grid simply gets coarser.
-            // A parent brick at (X,Y,Z) in LOD N+1 covers (2X,2Y,2Z) to (2X+1, 2Y+1, 2Z+1) in LOD N.
-            // So: Parent = floor(Child / 2)
             Vector3Int parentCoord = new Vector3Int(
                 Mathf.FloorToInt(childCoord.x / 2.0f),
                 Mathf.FloorToInt(childCoord.y / 2.0f),
@@ -166,13 +164,15 @@ namespace VoxelEngine.Core.Editing
             );
 
             // Create/Update Parent Brick
-            uint[] parentData = new uint[SVONode.BRICK_VOXEL_COUNT];
+            // If parent already exists, we should ideally fetch it to preserve other edits within it.
+            // But since we are recalculating the *whole* parent brick from its children (which we have access to via _lodDatabases),
+            // we can just regenerate it. 
+            // Note: If some children are MISSING from _lodDatabases, they are treated as PASSTHROUGH.
+            // This is correct: if a child isn't edited, the parent shouldn't override that region.
             
-            // We need to construct the parent from its 8 potential children
-            // The logic: Iterate over the Parent's voxels (6x6x6).
-            // Determine which child brick and which voxel within that child they map to.
-            // Downsample (Average).
-
+            uint[] parentData = new uint[SVONode.BRICK_VOXEL_COUNT];
+            bool parentHasAnyData = false;
+            
             // Loop over Parent Brick Voxels (including padding)
             // Dimensions: 6x6x6
             for (int z = 0; z < SVONode.BRICK_STORAGE_SIZE; z++)
@@ -197,7 +197,7 @@ namespace VoxelEngine.Core.Editing
                         float accSDF = 0;
                         Vector3 accNorm = Vector3.zero;
                         Dictionary<uint, int> matCounts = new Dictionary<uint, int>();
-                        int sampleCount = 0;
+                        int validSampleCount = 0;
 
                         // Sample the 2x2x2 block in the children
                         for (int cz = 0; cz < 2; cz++)
@@ -215,7 +215,6 @@ namespace VoxelEngine.Core.Editing
                                     // Relative to Parent Origin, we are at (globalChildX, ...)
                                     
                                     // Global Child Block Coordinate relative to the "Base" child (parentCoord * 2)
-                                    // 0 or 1
                                     int childBlockOffX = Mathf.FloorToInt(globalChildX / (float)SVONode.BRICK_SIZE);
                                     int childBlockOffY = Mathf.FloorToInt(globalChildY / (float)SVONode.BRICK_SIZE);
                                     int childBlockOffZ = Mathf.FloorToInt(globalChildZ / (float)SVONode.BRICK_SIZE);
@@ -228,7 +227,6 @@ namespace VoxelEngine.Core.Editing
                                     Vector3Int targetChildCoord = parentCoord * 2 + new Vector3Int(childBlockOffX, childBlockOffY, childBlockOffZ);
                                     
                                     // Local voxel index within that child brick
-                                    // Must account for the block offset and add Padding
                                     int localChildVoxelX = (globalChildX - (childBlockOffX * SVONode.BRICK_SIZE)) + SVONode.BRICK_PADDING;
                                     int localChildVoxelY = (globalChildY - (childBlockOffY * SVONode.BRICK_SIZE)) + SVONode.BRICK_PADDING;
                                     int localChildVoxelZ = (globalChildZ - (childBlockOffZ * SVONode.BRICK_SIZE)) + SVONode.BRICK_PADDING;
@@ -236,7 +234,7 @@ namespace VoxelEngine.Core.Editing
                                     // Sample
                                     float s_sdf = MAX_SDF_RANGE;
                                     Vector3 s_norm = Vector3.up;
-                                    uint s_mat = 0;
+                                    uint s_mat = MAT_PASSTHROUGH;
 
                                     if (_lodDatabases[currentLevel].TryGetValue(targetChildCoord, out uint[] childData))
                                     {
@@ -250,51 +248,81 @@ namespace VoxelEngine.Core.Editing
                                         }
                                     }
 
-                                    accSDF += s_sdf;
-                                    accNorm += s_norm;
-                                    if (s_mat != 0) 
+                                    // Only accumulate if not passthrough
+                                    if (s_mat != MAT_PASSTHROUGH)
                                     {
+                                        accSDF += s_sdf;
+                                        accNorm += s_norm;
                                         if (!matCounts.ContainsKey(s_mat)) matCounts[s_mat] = 0;
                                         matCounts[s_mat]++;
+                                        validSampleCount++;
                                     }
-                                    sampleCount++;
                                 }
                             }
                         }
 
-                        // Average
-                        float avgSDF = accSDF / sampleCount;
-                        Vector3 avgNorm = accNorm.normalized;
-                        
-                        // Dominant Material
-                        uint domMat = 0;
-                        int maxCount = -1;
-                        foreach(var kvp in matCounts)
-                        {
-                            if (kvp.Value > maxCount) { maxCount = kvp.Value; domMat = kvp.Key; }
-                        }
-
-                        // Store
+                        // Store Result
                         int parentFlatIdx = z * SVONode.BRICK_STORAGE_SIZE * SVONode.BRICK_STORAGE_SIZE +
                                             y * SVONode.BRICK_STORAGE_SIZE +
                                             x;
-                        parentData[parentFlatIdx] = PackVoxelData(avgSDF, avgNorm, domMat);
+
+                        if (validSampleCount > 0)
+                        {
+                            // Average
+                            float avgSDF = accSDF / validSampleCount;
+                            Vector3 avgNorm = accNorm.normalized;
+                            
+                            // Dominant Material
+                            uint domMat = 1; // Default fallback
+                            int maxCount = -1;
+                            foreach(var kvp in matCounts)
+                            {
+                                if (kvp.Value > maxCount) { maxCount = kvp.Value; domMat = kvp.Key; }
+                            }
+                            
+                            parentData[parentFlatIdx] = PackVoxelData(avgSDF, avgNorm, domMat);
+                            parentHasAnyData = true;
+                        }
+                        else
+                        {
+                            // No valid children -> Passthrough
+                            parentData[parentFlatIdx] = PackVoxelData(MAX_SDF_RANGE, Vector3.up, MAT_PASSTHROUGH);
+                        }
                     }
                 }
             }
 
             // Save Parent
-            if (_lodDatabases[nextLevel].ContainsKey(parentCoord))
+            // Only save if it contains ANY valid edit data. 
+            // If the whole brick is PASSTHROUGH, we don't need to store it (it's effectively "No Edit").
+            if (parentHasAnyData)
             {
-                _lodDatabases[nextLevel][parentCoord] = parentData;
+                if (_lodDatabases[nextLevel].ContainsKey(parentCoord))
+                {
+                    _lodDatabases[nextLevel][parentCoord] = parentData;
+                }
+                else
+                {
+                    _lodDatabases[nextLevel].Add(parentCoord, parentData);
+                }
+
+                // Recurse
+                PropagateEdit(parentCoord, nextLevel);
             }
             else
             {
-                _lodDatabases[nextLevel].Add(parentCoord, parentData);
+                // If the parent brick ended up empty (e.g. we undid the last edit in this area), 
+                // we should remove it from the database.
+                if (_lodDatabases[nextLevel].ContainsKey(parentCoord))
+                {
+                    _lodDatabases[nextLevel].Remove(parentCoord);
+                    // Also propagate the removal? 
+                    // To be safe, we should propagate the update (which might effectively be a removal)
+                    // But if we remove it here, we stop the chain.
+                    // Ideally, we'd check if the *previous* state was present, and if so, propagate a "removal" (or an empty brick).
+                    // For now, let's just remove it. The visual artifact of "lingering" edits is better than "holes".
+                }
             }
-
-            // Recurse
-            PropagateEdit(parentCoord, nextLevel);
         }
 
         /// <summary>
