@@ -19,13 +19,20 @@ namespace VoxelEngine.Core.Editing
         private const int MAX_LOD = 6; // Deep enough for most chunks
         private const float MAX_SDF_RANGE = 4.0f;
         private const uint MAT_PASSTHROUGH = 255; // Special flag: Voxel should be ignored (fallback to procedural)
+        
+        // Spatial Hashing Configuration
+        // A Meta-Chunk contains META_CHUNK_DIM^3 Bricks.
+        // If BrickSize=8, 64 Bricks = 512 Voxels.
+        private const int META_CHUNK_DIM = 64; 
 
-        // Key: Global Brick Coordinate (at LOD X resolution)
+        // Key 1: Meta-Chunk Coordinate (Spatial Hash)
+        // Key 2: Global Brick Coordinate (at LOD X resolution)
         // Value: The full voxel data for that brick (6x6x6 flattened = 216 uints)
         // _lodDatabases[0] is high-res, [1] is half-res, etc.
-        private Dictionary<Vector3Int, uint[]>[] _lodDatabases;
+        private Dictionary<Vector3Int, Dictionary<Vector3Int, uint[]>>[] _lodDatabases;
 
-        public int EditCount => _lodDatabases != null && _lodDatabases.Length > 0 ? _lodDatabases[0].Count : 0;
+        private int _totalEdits = 0;
+        public int EditCount => _totalEdits;
 
         // Persistent Scratch Buffers
         private GraphicsBuffer _editInfoBuffer;
@@ -55,11 +62,12 @@ namespace VoxelEngine.Core.Editing
         {
             if (_lodDatabases == null)
             {
-                _lodDatabases = new Dictionary<Vector3Int, uint[]>[MAX_LOD];
+                _lodDatabases = new Dictionary<Vector3Int, Dictionary<Vector3Int, uint[]>>[MAX_LOD];
                 for (int i = 0; i < MAX_LOD; i++)
                 {
-                    _lodDatabases[i] = new Dictionary<Vector3Int, uint[]>();
+                    _lodDatabases[i] = new Dictionary<Vector3Int, Dictionary<Vector3Int, uint[]>>();
                 }
+                _totalEdits = 0;
             }
         }
 
@@ -95,6 +103,7 @@ namespace VoxelEngine.Core.Editing
 
         /// <summary>
         /// Retrieves all edits that intersect with the given world bounds for a specific LOD level.
+        /// Uses Spatial Hashing to minimize checks.
         /// </summary>
         /// <param name="bounds">The world bounds to query.</param>
         /// <param name="lodLevel">The LOD level to retrieve edits for.</param>
@@ -103,19 +112,49 @@ namespace VoxelEngine.Core.Editing
             _cachedEdits.Clear();
             if (lodLevel < 0 || lodLevel >= MAX_LOD) return _cachedEdits;
 
-            // Calculate brick size at this LOD
+            // Calculate dimensions at this LOD
             float currentVoxelSize = voxelSize * Mathf.Pow(2, lodLevel);
             float brickWorldSize = SVONode.BRICK_SIZE * currentVoxelSize;
+            float metaChunkWorldSize = brickWorldSize * META_CHUNK_DIM;
             Vector3 brickSizeVec = Vector3.one * brickWorldSize;
 
-            foreach (var kvp in _lodDatabases[lodLevel])
-            {
-                Vector3 brickOrigin = new Vector3(kvp.Key.x, kvp.Key.y, kvp.Key.z) * brickWorldSize;
-                Bounds brickBounds = new Bounds(brickOrigin + (brickSizeVec * 0.5f), brickSizeVec);
+            // Determine relevant Meta-Chunks
+            Vector3 min = bounds.min;
+            Vector3 max = bounds.max;
 
-                if (bounds.Intersects(brickBounds))
+            int minMetaX = Mathf.FloorToInt(min.x / metaChunkWorldSize);
+            int minMetaY = Mathf.FloorToInt(min.y / metaChunkWorldSize);
+            int minMetaZ = Mathf.FloorToInt(min.z / metaChunkWorldSize);
+
+            int maxMetaX = Mathf.FloorToInt(max.x / metaChunkWorldSize);
+            int maxMetaY = Mathf.FloorToInt(max.y / metaChunkWorldSize);
+            int maxMetaZ = Mathf.FloorToInt(max.z / metaChunkWorldSize);
+
+            var db = _lodDatabases[lodLevel];
+
+            // Iterate only relevant Meta-Chunks
+            for (int z = minMetaZ; z <= maxMetaZ; z++)
+            {
+                for (int y = minMetaY; y <= maxMetaY; y++)
                 {
-                    _cachedEdits.Add(new EditData { Coordinate = kvp.Key, VoxelData = kvp.Value });
+                    for (int x = minMetaX; x <= maxMetaX; x++)
+                    {
+                        Vector3Int metaCoord = new Vector3Int(x, y, z);
+                        if (db.TryGetValue(metaCoord, out var bucket))
+                        {
+                            // Check bricks within this bucket
+                            foreach (var kvp in bucket)
+                            {
+                                Vector3 brickOrigin = new Vector3(kvp.Key.x, kvp.Key.y, kvp.Key.z) * brickWorldSize;
+                                Bounds brickBounds = new Bounds(brickOrigin + (brickSizeVec * 0.5f), brickSizeVec);
+
+                                if (bounds.Intersects(brickBounds))
+                                {
+                                    _cachedEdits.Add(new EditData { Coordinate = kvp.Key, VoxelData = kvp.Value });
+                                }
+                            }
+                        }
+                    }
                 }
             }
             return _cachedEdits;
@@ -137,14 +176,7 @@ namespace VoxelEngine.Core.Editing
             InitializeDatabases();
 
             // 1. Store LOD 0
-            if (_lodDatabases[0].ContainsKey(coord))
-            {
-                _lodDatabases[0][coord] = (uint[])data.Clone();
-            }
-            else
-            {
-                _lodDatabases[0].Add(coord, (uint[])data.Clone());
-            }
+            SetBrickData(0, coord, (uint[])data.Clone());
 
             // 2. Propagate Up
             PropagateEdit(coord, 0);
@@ -164,12 +196,6 @@ namespace VoxelEngine.Core.Editing
             );
 
             // Create/Update Parent Brick
-            // If parent already exists, we should ideally fetch it to preserve other edits within it.
-            // But since we are recalculating the *whole* parent brick from its children (which we have access to via _lodDatabases),
-            // we can just regenerate it. 
-            // Note: If some children are MISSING from _lodDatabases, they are treated as PASSTHROUGH.
-            // This is correct: if a child isn't edited, the parent shouldn't override that region.
-            
             uint[] parentData = new uint[SVONode.BRICK_VOXEL_COUNT];
             bool parentHasAnyData = false;
             
@@ -236,7 +262,8 @@ namespace VoxelEngine.Core.Editing
                                     Vector3 s_norm = Vector3.up;
                                     uint s_mat = MAT_PASSTHROUGH;
 
-                                    if (_lodDatabases[currentLevel].TryGetValue(targetChildCoord, out uint[] childData))
+                                    // Use Helper
+                                    if (TryGetBrickData(currentLevel, targetChildCoord, out uint[] childData))
                                     {
                                         int flatIdx = localChildVoxelZ * SVONode.BRICK_STORAGE_SIZE * SVONode.BRICK_STORAGE_SIZE +
                                                       localChildVoxelY * SVONode.BRICK_STORAGE_SIZE +
@@ -293,35 +320,16 @@ namespace VoxelEngine.Core.Editing
             }
 
             // Save Parent
-            // Only save if it contains ANY valid edit data. 
-            // If the whole brick is PASSTHROUGH, we don't need to store it (it's effectively "No Edit").
             if (parentHasAnyData)
             {
-                if (_lodDatabases[nextLevel].ContainsKey(parentCoord))
-                {
-                    _lodDatabases[nextLevel][parentCoord] = parentData;
-                }
-                else
-                {
-                    _lodDatabases[nextLevel].Add(parentCoord, parentData);
-                }
-
+                SetBrickData(nextLevel, parentCoord, parentData);
                 // Recurse
                 PropagateEdit(parentCoord, nextLevel);
             }
             else
             {
-                // If the parent brick ended up empty (e.g. we undid the last edit in this area), 
-                // we should remove it from the database.
-                if (_lodDatabases[nextLevel].ContainsKey(parentCoord))
-                {
-                    _lodDatabases[nextLevel].Remove(parentCoord);
-                    // Also propagate the removal? 
-                    // To be safe, we should propagate the update (which might effectively be a removal)
-                    // But if we remove it here, we stop the chain.
-                    // Ideally, we'd check if the *previous* state was present, and if so, propagate a "removal" (or an empty brick).
-                    // For now, let's just remove it. The visual artifact of "lingering" edits is better than "holes".
-                }
+                // Remove if empty
+                RemoveBrickData(nextLevel, parentCoord);
             }
         }
 
@@ -331,7 +339,7 @@ namespace VoxelEngine.Core.Editing
         public bool HasEdit(Vector3Int coord)
         {
             if (_lodDatabases == null || _lodDatabases.Length == 0) return false;
-            return _lodDatabases[0].ContainsKey(coord);
+            return TryGetBrickData(0, coord, out _);
         }
 
         /// <summary>
@@ -342,6 +350,77 @@ namespace VoxelEngine.Core.Editing
             if (_lodDatabases != null)
             {
                 foreach (var db in _lodDatabases) db.Clear();
+            }
+            _totalEdits = 0;
+        }
+
+        // --- Spatial Hashing Helpers ---
+
+        private Vector3Int GetMetaChunkCoord(Vector3Int brickCoord)
+        {
+            // Helper for floor division
+            return new Vector3Int(
+                Mathf.FloorToInt(brickCoord.x / (float)META_CHUNK_DIM),
+                Mathf.FloorToInt(brickCoord.y / (float)META_CHUNK_DIM),
+                Mathf.FloorToInt(brickCoord.z / (float)META_CHUNK_DIM)
+            );
+        }
+
+        private bool TryGetBrickData(int lod, Vector3Int brickCoord, out uint[] data)
+        {
+            data = null;
+            if (lod < 0 || lod >= MAX_LOD) return false;
+
+            var metaCoord = GetMetaChunkCoord(brickCoord);
+            if (_lodDatabases[lod].TryGetValue(metaCoord, out var bucket))
+            {
+                return bucket.TryGetValue(brickCoord, out data);
+            }
+            return false;
+        }
+
+        private void SetBrickData(int lod, Vector3Int brickCoord, uint[] data)
+        {
+            if (lod < 0 || lod >= MAX_LOD) return;
+
+            var metaCoord = GetMetaChunkCoord(brickCoord);
+            var db = _lodDatabases[lod];
+
+            if (!db.TryGetValue(metaCoord, out var bucket))
+            {
+                bucket = new Dictionary<Vector3Int, uint[]>();
+                db.Add(metaCoord, bucket);
+            }
+
+            // Track count only for LOD 0
+            if (lod == 0 && !bucket.ContainsKey(brickCoord))
+            {
+                _totalEdits++;
+            }
+
+            bucket[brickCoord] = data;
+        }
+
+        private void RemoveBrickData(int lod, Vector3Int brickCoord)
+        {
+            if (lod < 0 || lod >= MAX_LOD) return;
+
+            var metaCoord = GetMetaChunkCoord(brickCoord);
+            var db = _lodDatabases[lod];
+
+            if (db.TryGetValue(metaCoord, out var bucket))
+            {
+                if (bucket.ContainsKey(brickCoord))
+                {
+                    bucket.Remove(brickCoord);
+                    if (lod == 0) _totalEdits--;
+
+                    // Clean up empty buckets
+                    if (bucket.Count == 0)
+                    {
+                        db.Remove(metaCoord);
+                    }
+                }
             }
         }
 
