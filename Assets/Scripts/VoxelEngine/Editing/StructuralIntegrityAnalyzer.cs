@@ -10,6 +10,12 @@ namespace VoxelEngine.Core.Editing
 {
     public class StructuralIntegrityAnalyzer : MonoBehaviour
     {
+        public struct DebrisVoxel
+        {
+            public float3 position;
+            public uint label;
+        }
+
         public ComputeShader analysisShader;
 
         public event System.Action<VoxelVolume, List<Vector3>> OnAnalysisCompleted;
@@ -21,15 +27,15 @@ namespace VoxelEngine.Core.Editing
         private Queue<VoxelVolume> _analysisQueue = new Queue<VoxelVolume>();
         private bool _isAnalyzing = false;
         private int _currentPropagationIterations = 0;
-        private const int MAX_PROPAGATION_ITERATIONS = 2048; // Safety limit
+        private const int MAX_PROPAGATION_ITERATIONS = 4096; // Increased safety limit for CCL
         private const float GROUND_THRESHOLD = 10.0f;
 
         // Active Buffers for current volume
         private ComputeBuffer _topologyBuffer;
         private ComputeBuffer _activeBrickBuffer;
-        private ComputeBuffer _stabilityBuffer;
+        private ComputeBuffer _labelBuffer; // Replaces _stabilityBuffer
         private ComputeBuffer _changeFlagBuffer;
-        private ComputeBuffer _floatingVoxelOutput;
+        private ComputeBuffer _debrisVoxelOutput; // Replaces _floatingVoxelOutput
         private ComputeBuffer _argsBuffer; // For indirect dispatch or count readback
 
         public void AnalyzeWorld(Bounds? queryBounds = null)
@@ -128,14 +134,16 @@ namespace VoxelEngine.Core.Editing
                 return;
             }
 
-            // 4. Setup Stability Buffers
+            // 4. Setup Label & Debris Buffers
             int res = vol.Resolution;
             int totalVoxels = res * res * res;
             
-            _stabilityBuffer = new ComputeBuffer(totalVoxels, 4); 
+            _labelBuffer = new ComputeBuffer(totalVoxels, 4); // 1 uint per voxel
             _changeFlagBuffer = new ComputeBuffer(1, 4);
-            _floatingVoxelOutput = new ComputeBuffer(totalVoxels, 12, ComputeBufferType.Append); // Max reasonable floating (Full size to be safe)
-            _floatingVoxelOutput.SetCounterValue(0);
+            
+            // Output buffer for DebrisVoxel (float3 position + uint label) -> 12 + 4 bytes = 16 stride
+            _debrisVoxelOutput = new ComputeBuffer(totalVoxels, 16, ComputeBufferType.Append); 
+            _debrisVoxelOutput.SetCounterValue(0);
 
             // Calculate Threshold
             float voxelSize = vol.WorldSize / res;
@@ -144,22 +152,21 @@ namespace VoxelEngine.Core.Editing
 
             analysisShader.SetFloat("_GroundThresholdY", voxelThresholdY);
 
-            // 5. Init Stability
-            int initKernel = analysisShader.FindKernel("InitStability");
+            // 5. Init Labels
+            int initKernel = analysisShader.FindKernel("InitLabels");
             analysisShader.SetBuffer(initKernel, "_ActiveBricksInput", _activeBrickBuffer);
             analysisShader.SetBuffer(initKernel, "_TopologyBuffer", _topologyBuffer);
-            analysisShader.SetBuffer(initKernel, "_StabilityBuffer", _stabilityBuffer);
+            analysisShader.SetBuffer(initKernel, "_LabelBuffer", _labelBuffer);
             analysisShader.SetInt("_Resolution", res);
 
             // Find the volume directly below the current one
             Vector3 targetOrigin = vol.WorldOrigin - new Vector3(0, vol.WorldSize, 0);
             VoxelVolume bottomNeighbor = null;
             
-            // Simple linear search (can be optimized with a spatial hash if needed)
+            // Simple linear search
             foreach (var v in VoxelVolumeRegistry.Volumes)
             {
                 if (v == vol) continue;
-                // Check if origin matches (allowing small epsilon for float errors)
                 if (Vector3.Distance(v.WorldOrigin, targetOrigin) < (voxelSize * 0.5f))
                 {
                     if (v.IsReady)
@@ -175,7 +182,6 @@ namespace VoxelEngine.Core.Editing
                 analysisShader.SetInt("_HasNeighbor", 1);
                 analysisShader.SetInt("_NeighborResolution", bottomNeighbor.Resolution);
                 
-                // Bind Neighbor Buffers
                 analysisShader.SetBuffer(initKernel, "_NeighborNodeBuffer", bottomNeighbor.NodeBuffer);
                 analysisShader.SetBuffer(initKernel, "_NeighborPayloadBuffer", bottomNeighbor.PayloadBuffer);
                 analysisShader.SetBuffer(initKernel, "_NeighborBrickDataBuffer", bottomNeighbor.BrickDataBuffer);
@@ -187,14 +193,12 @@ namespace VoxelEngine.Core.Editing
             else
             {
                 analysisShader.SetInt("_HasNeighbor", 0);
-                // Bind dummy buffers (current vol) to prevent API validation errors
                 analysisShader.SetBuffer(initKernel, "_NeighborNodeBuffer", vol.NodeBuffer);
                 analysisShader.SetBuffer(initKernel, "_NeighborPayloadBuffer", vol.PayloadBuffer);
                 analysisShader.SetBuffer(initKernel, "_NeighborBrickDataBuffer", vol.BrickDataBuffer);
                 analysisShader.SetBuffer(initKernel, "_NeighborPageTableBuffer", vol.BufferManager.PageTableBuffer);
             }
 
-            // Group count = brickCount. Each group handles 1 brick (64 threads).
             analysisShader.Dispatch(initKernel, brickCount, 1, 1);
 
             // Start Propagation
@@ -208,10 +212,10 @@ namespace VoxelEngine.Core.Editing
         {
             _changeFlagBuffer.SetData(new uint[] { 0 });
 
-            int propKernel = analysisShader.FindKernel("PropagateStability");
+            int propKernel = analysisShader.FindKernel("PropagateLabels");
             analysisShader.SetBuffer(propKernel, "_ActiveBricksInput", _activeBrickBuffer);
             analysisShader.SetBuffer(propKernel, "_TopologyBuffer", _topologyBuffer);
-            analysisShader.SetBuffer(propKernel, "_StabilityBuffer", _stabilityBuffer);
+            analysisShader.SetBuffer(propKernel, "_LabelBuffer", _labelBuffer);
             analysisShader.SetBuffer(propKernel, "_ChangeFlagBuffer", _changeFlagBuffer);
             analysisShader.SetInt("_Resolution", vol.Resolution);
 
@@ -251,18 +255,18 @@ namespace VoxelEngine.Core.Editing
 
         private void CollectResults(VoxelVolume vol, int brickCount)
         {
-            int collectKernel = analysisShader.FindKernel("CollectFloating");
+            int collectKernel = analysisShader.FindKernel("CollectDebris");
             analysisShader.SetBuffer(collectKernel, "_ActiveBricksInput", _activeBrickBuffer);
             analysisShader.SetBuffer(collectKernel, "_TopologyBuffer", _topologyBuffer);
-            analysisShader.SetBuffer(collectKernel, "_StabilityBuffer", _stabilityBuffer);
-            analysisShader.SetBuffer(collectKernel, "_FloatingVoxelOutput", _floatingVoxelOutput);
+            analysisShader.SetBuffer(collectKernel, "_LabelBuffer", _labelBuffer);
+            analysisShader.SetBuffer(collectKernel, "_DebrisVoxelOutput", _debrisVoxelOutput);
             analysisShader.SetInt("_Resolution", vol.Resolution);
 
             analysisShader.Dispatch(collectKernel, brickCount, 1, 1);
 
             // Read count
             ComputeBuffer countBuf = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.IndirectArguments);
-            ComputeBuffer.CopyCount(_floatingVoxelOutput, countBuf, 0);
+            ComputeBuffer.CopyCount(_debrisVoxelOutput, countBuf, 0);
 
             AsyncGPUReadback.Request(countBuf, (req) => OnFinalCountReadback(req, countBuf, vol));
         }
@@ -278,7 +282,7 @@ namespace VoxelEngine.Core.Editing
 
             if (count > 0)
             {
-                AsyncGPUReadback.Request(_floatingVoxelOutput, (req) => OnFinalDataReadback(req, count, vol));
+                AsyncGPUReadback.Request(_debrisVoxelOutput, (req) => OnFinalDataReadback(req, count, vol));
             }
             else
             {
@@ -291,24 +295,40 @@ namespace VoxelEngine.Core.Editing
         {
             if (!request.hasError)
             {
-                var data = request.GetData<float3>();
+                var data = request.GetData<DebrisVoxel>();
                 float scale = vol.WorldSize / vol.Resolution;
                 
                 int readCount = Mathf.Min(count, data.Length);
-                List<Vector3> volumeFloatingVoxels = new List<Vector3>();
                 
+                // Grouping: Island ID -> List of World Positions
+                Dictionary<uint, List<Vector3>> debrisIslands = new Dictionary<uint, List<Vector3>>();
+
                 for (int i = 0; i < readCount; i++)
                 {
-                    float3 voxelPos = data[i];
-                    Vector3 local = new Vector3(voxelPos.x + 0.5f, voxelPos.y + 0.5f, voxelPos.z + 0.5f);
+                    DebrisVoxel voxel = data[i];
+                    Vector3 local = new Vector3(voxel.position.x + 0.5f, voxel.position.y + 0.5f, voxel.position.z + 0.5f);
                     Vector3 worldPos = vol.WorldOrigin + (local * scale);
-                    volumeFloatingVoxels.Add(worldPos);
-                    _floatingVoxelPositions.Add(worldPos);
+
+                    if (!debrisIslands.ContainsKey(voxel.label))
+                    {
+                        debrisIslands[voxel.label] = new List<Vector3>();
+                    }
+                    debrisIslands[voxel.label].Add(worldPos);
                 }
 
-                if (volumeFloatingVoxels.Count > 0)
+                Debug.Log($"[Structural Analysis] Found {debrisIslands.Count} distinct floating islands.");
+
+                // Flatten for StructuralCleaner (or future physics processing)
+                List<Vector3> allFloatingVoxels = new List<Vector3>();
+                foreach (var island in debrisIslands.Values)
                 {
-                    OnAnalysisCompleted?.Invoke(vol, volumeFloatingVoxels);
+                    allFloatingVoxels.AddRange(island);
+                    _floatingVoxelPositions.AddRange(island);
+                }
+
+                if (allFloatingVoxels.Count > 0)
+                {
+                    OnAnalysisCompleted?.Invoke(vol, allFloatingVoxels);
                 }
             }
 
@@ -320,15 +340,15 @@ namespace VoxelEngine.Core.Editing
         {
             if (_topologyBuffer != null) _topologyBuffer.Release();
             if (_activeBrickBuffer != null) _activeBrickBuffer.Release();
-            if (_stabilityBuffer != null) _stabilityBuffer.Release();
+            if (_labelBuffer != null) _labelBuffer.Release();
             if (_changeFlagBuffer != null) _changeFlagBuffer.Release();
-            if (_floatingVoxelOutput != null) _floatingVoxelOutput.Release();
+            if (_debrisVoxelOutput != null) _debrisVoxelOutput.Release();
             
             _topologyBuffer = null;
             _activeBrickBuffer = null;
-            _stabilityBuffer = null;
+            _labelBuffer = null;
             _changeFlagBuffer = null;
-            _floatingVoxelOutput = null;
+            _debrisVoxelOutput = null;
         }
 
         private void OnDestroy()

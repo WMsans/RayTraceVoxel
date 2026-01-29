@@ -1,9 +1,14 @@
 #pragma kernel AnalyzeBricks
-#pragma kernel InitStability
-#pragma kernel PropagateStability
-#pragma kernel CollectFloating
+#pragma kernel InitLabels
+#pragma kernel PropagateLabels
+#pragma kernel CollectDebris
 
 #include "../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+struct DebrisVoxel {
+    float3 position;
+    uint label;
+};
 
 StructuredBuffer<SVONode> _GlobalNodeBuffer;
 StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
@@ -12,8 +17,9 @@ StructuredBuffer<uint> _PageTableBuffer;
 // Bitmask: 1 bit per voxel
 RWStructuredBuffer<uint> _TopologyBuffer;
 
-// Stability: 1 uint per voxel (0 = Unstable, 1 = Stable)
-RWStructuredBuffer<uint> _StabilityBuffer;
+// Label Buffer: Unique ID per voxel (MAX_UINT for Air/Stable, Index for Floating)
+RWStructuredBuffer<uint> _LabelBuffer;
+
 // Active Bricks: Packed uint (x | y<<10 | z<<20)
 // For AnalyzeBricks: Output (Append)
 // For Others: Input (Structured)
@@ -21,7 +27,7 @@ AppendStructuredBuffer<uint> _ActiveBrickBuffer;
 StructuredBuffer<uint> _ActiveBricksInput;
 
 // Output for floating voxels
-AppendStructuredBuffer<float3> _FloatingVoxelOutput;
+AppendStructuredBuffer<DebrisVoxel> _DebrisVoxelOutput;
 
 // Change Flag for Propagation
 RWStructuredBuffer<uint> _ChangeFlagBuffer;
@@ -248,7 +254,7 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(4, 4, 4)]
-void InitStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+void InitLabels(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 {
     // One group per active brick
     uint packedBrick = _ActiveBricksInput[groupID.x];
@@ -260,10 +266,11 @@ void InitStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID
     
     if (IsSolid(flatIdx))
     {
+        bool isStable = false;
         // 1. Check if below ground threshold (Physical Ground)
         if ((float)voxelGlobal.y <= _GroundThresholdY)
         {
-            _StabilityBuffer[flatIdx] = 1;
+            isStable = true;
         }
         // 2. If at the bottom boundary (y=0), check connection to Neighbor Volume
         else if (voxelGlobal.y == 0)
@@ -274,33 +281,28 @@ void InitStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID
                 uint3 neighborPos = uint3(voxelGlobal.x, _NeighborResolution - 1, voxelGlobal.z);
                 if (IsNeighborSolid(neighborPos))
                 {
-                    _StabilityBuffer[flatIdx] = 1;
-                }
-                else
-                {
-                    _StabilityBuffer[flatIdx] = 0;
+                    isStable = true;
                 }
             }
-            else
-            {
-                // No neighbor and above ground -> Unstable
-                _StabilityBuffer[flatIdx] = 0;
-            }
+        }
+        
+        if (isStable)
+        {
+            _LabelBuffer[flatIdx] = 0; // Stable/Static (Ground)
         }
         else
         {
-            // Internal voxel above ground -> Unstable (until propagated)
-            _StabilityBuffer[flatIdx] = 0;
+            _LabelBuffer[flatIdx] = flatIdx + 1; // Floating - Start as own island (ensure > 0)
         }
     }
     else
     {
-        _StabilityBuffer[flatIdx] = 0;
+        _LabelBuffer[flatIdx] = ~0u; // Air
     }
 }
 
 [numthreads(4, 4, 4)]
-void PropagateStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+void PropagateLabels(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 {
     uint packedBrick = _ActiveBricksInput[groupID.x];
     uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
@@ -309,45 +311,51 @@ void PropagateStability(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThr
     if (any(voxelGlobal >= _Resolution)) return;
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
-    // If solid and not yet stable
-    if (IsSolid(flatIdx) && _StabilityBuffer[flatIdx] == 0)
+    uint myLabel = _LabelBuffer[flatIdx];
+
+    // If I am Air, do nothing. (0 is Stable, allowing propagation)
+    if (myLabel == ~0u) return;
+
+    // Check 6 neighbors
+    uint3 neighbors[6] = {
+        uint3(voxelGlobal.x + 1u, voxelGlobal.y, voxelGlobal.z),
+        uint3(voxelGlobal.x - 1u, voxelGlobal.y, voxelGlobal.z),
+        uint3(voxelGlobal.x, voxelGlobal.y + 1u, voxelGlobal.z),
+        uint3(voxelGlobal.x, voxelGlobal.y - 1u, voxelGlobal.z),
+        uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z + 1u),
+        uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z - 1u)
+    };
+    
+    uint minLabel = myLabel;
+
+    for (int i = 0; i < 6; i++)
     {
-        // Check 6 neighbors
-        // Need to be careful about boundaries
-        uint3 neighbors[6] = {
-            uint3(voxelGlobal.x + 1u, voxelGlobal.y, voxelGlobal.z),
-            uint3(voxelGlobal.x - 1u, voxelGlobal.y, voxelGlobal.z),
-            uint3(voxelGlobal.x, voxelGlobal.y + 1u, voxelGlobal.z),
-            uint3(voxelGlobal.x, voxelGlobal.y - 1u, voxelGlobal.z),
-            uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z + 1u),
-            uint3(voxelGlobal.x, voxelGlobal.y, voxelGlobal.z - 1u)
-        };
-        bool becameStable = false;
-        
-        for (int i = 0; i < 6; i++)
+        uint3 n = neighbors[i];
+        if (all(n < _Resolution))
         {
-            uint3 n = neighbors[i];
-            if (all(n < _Resolution))
+            uint nIdx = n.z * _Resolution * _Resolution + n.y * _Resolution + n.x;
+            uint nLabel = _LabelBuffer[nIdx];
+            
+            // Consider neighbors that are not Air (includes Stable 0 and Floating > 0)
+            if (nLabel != ~0u)
             {
-                uint nIdx = n.z * _Resolution * _Resolution + n.y * _Resolution + n.x;
-                if (_StabilityBuffer[nIdx] == 1)
+                if (nLabel < minLabel)
                 {
-                    becameStable = true;
-                    break;
+                    minLabel = nLabel;
                 }
             }
         }
-        
-        if (becameStable)
-        {
-            _StabilityBuffer[flatIdx] = 1;
-            _ChangeFlagBuffer[0] = 1;
-        }
+    }
+    
+    if (minLabel < myLabel)
+    {
+        InterlockedMin(_LabelBuffer[flatIdx], minLabel);
+        _ChangeFlagBuffer[0] = 1;
     }
 }
 
 [numthreads(4, 4, 4)]
-void CollectFloating(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+void CollectDebris(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
 {
     uint packedBrick = _ActiveBricksInput[groupID.x];
     uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
@@ -356,8 +364,15 @@ void CollectFloating(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThread
     if (any(voxelGlobal >= _Resolution)) return;
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
-    if (IsSolid(flatIdx) && _StabilityBuffer[flatIdx] == 0)
+    uint label = _LabelBuffer[flatIdx];
+
+    // Collect only floating voxels (Label > 0)
+    // Ignore Stable (0) and Air (~0u)
+    if (label != 0 && label != ~0u)
     {
-        _FloatingVoxelOutput.Append(float3(voxelGlobal));
+        DebrisVoxel d;
+        d.position = float3(voxelGlobal);
+        d.label = label;
+        _DebrisVoxelOutput.Append(d);
     }
 }
