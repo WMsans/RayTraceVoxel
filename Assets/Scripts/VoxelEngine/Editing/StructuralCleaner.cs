@@ -34,6 +34,52 @@ namespace VoxelEngine.Core.Editing
             if (floatingVoxels == null || floatingVoxels.Count == 0) return;
             if (voxelModifierShader == null || !vol.IsReady) return;
 
+            // 1. Calculate Bounds
+            Vector3 minBounds = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            Vector3 maxBounds = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+
+            for (int i = 0; i < floatingVoxels.Count; i++)
+            {
+                minBounds = Vector3.Min(minBounds, floatingVoxels[i]);
+                maxBounds = Vector3.Max(maxBounds, floatingVoxels[i]);
+            }
+
+            // 2. Determine Center & Size
+            Vector3 boundsCenter = (minBounds + maxBounds) * 0.5f;
+            Vector3 rawSize = maxBounds - minBounds;
+            
+            // Find the maximum dimension to ensure the volume is cubic (common for voxel grids)
+            float maxDimension = Mathf.Max(rawSize.x, Mathf.Max(rawSize.y, rawSize.z));
+
+            // Get the source voxel size to maintain consistent density
+            float voxelSize = vol.WorldSize / vol.Resolution;
+
+            // Calculate how many voxels are needed to cover the object
+            // Add padding (e.g., 2 voxels) to prevent clipping at the edges
+            int requiredResolution = Mathf.CeilToInt(maxDimension / voxelSize) + 2;
+
+            // Snap the resolution to the nearest power of two (min 16 for safety)
+            int debrisResolution = Mathf.NextPowerOfTwo(Mathf.Max(requiredResolution, 16));
+
+            // Calculate the final World Size for the new Debris Volume
+            float debrisWorldSize = debrisResolution * voxelSize;
+
+            // Calculate the Origin (Bottom-Left-Back corner) for the new volume.
+            // Note: VoxelVolume origin is typically the min corner, not the center.
+            // We center the debris volume around the bounds center.
+            Vector3 debrisOrigin = boundsCenter - (Vector3.one * debrisWorldSize * 0.5f);
+
+            // 3. Coordinate Conversion Strategy
+            // We need to map Source Local Coord -> Debris Local Coord
+            // Formula: DebrisLocalPos = SourceLocalPos + (SourceOrigin - DebrisOrigin) / VoxelSize
+            Vector3 worldOriginDiff = vol.WorldOrigin - debrisOrigin;
+            
+            // This offset vector can be added to source local indices to get debris local indices
+            // (Assuming grids are aligned; if not, interpolation would be needed, but we assume alignment for now)
+            Vector3 debrisGridOffset = worldOriginDiff / voxelSize;
+
+            Debug.Log($"[StructuralCleaner] Analysis Complete: Center={boundsCenter}, Size={debrisWorldSize}, Res={debrisResolution}, Origin={debrisOrigin}");
+
             // 1. Prepare Data
             float worldToVoxelScale = vol.Resolution / vol.WorldSize;
             
