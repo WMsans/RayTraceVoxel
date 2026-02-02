@@ -83,21 +83,22 @@ namespace VoxelEngine.Core
             );
         }
 
-        public void OnPullFromPool(Vector3 worldOrigin, float size)
+        public void OnPullFromPool(Vector3 worldOrigin, float size, bool empty = false)
         {
             WorldSize = size;
             BufferManager.ResetCounters();
             this.gameObject.SetActive(true);
-            Regenerate();
+            Regenerate(empty);
         }
 
         public void OnReturnToPool() { this.gameObject.SetActive(false); }
 
-        public void Regenerate()
+        public void Regenerate(bool empty = false)
         {
             if (svoCompute == null || !IsReady) return;
             BufferManager.ResetCounters(); 
-            SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize);
+            // Pass empty flag to SVOGenerator
+            SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize, empty);
             
             // Notify listeners (e.g. GrassRenderer)
             OnRegenerationComplete?.Invoke();

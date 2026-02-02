@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using VoxelEngine.Core;
+using VoxelEngine.Core.Streaming; // Added for VoxelVolumePool
 using System.Collections.Generic;
 using Unity.Collections;
 using System.Linq;
@@ -79,6 +80,20 @@ namespace VoxelEngine.Core.Editing
             Vector3 debrisGridOffset = worldOriginDiff / voxelSize;
 
             Debug.Log($"[StructuralCleaner] Analysis Complete: Center={boundsCenter}, Size={debrisWorldSize}, Res={debrisResolution}, Origin={debrisOrigin}");
+
+            // --- Phase 2: Volume Allocation ---
+            // Request an empty volume from the pool with the specific resolution to match density.
+            // We pass 'true' for generateEmpty to ensure no terrain is generated.
+            VoxelVolume debrisVolume = VoxelVolumePool.Instance.GetVolume(debrisOrigin, debrisWorldSize, -1, -1, debrisResolution, true);
+            
+            if (debrisVolume == null)
+            {
+                Debug.LogError("[StructuralCleaner] Failed to allocate debris volume. Pool exhausted?");
+                return;
+            }
+            
+            debrisVolume.gameObject.name = $"Debris_{System.DateTime.Now.Ticks}";
+            // ----------------------------------
 
             // 1. Prepare Data
             float worldToVoxelScale = vol.Resolution / vol.WorldSize;

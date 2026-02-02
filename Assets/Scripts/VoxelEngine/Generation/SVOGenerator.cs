@@ -22,17 +22,25 @@ namespace VoxelEngine.Core.Generators
             }
         }
 
-        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize)
+        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize, bool empty = false)
         {
             if (shader == null || buffers == null) return;
             EnsureKernels(shader);
             
+            // Always initialize the SVO structure (nodes)
             shader.SetBuffer(kInit, "_NodeBuffer", buffers.NodeBuffer);
             shader.SetBuffer(kInit, "_CounterBuffer", buffers.CounterBuffer);
             shader.SetBuffer(kInit, "_PageTableBuffer", buffers.PageTableBuffer); 
             shader.SetInt("_NodeOffset", buffers.PageTableOffset); 
             
+            // Dispatch Init based on resolution (assuming 8^3 blocks per group for 64^3 default, or scaling)
+            // Original code used hardcoded 74 groups for Init, likely covering 64^3. 
+            // We keep original dispatch count logic or assume it covers the resolution.
             shader.Dispatch(kInit, 74, 1, 1);
+
+            // If empty volume is requested, stop here. 
+            // The structure is initialized (sparse or dense), but no bricks/terrain are generated.
+            if (empty) return;
 
             var sdfManager = DynamicSDFManager.Instance;
             
