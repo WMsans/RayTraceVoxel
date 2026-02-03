@@ -42,7 +42,7 @@ namespace VoxelEngine.Core.Streaming
         public GraphicsBuffer GlobalNodeBuffer { get; private set; }
         public GraphicsBuffer GlobalPayloadBuffer { get; private set; }
         public GraphicsBuffer GlobalBrickDataBuffer { get; private set; }
-        public GraphicsBuffer GlobalPageTableBuffer { get; private set; } // New
+        public GraphicsBuffer GlobalPageTableBuffer { get; private set; } 
         
         public GraphicsBuffer ChunkBuffer { get; private set; }
 
@@ -57,13 +57,13 @@ namespace VoxelEngine.Core.Streaming
         private NativeArray<ChunkDef> _chunkData;
         private NativeArray<TLASCell> _tlasGrid;
         private NativeArray<int> _tlasIndices;
-        private const int MAX_TLAS_INDICES = 262144; // 256k ints (~1MB)
+        private const int MAX_TLAS_INDICES = 262144; 
 
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
         
-        private PhysicalPageAllocator _nodeAllocator; // Changed
-        private VoxelMemoryAllocator _pageTableAllocator; // New
+        private PhysicalPageAllocator _nodeAllocator; 
+        private VoxelMemoryAllocator _pageTableAllocator; 
         private VoxelMemoryAllocator _brickAllocator;
         
         public int VisibleChunkCount { get; private set; }
@@ -96,7 +96,7 @@ namespace VoxelEngine.Core.Streaming
             GlobalPageTableBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalPages, sizeof(uint));
             
             _nodeAllocator = new PhysicalPageAllocator(totalPages, pageSize);
-            _pageTableAllocator = new VoxelMemoryAllocator(totalPages); // Allocates slots in Page Table
+            _pageTableAllocator = new VoxelMemoryAllocator(totalPages); 
             _brickAllocator = new VoxelMemoryAllocator(totalBrickVoxels);
 
             ChunkBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, poolSize, Marshal.SizeOf<ChunkDef>());
@@ -126,7 +126,7 @@ namespace VoxelEngine.Core.Streaming
             }
         }
 
-        public VoxelVolume GetVolume(Vector3 position, float size, int requestedNodes = -1, int requestedBricks = -1)
+        public VoxelVolume GetVolume(Vector3 position, float size, int requestedNodes = -1, int requestedBricks = -1, int resolution = -1, bool generateEmpty = false)
         {
             if (_pool.Count == 0) return null;
             
@@ -151,11 +151,10 @@ namespace VoxelEngine.Core.Streaming
             }
             
             // Update Page Table Buffer
-            // We map Virtual Page i (0..pagesNeeded-1) -> Physical Page Offset
             int[] pageTableData = new int[pagesNeeded];
             for (int i = 0; i < pagesNeeded; i++)
             {
-                pageTableData[i] = pages[i] * pageSize; // Store byte/element offset? Element offset usually.
+                pageTableData[i] = pages[i] * pageSize; 
             }
             GlobalPageTableBuffer.SetData(pageTableData, 0, pageTableOffset, pagesNeeded);
 
@@ -169,14 +168,24 @@ namespace VoxelEngine.Core.Streaming
             }
 
             VoxelVolume vol = _pool.Dequeue();
-            // Note: nodeOffset is effectively 0 relative to virtual space, or we can use it if we want offset within first page? 
-            // Usually we start at 0. Passing 0 for nodeOffset.
             vol.AssignMemorySlice(this, 0, 0, brickOffset, requestedNodes, requestedBricks, pageTableOffset, pages);
 
+            // Configure volume
             vol.transform.position = position;
             float scale = size / vol.Resolution; 
+            
+            // Apply requested resolution if valid
+            if (resolution > 0)
+            {
+                vol.resolution = resolution;
+                scale = size / resolution;
+            }
+            
             vol.transform.localScale = Vector3.one * scale;
-            vol.OnPullFromPool(position, size);
+            
+            // Pass empty flag
+            vol.OnPullFromPool(position, size, generateEmpty);
+            
             _activeVolumes.Add(vol);
             UpdateChunkBuffer(null);
             return vol;
@@ -209,7 +218,6 @@ namespace VoxelEngine.Core.Streaming
         private void UpdateChunkBuffer(Plane[] cullingPlanes)
         {
             int writeIndex = 0;
-            // Note: Parallelizing this loop is hard because it accesses Unity Objects (VoxelVolume)
             for (int i = 0; i < _activeVolumes.Count; i++)
             {
                 var vol = _activeVolumes[i];
@@ -220,10 +228,8 @@ namespace VoxelEngine.Core.Streaming
 
                 ChunkDef def = new ChunkDef();
                 def.boundsMin = vol.WorldBounds.min;
-                // Reuse nodeOffset field for PageTableOffset
                 def.nodeOffset = (uint)vol.BufferManager.PageTableOffset; 
                 def.boundsMax = vol.WorldBounds.max;
-                // payloadOffset is now implicitly handled via paging same as nodes
                 def.payloadOffset = (uint)vol.BufferManager.PageTableOffset; 
                 def.brickDataOffset = (uint)vol.BufferManager.BrickDataOffset;
                 def.worldToLocal = vol.transform.worldToLocalMatrix;
@@ -245,7 +251,6 @@ namespace VoxelEngine.Core.Streaming
         {
             if (activeCount == 0) return;
 
-            // 1. Compute Scene Bounds (Main thread for simplicity or jobify)
             Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
             Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
 
@@ -262,7 +267,6 @@ namespace VoxelEngine.Core.Streaming
             TLASBoundsMin = min;
             TLASBoundsMax = max;
             
-            // Output index count
             NativeReference<int> totalIndicesCount = new NativeReference<int>(Allocator.TempJob);
 
             ComputeTLASJob job = new ComputeTLASJob
@@ -282,7 +286,6 @@ namespace VoxelEngine.Core.Streaming
             int count = totalIndicesCount.Value;
             totalIndicesCount.Dispose();
 
-            // Check buffer resize
             if (TLASChunkIndexBuffer.count < count)
             {
                 Debug.LogWarning($"TLAS Indices overflow: {count} > {TLASChunkIndexBuffer.count}. Increasing buffer size.");
@@ -314,13 +317,11 @@ namespace VoxelEngine.Core.Streaming
                 worldSize = math.max(worldSize, new float3(0.001f));
                 float3 cellSize = worldSize / resolution;
                 
-                // Clear grid
                 for (int i = 0; i < totalCells; i++)
                 {
                     grid[i] = new TLASCell { offset = 0, count = 0 };
                 }
 
-                // Pass 1: Count
                 for (int i = 0; i < chunkCount; i++)
                 {
                     ChunkDef c = chunks[i];
@@ -341,7 +342,6 @@ namespace VoxelEngine.Core.Streaming
                     }
                 }
 
-                // Prefix Sum
                 uint currentOffset = 0;
                 for (int i = 0; i < totalCells; i++)
                 {
@@ -369,22 +369,20 @@ namespace VoxelEngine.Core.Streaming
                         int idx = z * resolution * resolution + y * resolution + x;
                         var cell = grid[idx];
                         
-                        // Safety check
                         if (cell.offset < chunkIndices.Length)
                         {
                             chunkIndices[(int)cell.offset] = i;
                         }
                         
-                        cell.offset++; // Increment cursor
+                        cell.offset++; 
                         grid[idx] = cell;
                     }
                 }
                 
-                // Restore offsets
                 for (int i = 0; i < totalCells; i++)
                 {
                     var cell = grid[i];
-                    cell.offset -= cell.count; // Backtrack to start
+                    cell.offset -= cell.count; 
                     grid[i] = cell;
                 }
             }

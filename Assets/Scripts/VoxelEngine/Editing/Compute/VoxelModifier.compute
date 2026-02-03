@@ -6,6 +6,7 @@
 #pragma kernel RemoveVoxelList
 #pragma kernel AllocateNodesList
 #pragma kernel ExtractBricksList
+#pragma kernel PasteBricksList
 
 #include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
 
@@ -19,6 +20,7 @@ StructuredBuffer<float3> _TargetPositions;
 int _TargetCount;
 StructuredBuffer<int3> _TargetBricks;
 int _TargetBrickCount;
+StructuredBuffer<uint> _SourceVoxelData;
 
 int3 _MinBrickIndex;
  int3 _MaxBrickIndex;
@@ -346,5 +348,38 @@ void ExtractBricksList(uint3 id : SV_DispatchThreadID)
                 _ReadbackBuffer[writeStart + (z * 36) + (y * 6) + x] = data;
  }
         }
+    }
+}
+[numthreads(64, 1, 1)]
+void PasteBricksList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetBrickCount) return;
+    
+    // 1. Identify Target
+    int3 brickIdx = _TargetBricks[id.x];
+    if (any(brickIdx > _MaxBrickIndex)) return;
+
+    // 2. Resolve Memory Location via SVO
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIdx, matID;
+    UnpackNode(node, payloadIdx, matID);
+
+    // Safety: Allocation should have happened already
+    if (payloadIdx == 0) return;
+
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+
+    // 3. Bulk Copy
+    // Each thread handles 1 brick. We copy 216 voxels.
+    // Ensure _SourceVoxelData is ordered the same as _TargetBricks
+    uint readStart = id.x * 216; 
+    
+    // Unrolling this loop is generally safe for modern GPUs, or the compiler will handle it.
+    for (uint i = 0; i < 216; i++) 
+    {
+        _BrickDataBuffer[_BrickOffset + brickPtr + i] = _SourceVoxelData[readStart + i];
     }
 }
