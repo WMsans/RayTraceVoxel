@@ -252,8 +252,6 @@ namespace VoxelEngine.Core.Editing
                 int3 srcBrickIdx = sourceBricks[i];
                 uint[] brickData = new uint[216];
                 
-                // We only want to keep voxels that were marked as 'Floating' (in voxelsToKeep).
-                // Everything else (like the ground attached to the brick) should be set to Air.
                 bool hasContent = false;
                 
                 for (int z = 0; z < 6; z++)
@@ -267,16 +265,31 @@ namespace VoxelEngine.Core.Editing
 
                             // Map storage coord (x,y,z) to Logical Coord in Source Volume
                             // Padding is 1. Brick Size is 4.
-                            // Logical Pos = BrickIdx * 4 + (StoragePos - 1)
                             int3 logicalPos = srcBrickIdx * 4 + new int3(x - 1, y - 1, z - 1);
                             
-                            if (voxelsToKeep.Contains(new Vector3Int(logicalPos.x, logicalPos.y, logicalPos.z)))
+                            bool isFloating = voxelsToKeep.Contains(new Vector3Int(logicalPos.x, logicalPos.y, logicalPos.z));
+
+                            // FIX: Check if the source voxel is Air.
+                            // Based on PackVoxelData: SDF 0 maps to ~127. Values > 127 are Air.
+                            uint sdfEncoded = (rawVal >> 8) & 0xFF;
+                            bool isSourceAir = sdfEncoded > 127;
+
+                            if (isFloating)
                             {
+                                // It is a floating solid voxel we want to keep.
                                 brickData[flatIdx] = rawVal;
                                 hasContent = true;
                             }
+                            else if (isSourceAir)
+                            {
+                                // IMPORTANT: It is Air. Keep it to preserve the SDF gradient (padding).
+                                // Replacing this with "PackedAir" (Max SDF) causes the paper-thin mesh artifact.
+                                brickData[flatIdx] = rawVal;
+                            }
                             else
                             {
+                                // It is Solid but NOT in our floating list. 
+                                // This is the "Ground" we are detaching from. Replace with Empty Air.
                                 brickData[flatIdx] = packedAir;
                             }
                         }
@@ -312,7 +325,6 @@ namespace VoxelEngine.Core.Editing
             int count = debrisTransferData.Count;
             if (count == 0) 
             {
-                // If filtering removed everything, we can return or destroy the volume
                 Debug.LogWarning("[StructuralCleaner] No valid debris bricks to transfer after filtering.");
                 VoxelVolumePool.Instance.ReturnVolume(debrisVol);
                 return;
