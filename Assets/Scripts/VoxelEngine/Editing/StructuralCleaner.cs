@@ -221,51 +221,119 @@ namespace VoxelEngine.Core.Editing
             if (VoxelEditManager.Instance == null) return;
 
             // --- Phase 3: Data Interception & Buffering ---
-            List<(Vector3Int, uint[])> debrisTransferData = new List<(Vector3Int, uint[])>();
+            // We use a temporary list to hold the data mapped to the NEW volume space
+            List<(int3, uint[])> debrisTransferData = new List<(int3, uint[])>();
 
             float voxelSize = sourceVol.WorldSize / sourceVol.Resolution;
-            float brickSizeWorld = voxelSize * 4.0f; // Bricks are 4^3 voxels
+            float brickSizeWorld = voxelSize * 4.0f; 
 
-            Vector3Int volOriginBrick = VoxelEditManager.Instance.GetBrickCoordinate(sourceVol.WorldOrigin);
+            // Calculate offset for re-centering
+            Vector3 sourceOrigin = sourceVol.WorldOrigin;
+            Vector3 debrisOrigin = debrisVol.WorldOrigin;
 
             int cursor = 0;
             for (int i = 0; i < sourceBricks.Length; i++)
             {
-                int3 b = sourceBricks[i];
-                Vector3Int localBrick = new Vector3Int(b.x, b.y, b.z);
-                
+                // Safety check for buffer overrun
                 if (cursor + 216 > data.Length) break;
 
-                // Slice data for this brick
-                uint[] brickData = data.GetSubArray(cursor, 216).ToArray();
+                // 1. Extract Raw Data
+                int3 srcBrickIdx = sourceBricks[i];
+                uint[] brickData = new uint[216];
+                NativeArray<uint>.Copy(data, cursor, brickData, 0, 216);
                 cursor += 216;
 
-                // A. Register Edit on Source Volume (To clear it)
-                Vector3Int globalBrick = volOriginBrick + localBrick;
-                VoxelEditManager.Instance.RegisterEdit(globalBrick, brickData);
+                // 2. Clear Source (Optional: Removing the floating voxels from original world)
+                // Note: You previously calculated 'voxelsToRemove' which were single voxels. 
+                // If you want to clear the WHOLE brick in the source, you would do it here. 
+                // Otherwise, the 'RemoveVoxelList' dispatch in HandleAnalysisCompleted handled the cleanup.
 
-                // B. Transform to Debris Volume Space (The "Cut")
-                // 1. Calculate Source Brick World Position (Min Corner)
-                Vector3 sourceBrickWorldPos = sourceVol.WorldOrigin + (new Vector3(localBrick.x, localBrick.y, localBrick.z) * brickSizeWorld);
+                // 3. Map to Debris Volume Space
+                // World Pos of the Source Brick (Min Corner)
+                Vector3 srcBrickWorldPos = sourceOrigin + (new Vector3(srcBrickIdx.x, srcBrickIdx.y, srcBrickIdx.z) * brickSizeWorld);
+                
+                // Local Pos in Debris Volume
+                Vector3 localPosInDebris = srcBrickWorldPos - debrisOrigin;
 
-                // 2. Calculate Debris Volume Local Position
-                Vector3 debrisLocalPos = sourceBrickWorldPos - debrisVol.WorldOrigin;
-
-                // 3. Calculate Target Brick Index in Debris Volume
-                // Assuming grid alignment, we snap to the nearest brick index
-                Vector3Int debrisTargetIndex = new Vector3Int(
-                    Mathf.RoundToInt(debrisLocalPos.x / brickSizeWorld),
-                    Mathf.RoundToInt(debrisLocalPos.y / brickSizeWorld),
-                    Mathf.RoundToInt(debrisLocalPos.z / brickSizeWorld)
+                // Target Brick Index
+                int3 targetBrickIdx = new int3(
+                    Mathf.RoundToInt(localPosInDebris.x / brickSizeWorld),
+                    Mathf.RoundToInt(localPosInDebris.y / brickSizeWorld),
+                    Mathf.RoundToInt(localPosInDebris.z / brickSizeWorld)
                 );
 
-                // 4. Buffer the Data
-                debrisTransferData.Add((debrisTargetIndex, brickData));
+                // Filter Out of Bounds (Sanity Check)
+                int resBricks = debrisVol.Resolution / 4;
+                if (targetBrickIdx.x >= 0 && targetBrickIdx.x < resBricks &&
+                    targetBrickIdx.y >= 0 && targetBrickIdx.y < resBricks &&
+                    targetBrickIdx.z >= 0 && targetBrickIdx.z < resBricks)
+                {
+                    debrisTransferData.Add((targetBrickIdx, brickData));
+                }
             }
+
+            // --- Phase 4: Data Injection (The Paste) ---
+            int count = debrisTransferData.Count;
+            if (count == 0) 
+            {
+                Debug.LogWarning("[StructuralCleaner] No valid debris bricks to transfer.");
+                return;
+            }
+
+            Debug.Log($"[StructuralCleaner] Pasting {count} bricks into Debris Volume...");
+
+            // 1. Flatten Data for GPU
+            int3[] targetBrickArray = new int3[count];
+            uint[] flatVoxelData = new uint[count * 216];
+
+            for (int i = 0; i < count; i++)
+            {
+                targetBrickArray[i] = debrisTransferData[i].Item1;
+                System.Array.Copy(debrisTransferData[i].Item2, 0, flatVoxelData, i * 216, 216);
+            }
+
+            // 2. Prepare Buffers
+            ComputeBuffer targetBricksBuffer = new ComputeBuffer(count, 12); // int3 = 12 bytes
+            targetBricksBuffer.SetData(targetBrickArray);
+
+            ComputeBuffer sourceVoxelDataBuffer = new ComputeBuffer(flatVoxelData.Length, 4); // uint = 4 bytes
+            sourceVoxelDataBuffer.SetData(flatVoxelData);
+
+            // 3. Dispatch Allocation (Reuse AllocateNodesList)
+            // This creates the SVO leaf nodes and allocates physical memory in the debris volume
+            int kernelAlloc = voxelModifierShader.FindKernel("AllocateNodesList");
+            SetCommonBuffers(kernelAlloc, debrisVol);
+            voxelModifierShader.SetBuffer(kernelAlloc, "_TargetBricks", targetBricksBuffer);
+            voxelModifierShader.SetInt("_TargetBrickCount", count);
             
-            Debug.Log($"[StructuralCleaner] Intercepted {debrisTransferData.Count} bricks. Ready for Phase 4 (Paste) into {debrisVol.gameObject.name}.");
-            
-            // Phase 4: Apply debrisTransferData to debrisVol would go here
+            // Ensure bounds are set for the NEW volume resolution
+            int debrisResBricks = debrisVol.Resolution / 4;
+            voxelModifierShader.SetInts("_MaxBrickIndex", new int[] {debrisResBricks-1, debrisResBricks-1, debrisResBricks-1});
+            voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
+
+            int groups = Mathf.CeilToInt(count / 64.0f);
+            voxelModifierShader.Dispatch(kernelAlloc, groups, 1, 1);
+
+            // 4. Dispatch Data Write (PasteBricksList)
+            // This overwrites the default "Empty/Solid" data from allocation with our captured physics debris
+            int kernelPaste = voxelModifierShader.FindKernel("PasteBricksList");
+            SetCommonBuffers(kernelPaste, debrisVol);
+            voxelModifierShader.SetBuffer(kernelPaste, "_TargetBricks", targetBricksBuffer);
+            voxelModifierShader.SetInt("_TargetBrickCount", count);
+            voxelModifierShader.SetBuffer(kernelPaste, "_SourceVoxelData", sourceVoxelDataBuffer);
+            voxelModifierShader.SetInts("_MaxBrickIndex", new int[] {debrisResBricks-1, debrisResBricks-1, debrisResBricks-1});
+            voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
+
+            voxelModifierShader.Dispatch(kernelPaste, groups, 1, 1);
+
+            // 5. Cleanup
+            targetBricksBuffer.Release();
+            sourceVoxelDataBuffer.Release();
+
+            // 6. Finalize
+            // Notify the volume (or its renderer) that data has changed so it can generate a mesh.
+            // If your volume doesn't auto-detect SVO changes, you might need to call a method here.
+            Debug.Log($"[StructuralCleaner] Debris created: {debrisVol.name}");
         }
     }
 }
