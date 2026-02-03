@@ -61,7 +61,6 @@ namespace VoxelEngine.Core.Editing
             // Calculate initial origin based on bounds
             Vector3 idealOrigin = boundsCenter - (Vector3.one * debrisWorldSize * 0.5f);
             
-            // [Fix 1] Snap Debris Origin to the Source Volume's Brick Grid
             // This ensures that when we copy a brick from Source to Debris, the internal voxels line up perfectly.
             Vector3 offsetFromSource = idealOrigin - vol.WorldOrigin;
             offsetFromSource.x = Mathf.Round(offsetFromSource.x / brickSizeWorld) * brickSizeWorld;
@@ -168,7 +167,6 @@ namespace VoxelEngine.Core.Editing
             int groupsAlloc = Mathf.CeilToInt(brickCount / 64.0f);
             voxelModifierShader.Dispatch(kernelAlloc, groupsAlloc, 1, 1);
 
-            // [Fix 2] Reordering: Extract Bricks BEFORE Removing them
             // We need to capture the floating data while it still exists.
             
             // 4. Dispatch Extraction
@@ -254,7 +252,6 @@ namespace VoxelEngine.Core.Editing
                 int3 srcBrickIdx = sourceBricks[i];
                 uint[] brickData = new uint[216];
                 
-                // [Fix 3] Filter the extracted data
                 // We only want to keep voxels that were marked as 'Floating' (in voxelsToKeep).
                 // Everything else (like the ground attached to the brick) should be set to Air.
                 bool hasContent = false;
@@ -295,7 +292,6 @@ namespace VoxelEngine.Core.Editing
                 // Local Pos in Debris Volume
                 Vector3 localPosInDebris = srcBrickWorldPos - debrisOrigin;
 
-                // Target Brick Index (Should be exact integer now due to alignment fix)
                 int3 targetBrickIdx = new int3(
                     Mathf.RoundToInt(localPosInDebris.x / brickSizeWorld),
                     Mathf.RoundToInt(localPosInDebris.y / brickSizeWorld),
@@ -370,7 +366,6 @@ namespace VoxelEngine.Core.Editing
             sourceVoxelDataBuffer.Release();
 
             // 6. Finalize
-            debrisVol.Regenerate(false); // Trigger mesh update
             Debug.Log($"[StructuralCleaner] Debris created: {debrisVol.name}");
         }
 
