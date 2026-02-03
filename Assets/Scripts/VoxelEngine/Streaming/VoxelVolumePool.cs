@@ -204,6 +204,19 @@ namespace VoxelEngine.Core.Streaming
                 }
                 
                 vol.OnReturnToPool();
+
+                // Remove MeshCollider to avoid issues with recycled chunks having old collision data
+                MeshCollider meshCollider = vol.meshCol;
+                if (meshCollider != null)
+                {
+                    meshCollider.sharedMesh = null;
+                }
+                var MeshFilter = vol.meshFil;
+                if(MeshFilter != null)
+                {
+                    MeshFilter.mesh = null;
+                }
+
                 vol.transform.SetParent(poolContainer); 
                 _pool.Enqueue(vol);
                 UpdateChunkBuffer(null);
