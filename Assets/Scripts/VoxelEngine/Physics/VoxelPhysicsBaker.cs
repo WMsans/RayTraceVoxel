@@ -100,46 +100,59 @@ namespace VoxelEngine.Physics
                 PhysicsTriangle[] tris = new PhysicsTriangle[triangleCount];
                 vertexOutput.GetData(tris, 0, 0, triangleCount);
 
-                // Flatten to vertices
-                int vertexCount = triangleCount * 3;
-                Vector3[] vertices = new Vector3[vertexCount];
+                // 5. Weld Vertices (Reduce VRAM by sharing vertices)
+                // Marching Cubes produces duplicate vertices on edges. We weld them to create an indexed mesh.
+                System.Collections.Generic.List<Vector3> weldedVertices = new System.Collections.Generic.List<Vector3>(triangleCount); // Est: 3x reduction
+                System.Collections.Generic.List<int> weldedIndices = new System.Collections.Generic.List<int>(triangleCount * 3);
+                System.Collections.Generic.Dictionary<Vector3, int> vertexMap = new System.Collections.Generic.Dictionary<Vector3, int>(triangleCount);
+
                 for (int i = 0; i < triangleCount; i++)
                 {
-                    vertices[i * 3] = tris[i].v1;
-                    vertices[i * 3 + 1] = tris[i].v2;
-                    vertices[i * 3 + 2] = tris[i].v3;
+                    WeldVertex(tris[i].v1, weldedVertices, weldedIndices, vertexMap);
+                    WeldVertex(tris[i].v2, weldedVertices, weldedIndices, vertexMap);
+                    WeldVertex(tris[i].v3, weldedVertices, weldedIndices, vertexMap);
                 }
 
-                // 5. Create Unity Mesh
+                // 6. Create Unity Mesh
                 Mesh mesh = new Mesh();
                 mesh.name = "VoxelPhysicsMesh";
                 
-                if (vertexCount > 65535)
+                // Use UInt32 indices if needed
+                if (weldedVertices.Count > 65535)
                     mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
 
-                mesh.SetVertices(vertices);
+                mesh.SetVertices(weldedVertices);
+                mesh.SetIndices(weldedIndices.ToArray(), MeshTopology.Triangles, 0);
 
-                // Simple indices 0..N-1
-                int[] indices = new int[vertexCount];
-                for (int i = 0; i < vertexCount; i++) indices[i] = i;
-                
-                mesh.SetIndices(indices, MeshTopology.Triangles, 0);
-
-                // 6. Optimization
-                // "Crucial Optimization: Call Mesh.Optimize() or set Mesh.UploadMeshData(markNoLongerReadable: true)"
+                // 7. Optimization
                 mesh.Optimize();
                 mesh.UploadMeshData(true);
 
-                // 7. Assign to Collider
+                // 8. Assign to Collider
                 AssignMeshToCollider(mesh);
                 
-                Debug.Log($"Baked Physics Mesh: {vertexCount} vertices ({triangleCount} triangles).");
+                Debug.Log($"Baked Physics Mesh: {weldedVertices.Count} vertices, {triangleCount} triangles (Welded from {triangleCount * 3}).");
             }
             finally
             {
                 // Cleanup
                 vertexOutput?.Release();
                 countBuffer?.Release();
+            }
+        }
+
+        private void WeldVertex(Vector3 v, System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<int> indices, System.Collections.Generic.Dictionary<Vector3, int> vertexMap)
+        {
+            if (vertexMap.TryGetValue(v, out int index))
+            {
+                indices.Add(index);
+            }
+            else
+            {
+                index = vertices.Count;
+                vertices.Add(v);
+                vertexMap[v] = index;
+                indices.Add(index);
             }
         }
 
