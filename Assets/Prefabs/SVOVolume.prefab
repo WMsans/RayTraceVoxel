@@ -111,6 +111,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3fbe225be4feffb4a9d8fc4391524dde, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelVolume
+  meshCol: {fileID: 4820301337871315631}
+  meshFil: {fileID: 2297117576746727618}
   svoCompute: {fileID: 7200000, guid: 2857a9a78428a720d8ef270c2fdec704, type: 3}
   resolution: 64
 --- !u!114 &9210260336194324207

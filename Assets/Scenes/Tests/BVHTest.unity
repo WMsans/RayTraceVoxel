@@ -514,6 +514,7 @@ GameObject:
   - component: {fileID: 681138561}
   - component: {fileID: 681138562}
   - component: {fileID: 681138563}
+  - component: {fileID: 681138564}
   m_Layer: 0
   m_Name: World
   m_TagString: Untagged
@@ -627,6 +628,24 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Editing.StructuralCleaner
   voxelModifierShader: {fileID: 7200000, guid: b43ea892b71cebe47a5e309e71b4e842, type: 3}
   analyzer: {fileID: 681138562}
+  erodeFloatingVoxels: 1
+--- !u!114 &681138564
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 681138556}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b441e491f28fcba41912954f8295d1a3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Physics.VoxelPhysicsManager
+  physicsShader: {fileID: 7200000, guid: b21ed607c3b754a499304fb2c19862ac, type: 3}
+  updateFrequency: 4
+  batchSize: 1
+  stride: 4
+  maxVertices: 65536
 --- !u!1 &888823811
 GameObject:
   m_ObjectHideFlags: 0

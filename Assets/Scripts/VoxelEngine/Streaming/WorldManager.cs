@@ -2,6 +2,7 @@ using UnityEngine;
 using System.Collections.Generic;
 using VoxelEngine.Core.Generators; // For DynamicSDFManager
 using VoxelEngine.Core.Editing; // For VoxelEditManager
+using VoxelEngine.Physics;
 
 namespace VoxelEngine.Core.Streaming
 {
@@ -23,13 +24,34 @@ namespace VoxelEngine.Core.Streaming
         
         private WorldOctreeNode _rootNode;
         private VoxelVolumePool _pool;
+        private float _targetLeafSize;
         
         // --- ADDED: Debug List to visualize dirty chunks ---
         private List<Bounds> _debugDirtyChunkBounds = new List<Bounds>();
 
         private void Start()
         {
+            // Ensure Physics Manager exists
+            if (VoxelPhysicsManager.Instance == null)
+            {
+                gameObject.AddComponent<VoxelPhysicsManager>();
+            }
+
             _pool = GetComponent<VoxelVolumePool>();
+
+            // Auto-configure Physics Manager from Prefab if needed
+            var physicsMan = VoxelPhysicsManager.Instance;
+            if (physicsMan.physicsShader == null && _pool != null && _pool.prefab != null)
+            {
+                var baker = _pool.prefab.GetComponent<VoxelPhysicsBaker>();
+                if (baker != null)
+                {
+                    physicsMan.physicsShader = baker.physicsShader;
+                    physicsMan.stride = baker.stride;
+                    physicsMan.maxVertices = baker.maxVertices;
+                    Debug.Log("VoxelPhysicsManager auto-configured from VoxelPhysicsBaker prefab.");
+                }
+            }
 
             // [FIX] Auto-configure MaxDepth to match Global Voxel Size
             // We need the Leaf Node Voxel Size to equal VoxelEditManager.voxelSize (1.0)
@@ -58,6 +80,9 @@ namespace VoxelEngine.Core.Streaming
                     }
                 }
             }
+
+            // Calculate Target Leaf Size for Physics checks
+            _targetLeafSize = initialWorldSize / Mathf.Pow(2, maxDepth);
 
             // Auto-find viewer if not assigned (usually Main Camera)
             if (viewer == null && Camera.main != null) 
@@ -127,6 +152,12 @@ namespace VoxelEngine.Core.Streaming
                 // Cache for visualization
                 _debugDirtyChunkBounds.Add(vol.WorldBounds);
                 vol.Regenerate();
+
+                // Re-queue for physics if it's a leaf node (Highest LoD)
+                if (Mathf.Abs(vol.WorldSize - _targetLeafSize) < 0.1f)
+                {
+                    VoxelPhysicsManager.Instance.Enqueue(vol);
+                }
             }
         }
 
@@ -176,6 +207,12 @@ namespace VoxelEngine.Core.Streaming
             {
                 // This triggers GetVolume -> OnPullFromPool -> Generate(SDF)
                 child.EnableVolume(this.transform);
+
+                // Register for Physics if Leaf
+                if (child.Depth == maxDepth && child.ActiveVolume != null)
+                {
+                    VoxelPhysicsManager.Instance.Enqueue(child.ActiveVolume);
+                }
             }
 
             // 3. Hide/Return the parent VoxelVolume
@@ -188,6 +225,13 @@ namespace VoxelEngine.Core.Streaming
             // 1. Acquire 1 VoxelVolume for the parent (Low LOD)
             // This generates the low-resolution representation of the large area
             node.EnableVolume(this.transform);
+
+            // Ensure parent chunk (Low LoD) has no physics ghost
+            if (node.ActiveVolume != null)
+            {
+                VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
+                VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
+            }
 
             // 2. Hide/Return the 8 child VoxelVolumes and destroy child nodes
             // WorldOctreeNode.Merge() recursively calls DisableVolume() on children
