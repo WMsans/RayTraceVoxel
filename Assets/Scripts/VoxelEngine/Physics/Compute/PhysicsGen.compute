@@ -9,7 +9,13 @@ StructuredBuffer<uint> _BrickDataBuffer;
 StructuredBuffer<uint> _PageTableBuffer;
 
 // --- Outputs ---
-AppendStructuredBuffer<float3> _VertexOutput;
+struct PhysicsTriangle
+{
+    float3 v1;
+    float3 v2;
+    float3 v3;
+};
+AppendStructuredBuffer<PhysicsTriangle> _VertexOutput;
 
 // --- Uniforms ---
 uint _Stride;
@@ -443,8 +449,10 @@ void GeneratePhysicsMesh(uint3 id : SV_DispatchThreadID)
     if (edgeTable[cubeIndex] & 2048) vertList[11] = Interpolate(p[3], p[7], v[3], v[7]);
 
     for (int i = 0; triTable[cubeIndex][i] != 255; i += 3) {
-        _VertexOutput.Append(vertList[triTable[cubeIndex][i]]);
-        _VertexOutput.Append(vertList[triTable[cubeIndex][i+1]]);
-        _VertexOutput.Append(vertList[triTable[cubeIndex][i+2]]);
+        PhysicsTriangle tri;
+        tri.v1 = vertList[triTable[cubeIndex][i]];
+        tri.v2 = vertList[triTable[cubeIndex][i+1]];
+        tri.v3 = vertList[triTable[cubeIndex][i+2]];
+        _VertexOutput.Append(tri);
     }
 }

@@ -43,11 +43,20 @@ namespace VoxelEngine.Physics
             GenerateMesh();
         }
 
+        private struct PhysicsTriangle
+        {
+            public Vector3 v1;
+            public Vector3 v2;
+            public Vector3 v3;
+        }
+
         private void GenerateMesh()
         {
             // 1. Setup Buffers
-            // Output buffer for vertices (Float3 -> Vector3 stride is 12 bytes)
-            ComputeBuffer vertexOutput = new ComputeBuffer(maxVertices, 12, ComputeBufferType.Append);
+            // Output buffer for triangles (Struct size is 36 bytes: 3 * Vector3)
+            // We interpret maxVertices as a rough limit on total vertices, so maxTriangles = maxVertices / 3
+            int maxTriangles = maxVertices / 3;
+            ComputeBuffer vertexOutput = new ComputeBuffer(maxTriangles, 36, ComputeBufferType.Append);
             vertexOutput.SetCounterValue(0);
 
             // Indirect args buffer to capture the count (4 ints)
@@ -71,33 +80,40 @@ namespace VoxelEngine.Physics
                 );
 
                 // 3. Read Back Count
-                // We use ComputeBuffer.CopyCount inside Generate, so countBuffer contains the vertex count at index 0 (if using Append buffer logic usually CopyCount puts it in the first int).
-                // Actually CopyCount copies the structure count to the destination buffer at dstOffsetBytes.
-                // If we treat countBuffer as an int array, the first int will be the count.
+                // countBuffer contains the TRIANGLE count at index 0.
                 countBuffer.GetData(args);
-                int vertexCount = args[0];
+                int triangleCount = args[0];
 
-                if (vertexCount == 0)
+                if (triangleCount == 0)
                 {
-                    Debug.LogWarning("Physics generation resulted in 0 vertices.");
+                    Debug.LogWarning("Physics generation resulted in 0 triangles.");
                     return;
                 }
                 
-                if (vertexCount > maxVertices)
+                if (triangleCount > maxTriangles)
                 {
-                    Debug.LogWarning($"Vertex count {vertexCount} exceeded max {maxVertices}. Truncating.");
-                    vertexCount = maxVertices;
+                    Debug.LogWarning($"Triangle count {triangleCount} exceeded max {maxTriangles}. Truncating.");
+                    triangleCount = maxTriangles;
                 }
 
-                // 4. Read Back Vertices
+                // 4. Read Back Triangles
+                PhysicsTriangle[] tris = new PhysicsTriangle[triangleCount];
+                vertexOutput.GetData(tris, 0, 0, triangleCount);
+
+                // Flatten to vertices
+                int vertexCount = triangleCount * 3;
                 Vector3[] vertices = new Vector3[vertexCount];
-                vertexOutput.GetData(vertices, 0, 0, vertexCount);
+                for (int i = 0; i < triangleCount; i++)
+                {
+                    vertices[i * 3] = tris[i].v1;
+                    vertices[i * 3 + 1] = tris[i].v2;
+                    vertices[i * 3 + 2] = tris[i].v3;
+                }
 
                 // 5. Create Unity Mesh
                 Mesh mesh = new Mesh();
                 mesh.name = "VoxelPhysicsMesh";
                 
-                // Index format 32 might be needed if > 65k vertices, though usually low res physics is smaller.
                 if (vertexCount > 65535)
                     mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
 
@@ -117,7 +133,7 @@ namespace VoxelEngine.Physics
                 // 7. Assign to Collider
                 AssignMeshToCollider(mesh);
                 
-                Debug.Log($"Baked Physics Mesh: {vertexCount} vertices.");
+                Debug.Log($"Baked Physics Mesh: {vertexCount} vertices ({triangleCount} triangles).");
             }
             finally
             {
