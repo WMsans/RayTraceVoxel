@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using Unity.Collections;
 using System.Linq;
 using Unity.Mathematics;
+using VoxelEngine.Physics;
 
 namespace VoxelEngine.Core.Editing
 {
@@ -81,6 +82,13 @@ namespace VoxelEngine.Core.Editing
             }
             
             debrisVolume.gameObject.name = $"Debris_{System.DateTime.Now.Ticks}";
+            
+            // Ensure debris doesn't have a collider
+            if (VoxelPhysicsManager.Instance != null)
+            {
+                VoxelPhysicsManager.Instance.Remove(debrisVolume);
+                VoxelPhysicsManager.Instance.ClearCollider(debrisVolume);
+            }
             // ----------------------------------
 
             // 1. Prepare Data
@@ -191,6 +199,12 @@ namespace VoxelEngine.Core.Editing
              
             int groupsRemove = Mathf.CeilToInt(voxelCount / 64.0f);
             voxelModifierShader.Dispatch(kernelRemove, groupsRemove, 1, 1);
+
+            // Update source terrain collider to reflect removed voxels
+            if (VoxelPhysicsManager.Instance != null)
+            {
+                VoxelPhysicsManager.Instance.Enqueue(vol);
+            }
 
             // 6. Readback with Data Interception (Phase 3)
             AsyncGPUReadback.Request(readbackBuffer, (req) => 
