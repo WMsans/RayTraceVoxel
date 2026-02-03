@@ -388,24 +388,75 @@ float3 Interpolate(float3 p1, float3 p2, float v1, float v2)
     return lerp(p1, p2, t);
 }
 
+groupshared float s_Densities[729]; // 9x9x9 points for 8x8x8 cells
+
 [numthreads(8, 8, 8)]
-void GeneratePhysicsMesh(uint3 id : SV_DispatchThreadID)
+void GeneratePhysicsMesh(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
 {
+    // --- Shared Memory Loading ---
+    // We need to load 9x9x9 = 729 values.
+    // Thread group size is 512.
+    
+    uint3 groupOrigin = groupID * 8; // Origin of the block in grid cells
+
+    // 1. Load first 512 values
+    {
+        uint idx = groupIndex;
+        // Map 1D index to 3D (9x9x9) using uint to avoid shader warnings
+        uint z = idx / 81u;
+        uint rem = idx % 81u;
+        uint y = rem / 9u;
+        uint x = rem % 9u;
+        
+        int3 localPos = int3(x, y, z);
+        int3 samplePos = (groupOrigin + localPos) * _Stride;
+        s_Densities[idx] = GetDensity(samplePos);
+    }
+
+    // 2. Load remaining 217 values
+    if (groupIndex < 217)
+    {
+        uint idx = groupIndex + 512;
+        uint z = idx / 81u;
+        uint rem = idx % 81u;
+        uint y = rem / 9u;
+        uint x = rem % 9u;
+        
+        int3 localPos = int3(x, y, z);
+        int3 samplePos = (groupOrigin + localPos) * _Stride;
+        s_Densities[idx] = GetDensity(samplePos);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    // -----------------------------
+
     uint dim = _GridSize / _Stride;
     if (any(id >= dim)) return;
 
     float3 pos0 = id * _Stride;
     
-    // Sample 8 corners
+    // Sample 8 corners from Shared Memory
+    // Local grid coordinates in 9x9x9 array
+    uint3 l = groupThreadID;
+    
     float v[8];
-    v[0] = GetDensity(pos0 + int3(0, 0, 0) * _Stride);
-    v[1] = GetDensity(pos0 + int3(1, 0, 0) * _Stride);
-    v[2] = GetDensity(pos0 + int3(1, 0, 1) * _Stride);
-    v[3] = GetDensity(pos0 + int3(0, 0, 1) * _Stride);
-    v[4] = GetDensity(pos0 + int3(0, 1, 0) * _Stride);
-    v[5] = GetDensity(pos0 + int3(1, 1, 0) * _Stride);
-    v[6] = GetDensity(pos0 + int3(1, 1, 1) * _Stride);
-    v[7] = GetDensity(pos0 + int3(0, 1, 1) * _Stride);
+    // Re-calculating indices carefully to match the original sampling pattern
+    // v[0]: 0, 0, 0
+    v[0] = s_Densities[l.z * 81 + l.y * 9 + l.x];
+    // v[1]: 1, 0, 0
+    v[1] = s_Densities[l.z * 81 + l.y * 9 + (l.x + 1)];
+    // v[2]: 1, 0, 1
+    v[2] = s_Densities[(l.z + 1) * 81 + l.y * 9 + (l.x + 1)];
+    // v[3]: 0, 0, 1
+    v[3] = s_Densities[(l.z + 1) * 81 + l.y * 9 + l.x];
+    // v[4]: 0, 1, 0
+    v[4] = s_Densities[l.z * 81 + (l.y + 1) * 9 + l.x];
+    // v[5]: 1, 1, 0
+    v[5] = s_Densities[l.z * 81 + (l.y + 1) * 9 + (l.x + 1)];
+    // v[6]: 1, 1, 1
+    v[6] = s_Densities[(l.z + 1) * 81 + (l.y + 1) * 9 + (l.x + 1)];
+    // v[7]: 0, 1, 1
+    v[7] = s_Densities[(l.z + 1) * 81 + (l.y + 1) * 9 + l.x];
 
     int cubeIndex = 0;
     if (v[0] < 0) cubeIndex |= 1;
