@@ -3,6 +3,7 @@ using UnityEngine;
 using VoxelEngine.Core.Buffers;
 using VoxelEngine.Core.Generators;
 using VoxelEngine.Core.Interfaces;
+using VoxelEngine.Core.Rendering;
 using VoxelEngine.Core.Serialization;
 using VoxelEngine.Core.Streaming;
 
@@ -13,6 +14,8 @@ namespace VoxelEngine.Core
         [Header("References")]
         public MeshCollider meshCol;
         public MeshFilter meshFil;
+        public VoxelGrassRenderer grassRenderer;
+        public VoxelLeafRenderer leafRenderer;
 
         [Header("Settings")]
         public ComputeShader svoCompute;

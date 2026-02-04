@@ -108,6 +108,18 @@ namespace VoxelEngine.Core.Editing
                 VoxelEngine.Physics.VoxelPhysicsManager.Instance.Enqueue(vol);
             }
 
+            var grassRenderer = vol.grassRenderer;
+            if (grassRenderer != null)
+            {
+                grassRenderer.Refresh();
+            }
+
+            var leafRenderer = vol.leafRenderer;
+            if (leafRenderer != null)
+            {
+                leafRenderer.Refresh();
+            }
+
             // --- Capture Edits ---
             
             // Only capture edits for the persistent database if the volume is NOT transient

@@ -57,13 +57,13 @@ namespace VoxelEngine.Core.Rendering
 
         private void OnEnable()
         {
-            _volume.OnRegenerationComplete += OnVolumeRegenerated;
+            _volume.OnRegenerationComplete += Refresh;
             ActiveLeafRenderers.Add(this);
         }
 
         private void OnDisable()
         {
-            _volume.OnRegenerationComplete -= OnVolumeRegenerated;
+            _volume.OnRegenerationComplete -= Refresh;
             ActiveLeafRenderers.Remove(this);
         }
 
@@ -75,7 +75,7 @@ namespace VoxelEngine.Core.Rendering
             if (_mesh) Destroy(_mesh);
         }
 
-        private void OnVolumeRegenerated()
+        public void Refresh()
         {
             if (leafCompute == null || !_volume.IsReady) return;
 

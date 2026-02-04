@@ -63,13 +63,13 @@ namespace VoxelEngine.Core.Rendering
 
         private void OnEnable()
         {
-            _volume.OnRegenerationComplete += OnVolumeRegenerated;
+            _volume.OnRegenerationComplete += Refresh;
             ActiveRenderers.Add(this);
         }
 
         private void OnDisable()
         {
-            _volume.OnRegenerationComplete -= OnVolumeRegenerated;
+            _volume.OnRegenerationComplete -= Refresh;
             ActiveRenderers.Remove(this);
         }
 
@@ -92,7 +92,7 @@ namespace VoxelEngine.Core.Rendering
             _indirectArgsBuffer?.Release();
         }
 
-        private void OnVolumeRegenerated()
+        public void Refresh()
         {
             if (grassCompute == null || !_volume.IsReady) return;
             
