@@ -27,6 +27,8 @@ namespace VoxelEngine.Physics
 
         private HashSet<VoxelVolume> _dirtyQueue = new HashSet<VoxelVolume>();
         private float _timer;
+        private ComputeBuffer _edgeTableBuffer;
+        private ComputeBuffer _triTableBuffer;
         
         // Structure for readback context
         private struct PhysicsRequest
@@ -53,6 +55,18 @@ namespace VoxelEngine.Physics
                 return;
             }
             Instance = this;
+
+            _edgeTableBuffer = new ComputeBuffer(256, 4);
+            _edgeTableBuffer.SetData(MarchingCubesTables.EdgeTable);
+
+            _triTableBuffer = new ComputeBuffer(256 * 16, 4);
+            _triTableBuffer.SetData(MarchingCubesTables.TriTable);
+        }
+
+        private void OnDestroy()
+        {
+            if (_edgeTableBuffer != null) _edgeTableBuffer.Release();
+            if (_triTableBuffer != null) _triTableBuffer.Release();
         }
 
         public void Enqueue(VoxelVolume volume)
@@ -138,7 +152,9 @@ namespace VoxelEngine.Physics
                 volume.Resolution, 
                 stride, 
                 volume.WorldOrigin, 
-                volume.WorldSize
+                volume.WorldSize,
+                _edgeTableBuffer,
+                _triTableBuffer
             );
 
             // Request Readback for Count

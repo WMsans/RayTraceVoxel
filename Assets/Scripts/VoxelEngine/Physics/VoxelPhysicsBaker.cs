@@ -64,6 +64,12 @@ namespace VoxelEngine.Physics
             int[] args = new int[] { 0, 1, 0, 0 };
             countBuffer.SetData(args);
 
+            ComputeBuffer edgeTableBuffer = new ComputeBuffer(256, 4);
+            edgeTableBuffer.SetData(MarchingCubesTables.EdgeTable);
+
+            ComputeBuffer triTableBuffer = new ComputeBuffer(256 * 16, 4);
+            triTableBuffer.SetData(MarchingCubesTables.TriTable);
+
             try
             {
                 // 2. Dispatch Compute Shader
@@ -76,7 +82,9 @@ namespace VoxelEngine.Physics
                     _volume.Resolution, 
                     stride, 
                     _volume.WorldOrigin, 
-                    _volume.WorldSize
+                    _volume.WorldSize,
+                    edgeTableBuffer,
+                    triTableBuffer
                 );
 
                 // 3. Read Back Count
@@ -138,6 +146,8 @@ namespace VoxelEngine.Physics
                 // Cleanup
                 vertexOutput?.Release();
                 countBuffer?.Release();
+                edgeTableBuffer?.Release();
+                triTableBuffer?.Release();
             }
         }
 

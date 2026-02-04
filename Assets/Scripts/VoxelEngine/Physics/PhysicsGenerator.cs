@@ -18,7 +18,7 @@ namespace VoxelEngine.Physics
         /// <param name="stride">The sampling stride (e.g. 2 or 4).</param>
         /// <param name="chunkOrigin">World space origin of the chunk.</param>
         /// <param name="chunkSize">World space size of the chunk.</param>
-        public static void Generate(ComputeShader shader, SVOBufferManager buffers, ComputeBuffer vertexOutput, ComputeBuffer countBuffer, int resolution, int stride, Vector3 chunkOrigin, float chunkSize)
+        public static void Generate(ComputeShader shader, SVOBufferManager buffers, ComputeBuffer vertexOutput, ComputeBuffer countBuffer, int resolution, int stride, Vector3 chunkOrigin, float chunkSize, ComputeBuffer edgeTable, ComputeBuffer triTable)
         {
             if (shader == null || buffers == null || vertexOutput == null) return;
 
@@ -33,6 +33,10 @@ namespace VoxelEngine.Physics
             shader.SetBuffer(kGenerate, "_BrickDataBuffer", buffers.BrickDataBuffer);
             shader.SetBuffer(kGenerate, "_PageTableBuffer", buffers.PageTableBuffer);
             
+            // Bind Tables
+            shader.SetBuffer(kGenerate, "_EdgeTable", edgeTable);
+            shader.SetBuffer(kGenerate, "_TriTable", triTable);
+
             // Bind Output
             shader.SetBuffer(kGenerate, "_VertexOutput", vertexOutput);
 
