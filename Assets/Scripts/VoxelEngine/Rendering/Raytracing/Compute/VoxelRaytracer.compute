@@ -44,7 +44,7 @@ float3 LightingPBR(float3 albedo, float3 N, float3 V, float3 L, float3 lightColo
 void TriplanarSampling(float3 worldPos, float3 normal, uint matId, out float3 outAlbedo, out float3 outNormal, out float outRoughness, out float outMetallic, out float outAO, float lod) { if (matId == 0) { outAlbedo = 1; outNormal = normal; outRoughness = 0.5; outMetallic = 0; outAO = 1; return; } VoxelTypeGPU mat = _VoxelMaterialBuffer[matId]; float3 weights = abs(normal); weights = pow(weights, 8.0); float weightSum = weights.x + weights.y + weights.z; weights /= (weightSum + 1e-5); float3 accumAlbedo = 0; float accumAO = 0; float accumRoughness = 0; float accumMetallic = 0; if (weights.x > 0.01) { float2 uv = worldPos.zy; float3 col = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideAlbedoIndex), lod).rgb; float4 mask = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideMaskIndex), lod); accumAlbedo += col * weights.x; accumAO += mask.g * weights.x; accumRoughness += mask.b * weights.x; accumMetallic += mat.sideMetallic * weights.x; } if (weights.y > 0.01) { float2 uv = worldPos.xz; uint albedoID = (normal.y > 0) ? mat.topAlbedoIndex : mat.sideAlbedoIndex; uint maskID = (normal.y > 0) ? mat.topMaskIndex : mat.sideMaskIndex; float met = (normal.y > 0) ? mat.topMetallic : mat.sideMetallic; float3 col = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, albedoID), lod).rgb; float4 mask = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, maskID), lod); accumAlbedo += col * weights.y; accumAO += mask.g * weights.y; accumRoughness += mask.b * weights.y; accumMetallic += met * weights.y; } if (weights.z > 0.01) { float2 uv = worldPos.xy; float3 col = _AlbedoTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideAlbedoIndex), lod).rgb; float4 mask = _MaskTextureArray.SampleLevel(sampler_LinearRepeat, float3(uv, mat.sideMaskIndex), lod); accumAlbedo += col * weights.z; accumAO += mask.g * weights.z; accumRoughness += mask.b * weights.z; accumMetallic += mat.sideMetallic * weights.z; } outAlbedo = accumAlbedo; outAO = accumAO; outRoughness = accumRoughness; outMetallic = accumMetallic; outNormal = normal; }
 
 struct HitInfo { 
-    bool hit; float3 pos; float3 normal; uint matId; bool isLOD; float3 lodColor; uint brickId;
+    bool hit; float3 pos; float3 normal; uint matId; bool isLOD; float3 lodColor; uint brickId; int chunkId;
 };
 
 HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxDist, float tStart)
@@ -62,6 +62,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
     result.isLOD = false; 
     result.lodColor = 0; 
     result.brickId = 0; 
+    result.chunkId = -1;
     
     while (tCurrent < tEnd && iter < _MaxIterations)
     {
@@ -175,11 +176,6 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
 [numthreads(8, 8, 1)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
-    // [CSMain logic remains exactly as provided previously]
-    // ...
-    // (Content omitted for brevity as it was provided in full in the thought block, and the changes are isolated to TraceSVO)
-    // Please use the same CSMain body as the previous version, referencing the updated TraceSVO.
-    
     uint width, height; _Result.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) return;
 
@@ -198,6 +194,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float closestT = maxDist;
     HitInfo bestHit = (HitInfo)0; 
     bestHit.hit = false;
+    bestHit.chunkId = -1;
     bool anyHit = false;
 
     float2 tScene = IntersectBox(rayOrigin, rayDir, _TLASBoundsMin, _TLASBoundsMax);
@@ -251,6 +248,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                                      {
                                          closestT = dist;
                                          bestHit = info;
+                                         bestHit.chunkId = chunkId;
                                          bestHit.pos = hitWorld;
                                          bestHit.normal = normalize(mul(info.normal, (float3x3)chunk.worldToLocal));
                                          anyHit = true;
@@ -316,5 +314,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         _MotionVectorTexture[id.xy] = currentUV - prevUV;
     }
     
-    if (all(id.xy == (uint2)_MousePosition)) { _RaycastBuffer[0] = float4(bestHit.pos, anyHit ? 1.0 : 0.0); }
+    if (all(id.xy == (uint2)_MousePosition)) { 
+        _RaycastBuffer[0] = float4(bestHit.pos, anyHit ? 1.0 : 0.0); 
+        _RaycastBuffer[1] = float4((float)bestHit.chunkId, 0, 0, 0);
+    }
 }
