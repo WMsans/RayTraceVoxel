@@ -22,6 +22,9 @@ namespace VoxelEngine.Core.Editing
         [Tooltip("Density multiplier for debris mass calculation (Mass = Volume * Density).")]
         public float debrisDensity = 10.0f;
 
+        [Tooltip("If debris has fewer voxels than this, a BoxCollider will be generated instead of a MeshCollider.")]
+        public int smallDebrisVoxelLimit = 64;
+
         private void Start()
         {
             if (analyzer != null)
@@ -399,20 +402,45 @@ namespace VoxelEngine.Core.Editing
 
             if (VoxelPhysicsManager.Instance != null)
             {
-                // Ensure convex collider for dynamic rigidbody
-                if (debrisVol.meshCol != null)
-                    debrisVol.meshCol.convex = true;
+                // Calculate Mass proportional to Volume
+                float singleVoxelVol = Mathf.Pow(voxelSize, 3.0f);
+                float totalVolume = voxelsToKeep.Count * singleVoxelVol;
 
                 Rigidbody rb = debrisVol.gameObject.GetComponent<Rigidbody>();
                 if (rb == null)
                     rb = debrisVol.gameObject.AddComponent<Rigidbody>();
 
-                // Calculate Mass proportional to Volume
-                float singleVoxelVol = Mathf.Pow(voxelSize, 3.0f);
-                float totalVolume = voxelsToKeep.Count * singleVoxelVol;
                 rb.mass = Mathf.Max(0.1f, totalVolume * debrisDensity);
 
-                VoxelPhysicsManager.Instance.Enqueue(debrisVol);
+                // Small Debris Handling: Use BoxCollider if too small for MeshCollider
+                if (voxelsToKeep.Count < smallDebrisVoxelLimit)
+                {
+                    Vector3Int min = new Vector3Int(int.MaxValue, int.MaxValue, int.MaxValue);
+                    Vector3Int max = new Vector3Int(int.MinValue, int.MinValue, int.MinValue);
+
+                    foreach (var v in voxelsToKeep)
+                    {
+                        min = Vector3Int.Min(min, v);
+                        max = Vector3Int.Max(max, v);
+                    }
+                    
+                    Vector3 sizeWorld = (Vector3)(max - min + Vector3Int.one) * voxelSize;
+                    Vector3 centerSourceLocal = (Vector3)min * voxelSize + sizeWorld * 0.5f;
+                    Vector3 centerWorld = sourceVol.WorldOrigin + centerSourceLocal;
+                    Vector3 centerDebrisLocal = centerWorld - debrisVol.WorldOrigin;
+
+                    BoxCollider bc = debrisVol.gameObject.AddComponent<BoxCollider>();
+                    bc.center = centerDebrisLocal;
+                    bc.size = sizeWorld;
+                }
+                else
+                {
+                    // Ensure convex collider for dynamic rigidbody
+                    if (debrisVol.meshCol != null)
+                        debrisVol.meshCol.convex = true;
+
+                    VoxelPhysicsManager.Instance.Enqueue(debrisVol);
+                }
             }
         }
 
