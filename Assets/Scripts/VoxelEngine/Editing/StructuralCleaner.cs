@@ -68,15 +68,15 @@ namespace VoxelEngine.Core.Editing
             // Calculate initial origin based on bounds
             Vector3 idealOrigin = boundsCenter - (Vector3.one * debrisWorldSize * 0.5f);
             
-            // This ensures that when we copy a brick from Source to Debris, the internal voxels line up perfectly.
-            Vector3 offsetFromSource = idealOrigin - vol.WorldOrigin;
-            offsetFromSource.x = Mathf.Round(offsetFromSource.x / brickSizeWorld) * brickSizeWorld;
-            offsetFromSource.y = Mathf.Round(offsetFromSource.y / brickSizeWorld) * brickSizeWorld;
-            offsetFromSource.z = Mathf.Round(offsetFromSource.z / brickSizeWorld) * brickSizeWorld;
-            
-            Vector3 debrisOrigin = vol.WorldOrigin + offsetFromSource;
+            // SNAP TO GLOBAL BRICK GRID
+            // This ensures that debris edits in the VoxelEditManager are perfectly aligned with the world grid.
+            Vector3 debrisOrigin = new Vector3(
+                Mathf.Round(idealOrigin.x / brickSizeWorld) * brickSizeWorld,
+                Mathf.Round(idealOrigin.y / brickSizeWorld) * brickSizeWorld,
+                Mathf.Round(idealOrigin.z / brickSizeWorld) * brickSizeWorld
+            );
 
-            Debug.Log($"[StructuralCleaner] Analysis Complete: Center={boundsCenter}, Size={debrisWorldSize}, Res={debrisResolution}, Origin={debrisOrigin} (Snapped)");
+            Debug.Log($"[StructuralCleaner] Analysis Complete: Center={boundsCenter}, Size={debrisWorldSize}, Res={debrisResolution}, Origin={debrisOrigin} (Global Snapped)");
 
             // --- Phase 2: Volume Allocation ---
             VoxelVolume debrisVolume = VoxelVolumePool.Instance.GetVolume(debrisOrigin, debrisWorldSize, -1, -1, debrisResolution, true);
@@ -272,6 +272,7 @@ namespace VoxelEngine.Core.Editing
                 // 1. Extract Raw Data
                 int3 srcBrickIdx = sourceBricks[i];
                 uint[] brickData = new uint[216];
+                uint[] sourceUpdateData = new uint[216]; // For updating the source database
                 
                 bool hasContent = false;
                 
@@ -300,22 +301,32 @@ namespace VoxelEngine.Core.Editing
                                 // It is a floating solid voxel we want to keep.
                                 brickData[flatIdx] = rawVal;
                                 hasContent = true;
+
+                                // For the source volume, this voxel is now AIR
+                                sourceUpdateData[flatIdx] = packedAir;
                             }
                             else if (isSourceAir)
                             {
                                 // IMPORTANT: It is Air. Keep it to preserve the SDF gradient (padding).
-                                // Replacing this with "PackedAir" (Max SDF) causes the paper-thin mesh artifact.
                                 brickData[flatIdx] = rawVal;
+                                sourceUpdateData[flatIdx] = rawVal;
                             }
                             else
                             {
                                 // It is Solid but NOT in our floating list. 
                                 // This is the "Ground" we are detaching from. Replace with Empty Air.
                                 brickData[flatIdx] = packedAir;
+                                sourceUpdateData[flatIdx] = rawVal; // Keep ground in source
                             }
                         }
                     }
                 }
+
+                // Update Source Database
+                Vector3 srcBrickWorldPosCorner = sourceOrigin + (new Vector3(srcBrickIdx.x, srcBrickIdx.y, srcBrickIdx.z) * brickSizeWorld);
+                Vector3Int srcGlobalCoord = VoxelEditManager.Instance.GetBrickCoordinate(srcBrickWorldPosCorner + Vector3.one * 0.01f);
+                VoxelEditManager.Instance.RegisterEdit(srcGlobalCoord, sourceUpdateData);
+
                 cursor += 216;
 
                 if (!hasContent) continue; // Skip empty bricks

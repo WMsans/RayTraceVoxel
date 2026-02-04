@@ -49,7 +49,7 @@ namespace VoxelEngine.Core.Editing
             var volumes = VoxelVolumeRegistry.Volumes;
             foreach (var vol in volumes)
             {
-                if (vol.gameObject.activeInHierarchy && vol.IsReady)
+                if (vol.gameObject.activeInHierarchy && vol.IsReady && !vol.IsTransient)
                 {
                     if (queryBounds.HasValue && !queryBounds.Value.Intersects(vol.WorldBounds))
                     {

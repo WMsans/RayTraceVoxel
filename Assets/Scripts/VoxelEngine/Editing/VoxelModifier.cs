@@ -32,7 +32,10 @@ namespace VoxelEngine.Core.Editing
 
             // 2. Alignment Check
             float brickWorldSize = SVONode.BRICK_SIZE * globalVoxelSize;
-            // [Alignment check logic omitted for brevity, assumed same as previous]
+            Vector3 alignmentOffset = vol.WorldOrigin / brickWorldSize;
+            bool isAligned = Mathf.Approximately(alignmentOffset.x, Mathf.Round(alignmentOffset.x)) &&
+                             Mathf.Approximately(alignmentOffset.y, Mathf.Round(alignmentOffset.y)) &&
+                             Mathf.Approximately(alignmentOffset.z, Mathf.Round(alignmentOffset.z));
 
             // 3. Calculate Brush in Voxel Space
             // Use InverseTransformPoint to handle rotation, scale, and translation automatically.
@@ -97,14 +100,14 @@ namespace VoxelEngine.Core.Editing
 
             // 6. DISPATCH: Apply Edits to VRAM
             _shader.Dispatch(kernelAlloc, Mathf.CeilToInt(rangeX / 8.0f), Mathf.CeilToInt(rangeY / 8.0f), Mathf.CeilToInt(rangeZ / 8.0f));
-            _shader.Dispatch(kernelEdit, rangeX, rangeY, rangeZ);
+            _shader.Dispatch(kernelEdit, Mathf.CeilToInt(rangeX / 4.0f), Mathf.CeilToInt(rangeY / 4.0f), Mathf.CeilToInt(rangeZ / 4.0f));
 
             // --- Capture Edits ---
             
             // Only capture edits for the persistent database if the volume is NOT transient
-            // or if it's perfectly axis-aligned (terrain). 
+            // AND if it's perfectly axis-aligned (terrain). 
             // Debris that has rotated/moved would corrupt the axis-aligned database.
-            bool shouldUpdateDatabase = !vol.IsTransient && 
+            bool shouldUpdateDatabase = !vol.IsTransient && isAligned &&
                                         Mathf.Approximately(Quaternion.Angle(vol.transform.rotation, Quaternion.identity), 0);
 
             if (!shouldUpdateDatabase) return;
@@ -128,7 +131,6 @@ namespace VoxelEngine.Core.Editing
 
             // C. Request Async Readback
             // Capture necessary variables for the callback
-            Vector3 worldOrigin = vol.WorldOrigin;
             
             AsyncGPUReadback.Request(readbackBuffer, (request) =>
             {
@@ -141,14 +143,11 @@ namespace VoxelEngine.Core.Editing
                     return;
                 }
 
-                if (VoxelEditManager.Instance == null) return;
+                if (VoxelEditManager.Instance == null || vol == null) return;
 
                 // D. Process Data
                 using (NativeArray<uint> rawData = request.GetData<uint>())
                 {
-                    // Calculate Volume's Global Brick Origin
-                    Vector3Int volOriginBrick = VoxelEditManager.Instance.GetBrickCoordinate(worldOrigin);
-                    
                     int cursor = 0;
                     
                     // Iterate bricks in the same order as the Compute Shader (Z, Y, X)
@@ -159,11 +158,15 @@ namespace VoxelEngine.Core.Editing
                             for (int x = 0; x < rangeX; x++)
                             {
                                 // 1. Calculate Global Coordinate
-                                Vector3Int localOffset = minBrickId + new Vector3Int(x, y, z);
-                                Vector3Int globalCoord = volOriginBrick + localOffset;
+                                Vector3Int localBrickCoord = minBrickId + new Vector3Int(x, y, z);
+                                
+                                // Calculate the world position of this brick's min corner
+                                Vector3 brickWorldPos = vol.transform.TransformPoint((Vector3)localBrickCoord * brickVoxelSize);
+                                
+                                // Map to Global Brick Index
+                                Vector3Int globalCoord = VoxelEditManager.Instance.GetBrickCoordinate(brickWorldPos + Vector3.one * 0.01f);
 
                                 // 2. Extract 216 uints
-                                // We use GetSubArray for zero-allocation slicing, then ToArray() to store.
                                 uint[] brickData = rawData.GetSubArray(cursor, SVONode.BRICK_VOXEL_COUNT).ToArray();
                                 cursor += SVONode.BRICK_VOXEL_COUNT;
 
