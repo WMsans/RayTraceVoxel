@@ -19,6 +19,8 @@ namespace VoxelEngine.Core.Streaming
         public WorldOctreeNode[] Children { get; private set; }
         public bool IsLeaf => Children == null;
 
+        public Bounds Bounds => new Bounds(Center, Vector3.one * Size);
+
         // --- Payload ---
         /// <summary>
         /// The active VoxelVolume MonoBehaviour managed by this node (if Leaf).

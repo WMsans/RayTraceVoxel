@@ -555,8 +555,8 @@ MonoBehaviour:
   prefab: {fileID: 7605555090304409176, guid: def5071789b0b264aad0807b43204eaf, type: 3}
   poolSize: 400
   poolContainer: {fileID: 0}
-  maxNodesPerVolume: 10000
-  maxBricksPerVolume: 5000
+  maxNodesPerVolume: 5000
+  maxBricksPerVolume: 2500
   TLASResolution: 16
 --- !u!4 &681138559
 Transform:

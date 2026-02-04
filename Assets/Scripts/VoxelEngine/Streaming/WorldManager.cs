@@ -21,10 +21,16 @@ namespace VoxelEngine.Core.Streaming
         public float splitFactor = 1.5f;
         [Tooltip("Merge if Distance > Size * MergeFactor. Must be > SplitFactor to prevent flickering.")]
         public float mergeFactor = 1.8f;
+
+        [Header("Culling Settings")]
+        public Camera mainCamera;
+        [Tooltip("Chunks outside frustum but within this distance stay at low LOD for shadows.")]
+        public float shadowDistance = 256f;
         
         private WorldOctreeNode _rootNode;
         private VoxelVolumePool _pool;
         private float _targetLeafSize;
+        private Plane[] _frustumPlanes = new Plane[6];
         
         // --- ADDED: Debug List to visualize dirty chunks ---
         private List<Bounds> _debugDirtyChunkBounds = new List<Bounds>();
@@ -99,6 +105,13 @@ namespace VoxelEngine.Core.Streaming
         {
             if (viewer != null)
             {
+                // Update frustum planes for aggressive culling
+                if (mainCamera == null) mainCamera = Camera.main;
+                if (mainCamera != null)
+                {
+                    GeometryUtility.CalculateFrustumPlanes(mainCamera, _frustumPlanes);
+                }
+
                 // Run the LOD Logic
                 UpdateNodeLOD(_rootNode, viewer.position);
             }
@@ -167,22 +180,56 @@ namespace VoxelEngine.Core.Streaming
         private void UpdateNodeLOD(WorldOctreeNode node, Vector3 viewerPosition)
         {
             float distance = Vector3.Distance(viewerPosition, node.Center);
+            
+            // --- AGGRESSIVE CULLING CHECKS ---
+            // If no camera is available, assume everything is in view
+            bool inFrustum = (mainCamera == null) || GeometryUtility.TestPlanesAABB(_frustumPlanes, node.Bounds);
+            bool inShadowRange = distance < shadowDistance;
 
             if (node.IsLeaf)
             {
-                // --- SPLIT CHECK ---
-                // 1. Can we go deeper? (Depth < maxDepth)
-                // 2. Are we close enough? (Distance < Size * Factor)
+                // 1. VOLUME CULLING: If totally out of view and shadow range, release VRAM
+                if (!inFrustum && !inShadowRange)
+                {
+                    if (node.ActiveVolume != null)
+                    {
+                        VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
+                        VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
+                        node.DisableVolume();
+                    }
+                }
+                else // In view or in shadow range
+                {
+                    if (node.ActiveVolume == null)
+                    {
+                        node.EnableVolume(this.transform);
+                        
+                        // Register for Physics if Leaf at max depth
+                        if (node.Depth == maxDepth && node.ActiveVolume != null)
+                        {
+                            VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
+                        }
+                    }
+                }
+
+                // 2. SPLIT CHECK
+                // Only split if in frustum and close enough
                 if (node.Depth < maxDepth && distance < (node.Size * splitFactor))
                 {
-                    SplitNode(node);
+                    if (inFrustum)
+                    {
+                        SplitNode(node);
+                    }
                 }
             }
             else // Node is a Branch (has children)
             {
                 // --- MERGE CHECK ---
-                // 1. Are we far enough? (Distance > Size * Factor)
-                if (distance > (node.Size * mergeFactor))
+                // 1. Normal distance-based merge
+                // 2. AGGRESSIVE MERGE: If a high-LOD node exits the frustum, immediately merge it.
+                bool shouldMerge = distance > (node.Size * mergeFactor) || !inFrustum;
+                
+                if (shouldMerge)
                 {
                     MergeNode(node);
                 }
@@ -259,6 +306,13 @@ namespace VoxelEngine.Core.Streaming
                 foreach (var b in _debugDirtyChunkBounds)
                 {
                     Gizmos.DrawWireCube(b.center, b.size);
+                }
+
+                // --- ADDED: Draw Shadow Range (YELLOW) ---
+                if (viewer != null)
+                {
+                    Gizmos.color = new Color(1, 1, 0, 0.3f);
+                    Gizmos.DrawWireSphere(viewer.position, shadowDistance);
                 }
             }
         }
