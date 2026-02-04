@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using Unity.Collections;
 using System.Linq;
 using Unity.Mathematics;
+using VoxelEngine.Physics;
 
 namespace VoxelEngine.Core.Editing
 {
@@ -17,6 +18,9 @@ namespace VoxelEngine.Core.Editing
         [Header("Settings")]
         [Tooltip("If true, removes neighbors of floating voxels to ensure clean breaks and remove diagonal artifacts.")]
         public bool erodeFloatingVoxels = true;
+
+        [Tooltip("Density multiplier for debris mass calculation (Mass = Volume * Density).")]
+        public float debrisDensity = 10.0f;
 
         private void Start()
         {
@@ -81,6 +85,13 @@ namespace VoxelEngine.Core.Editing
             }
             
             debrisVolume.gameObject.name = $"Debris_{System.DateTime.Now.Ticks}";
+            
+            // Ensure debris doesn't have a collider
+            if (VoxelPhysicsManager.Instance != null)
+            {
+                VoxelPhysicsManager.Instance.Remove(debrisVolume);
+                VoxelPhysicsManager.Instance.ClearCollider(debrisVolume);
+            }
             // ----------------------------------
 
             // 1. Prepare Data
@@ -191,6 +202,12 @@ namespace VoxelEngine.Core.Editing
              
             int groupsRemove = Mathf.CeilToInt(voxelCount / 64.0f);
             voxelModifierShader.Dispatch(kernelRemove, groupsRemove, 1, 1);
+
+            // Update source terrain collider to reflect removed voxels
+            if (VoxelPhysicsManager.Instance != null)
+            {
+                VoxelPhysicsManager.Instance.Enqueue(vol);
+            }
 
             // 6. Readback with Data Interception (Phase 3)
             AsyncGPUReadback.Request(readbackBuffer, (req) => 
@@ -379,6 +396,24 @@ namespace VoxelEngine.Core.Editing
 
             // 6. Finalize
             Debug.Log($"[StructuralCleaner] Debris created: {debrisVol.name}");
+
+            if (VoxelPhysicsManager.Instance != null)
+            {
+                // Ensure convex collider for dynamic rigidbody
+                if (debrisVol.meshCol != null)
+                    debrisVol.meshCol.convex = true;
+
+                Rigidbody rb = debrisVol.gameObject.GetComponent<Rigidbody>();
+                if (rb == null)
+                    rb = debrisVol.gameObject.AddComponent<Rigidbody>();
+
+                // Calculate Mass proportional to Volume
+                float singleVoxelVol = Mathf.Pow(voxelSize, 3.0f);
+                float totalVolume = voxelsToKeep.Count * singleVoxelVol;
+                rb.mass = Mathf.Max(0.1f, totalVolume * debrisDensity);
+
+                VoxelPhysicsManager.Instance.Enqueue(debrisVol);
+            }
         }
 
         // Helper to match Shader/Manager packing

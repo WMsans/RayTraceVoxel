@@ -1,5 +1,68 @@
 %YAML 1.1
 %TAG !u! tag:unity3d.com,2011:
+--- !u!1 &1887021581014680394
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4981284954332523384}
+  - component: {fileID: 2297117576746727618}
+  - component: {fileID: 4820301337871315631}
+  m_Layer: 0
+  m_Name: Mesh
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4981284954332523384
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1887021581014680394}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 9126307425040577668}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!33 &2297117576746727618
+MeshFilter:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1887021581014680394}
+  m_Mesh: {fileID: 0}
+--- !u!64 &4820301337871315631
+MeshCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1887021581014680394}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 5
+  m_Convex: 0
+  m_CookingOptions: 30
+  m_Mesh: {fileID: 0}
 --- !u!1 &7120167303073674635
 GameObject:
   m_ObjectHideFlags: 0
@@ -10,9 +73,9 @@ GameObject:
   m_Component:
   - component: {fileID: 9126307425040577668}
   - component: {fileID: 7605555090304409176}
-  - component: {fileID: 4819740143505349971}
   - component: {fileID: 9210260336194324207}
   - component: {fileID: -4855828778010543098}
+  - component: {fileID: 6392955897987568227}
   m_Layer: 0
   m_Name: SVOVolume
   m_TagString: Untagged
@@ -32,7 +95,8 @@ Transform:
   m_LocalPosition: {x: -0, y: 0, z: -0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
-  m_Children: []
+  m_Children:
+  - {fileID: 4981284954332523384}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &7605555090304409176
@@ -47,21 +111,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3fbe225be4feffb4a9d8fc4391524dde, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelVolume
+  meshCol: {fileID: 4820301337871315631}
+  meshFil: {fileID: 2297117576746727618}
   svoCompute: {fileID: 7200000, guid: 2857a9a78428a720d8ef270c2fdec704, type: 3}
   resolution: 64
---- !u!114 &4819740143505349971
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 7120167303073674635}
-  m_Enabled: 0
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 8badc7886809b3646b31a0ce449f9381, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Serialization.VoxelSaveLoadController
-  defaultSaveName: world_save.vxvol
 --- !u!114 &9210260336194324207
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -112,3 +165,19 @@ MonoBehaviour:
   windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
   windSpeed: 0.02
   windStrength: 2
+--- !u!114 &6392955897987568227
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7120167303073674635}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 597a426e6b246cb4e8df00461d8ddecf, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Physics.VoxelPhysicsBaker
+  physicsShader: {fileID: 7200000, guid: b21ed607c3b754a499304fb2c19862ac, type: 3}
+  stride: 4
+  maxVertices: 65536
+  colliderChildName: PhysicsCollider

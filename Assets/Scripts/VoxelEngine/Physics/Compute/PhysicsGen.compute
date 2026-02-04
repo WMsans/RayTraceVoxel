@@ -1,0 +1,219 @@
+#pragma kernel GeneratePhysicsMesh
+
+#include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+// --- Inputs ---
+StructuredBuffer<SVONode> _NodeBuffer;
+StructuredBuffer<VoxelPayload> _PayloadBuffer;
+StructuredBuffer<uint> _BrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer;
+
+// --- Outputs ---
+struct PhysicsTriangle
+{
+    float3 v1;
+    float3 v2;
+    float3 v3; 
+};
+AppendStructuredBuffer<PhysicsTriangle> _VertexOutput;
+
+// --- Uniforms ---
+uint _Stride;
+uint _GridSize;
+float3 _ChunkWorldOrigin;
+float _ChunkWorldSize;
+uint _NodeOffset;
+uint _PayloadOffset;
+uint _BrickOffset;
+
+// --- Tables ---
+StructuredBuffer<int> _EdgeTable;
+StructuredBuffer<int> _TriTable;
+
+// --- Sampling ---
+float GetDensity(int3 pos)
+{
+    // Handle bounds
+    if (any(pos < 0) || any(pos > (int)_GridSize)) return 1.0;
+
+    int3 nodeCoord = pos >> 2; // BRICK_SIZE is 4
+    int3 localPos = pos & 3;
+    
+    // Boundary handling for sampling from the padding of the previous block
+    int gridBound = (int)(_GridSize / BRICK_SIZE);
+    if (nodeCoord.x >= gridBound) { nodeCoord.x--; localPos.x += BRICK_SIZE; }
+    if (nodeCoord.y >= gridBound) { nodeCoord.y--; localPos.y += BRICK_SIZE; }
+    if (nodeCoord.z >= gridBound) { nodeCoord.z--; localPos.z += BRICK_SIZE; }
+
+    uint nodeIndex = GetNodeIndex(4, (uint3)nodeCoord);
+    uint physIndex = GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer);
+    SVONode node = _NodeBuffer[physIndex];
+
+    if (node.packedInfo & NODE_FLAG_SOLID)
+    {
+        // Solid means filled. Density is negative.
+        return -1.0;
+    }
+    
+    if (node.packedInfo == 0)
+    {
+        // Empty
+        return 1.0;
+    }
+
+    uint payloadIndex; uint materialID;
+    UnpackNode(node, payloadIndex, materialID);
+    
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)];
+    
+    // Calculate index in brick with padding
+    // localPos is 0..3 (or up to 7 with boundary trick)
+    // BRICK_PADDING is 1
+    // BRICK_STORAGE_SIZE is 6
+    // If localPos is 4 (boundary), index = 5, which is valid.
+    int3 storagePos = localPos + int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+    
+    // Clamp to be safe, though logic should hold
+    storagePos = clamp(storagePos, 0, BRICK_STORAGE_SIZE - 1);
+    
+    uint brickPtr = payload.brickDataIndex;
+    uint dataIdx = _BrickOffset + brickPtr + (storagePos.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + storagePos.y * BRICK_STORAGE_SIZE + storagePos.x);
+    
+    uint packedData = _BrickDataBuffer[dataIdx];
+    float sdf; float3 n; uint mat;
+    UnpackVoxelData(packedData, sdf, n, mat);
+    
+    return sdf;
+}
+
+float3 Interpolate(float3 p1, float3 p2, float v1, float v2)
+{
+    if (abs(v1 - v2) < 0.00001) return p1;
+    float t = (0.0 - v1) / (v2 - v1);
+    return lerp(p1, p2, t);
+}
+
+groupshared float s_Densities[729]; // 9x9x9 points for 8x8x8 cells
+
+[numthreads(8, 8, 8)]
+void GeneratePhysicsMesh(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID)
+{
+    // --- Shared Memory Loading ---
+    // We need to load 9x9x9 = 729 values.
+    // Thread group size is 512.
+    
+    uint3 groupOrigin = groupID * 8; // Origin of the block in grid cells
+
+    // 1. Load first 512 values
+    {
+        uint idx = groupIndex;
+        // Map 1D index to 3D (9x9x9) using uint to avoid shader warnings
+        uint z = idx / 81u;
+        uint rem = idx % 81u;
+        uint y = rem / 9u;
+        uint x = rem % 9u;
+        
+        int3 localPos = int3(x, y, z);
+        int3 samplePos = (groupOrigin + localPos) * _Stride;
+        s_Densities[idx] = GetDensity(samplePos);
+    }
+
+    // 2. Load remaining 217 values
+    if (groupIndex < 217)
+    {
+        uint idx = groupIndex + 512;
+        uint z = idx / 81u;
+        uint rem = idx % 81u;
+        uint y = rem / 9u;
+        uint x = rem % 9u;
+        
+        int3 localPos = int3(x, y, z);
+        int3 samplePos = (groupOrigin + localPos) * _Stride;
+        s_Densities[idx] = GetDensity(samplePos);
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+    // -----------------------------
+
+    uint dim = _GridSize / _Stride;
+    if (any(id >= dim)) return;
+
+    float3 pos0 = id * _Stride;
+    
+    // Sample 8 corners from Shared Memory
+    // Local grid coordinates in 9x9x9 array
+    uint3 l = groupThreadID;
+    
+    float v[8];
+    // Re-calculating indices carefully to match the original sampling pattern
+    // v[0]: 0, 0, 0
+    v[0] = s_Densities[l.z * 81 + l.y * 9 + l.x];
+    // v[1]: 1, 0, 0
+    v[1] = s_Densities[l.z * 81 + l.y * 9 + (l.x + 1)];
+    // v[2]: 1, 0, 1
+    v[2] = s_Densities[(l.z + 1) * 81 + l.y * 9 + (l.x + 1)];
+    // v[3]: 0, 0, 1
+    v[3] = s_Densities[(l.z + 1) * 81 + l.y * 9 + l.x];
+    // v[4]: 0, 1, 0
+    v[4] = s_Densities[l.z * 81 + (l.y + 1) * 9 + l.x];
+    // v[5]: 1, 1, 0
+    v[5] = s_Densities[l.z * 81 + (l.y + 1) * 9 + (l.x + 1)];
+    // v[6]: 1, 1, 1
+    v[6] = s_Densities[(l.z + 1) * 81 + (l.y + 1) * 9 + (l.x + 1)];
+    // v[7]: 0, 1, 1
+    v[7] = s_Densities[(l.z + 1) * 81 + (l.y + 1) * 9 + l.x];
+
+    int cubeIndex = 0;
+    if (v[0] < 0) cubeIndex |= 1;
+    if (v[1] < 0) cubeIndex |= 2;
+    if (v[2] < 0) cubeIndex |= 4;
+    if (v[3] < 0) cubeIndex |= 8;
+    if (v[4] < 0) cubeIndex |= 16;
+    if (v[5] < 0) cubeIndex |= 32;
+    if (v[6] < 0) cubeIndex |= 64;
+    if (v[7] < 0) cubeIndex |= 128;
+
+    if (_EdgeTable[cubeIndex] == 0) return;
+
+    // Vertices of the cell
+    float scale = _ChunkWorldSize / (float)_GridSize;
+    float3 localBase = pos0 * scale;
+    float strideStep = _Stride * scale;
+    
+    float3 p[8];
+    p[0] = localBase;
+    p[1] = localBase + float3(strideStep, 0, 0);
+    p[2] = localBase + float3(strideStep, 0, strideStep);
+    p[3] = localBase + float3(0, 0, strideStep);
+    p[4] = localBase + float3(0, strideStep, 0);
+    p[5] = localBase + float3(strideStep, strideStep, 0);
+    p[6] = localBase + float3(strideStep, strideStep, strideStep);
+    p[7] = localBase + float3(0, strideStep, strideStep);
+
+    float3 vertList[12];
+    if (_EdgeTable[cubeIndex] & 1) vertList[0] = Interpolate(p[0], p[1], v[0], v[1]);
+    if (_EdgeTable[cubeIndex] & 2) vertList[1] = Interpolate(p[1], p[2], v[1], v[2]);
+    if (_EdgeTable[cubeIndex] & 4) vertList[2] = Interpolate(p[2], p[3], v[2], v[3]);
+    if (_EdgeTable[cubeIndex] & 8) vertList[3] = Interpolate(p[3], p[0], v[3], v[0]);
+    if (_EdgeTable[cubeIndex] & 16) vertList[4] = Interpolate(p[4], p[5], v[4], v[5]);
+    if (_EdgeTable[cubeIndex] & 32) vertList[5] = Interpolate(p[5], p[6], v[5], v[6]);
+    if (_EdgeTable[cubeIndex] & 64) vertList[6] = Interpolate(p[6], p[7], v[6], v[7]);
+    if (_EdgeTable[cubeIndex] & 128) vertList[7] = Interpolate(p[7], p[4], v[7], v[4]);
+    if (_EdgeTable[cubeIndex] & 256) vertList[8] = Interpolate(p[0], p[4], v[0], v[4]);
+    if (_EdgeTable[cubeIndex] & 512) vertList[9] = Interpolate(p[1], p[5], v[1], v[5]);
+    if (_EdgeTable[cubeIndex] & 1024) vertList[10] = Interpolate(p[2], p[6], v[2], v[6]);
+    if (_EdgeTable[cubeIndex] & 2048) vertList[11] = Interpolate(p[3], p[7], v[3], v[7]);
+
+    for (int i = 0; i < 16; i += 3) {
+        int idx1 = _TriTable[cubeIndex * 16 + i];
+        if (idx1 == -1) break;
+        int idx2 = _TriTable[cubeIndex * 16 + i + 1];
+        int idx3 = _TriTable[cubeIndex * 16 + i + 2];
+        
+        PhysicsTriangle tri;
+        tri.v1 = vertList[idx1];
+        tri.v2 = vertList[idx2];
+        tri.v3 = vertList[idx3];
+        _VertexOutput.Append(tri);
+    }
+}

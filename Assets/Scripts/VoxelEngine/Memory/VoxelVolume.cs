@@ -10,6 +10,10 @@ namespace VoxelEngine.Core
 {
     public class VoxelVolume : MonoBehaviour, IVoxelStorage
     {
+        [Header("References")]
+        public MeshCollider meshCol;
+        public MeshFilter meshFil;
+
         [Header("Settings")]
         public ComputeShader svoCompute;
         public int resolution = 64;
