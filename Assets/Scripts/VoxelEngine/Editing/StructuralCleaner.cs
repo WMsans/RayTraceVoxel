@@ -25,6 +25,9 @@ namespace VoxelEngine.Core.Editing
         [Tooltip("If debris has fewer voxels than this, a BoxCollider will be generated instead of a MeshCollider.")]
         public int smallDebrisVoxelLimit = 64;
 
+        [Tooltip("Minimum number of voxels required to generate debris. If less, the floating voxels are ignored (remain in source).")]
+        public int minimumDebrisVoxelCount = 10;
+
         private void Start()
         {
             if (analyzer != null)
@@ -56,6 +59,13 @@ namespace VoxelEngine.Core.Editing
         private void HandleAnalysisCompleted(VoxelVolume vol, List<Vector3> floatingVoxels)
         {
             if (floatingVoxels == null || floatingVoxels.Count == 0) return;
+            
+            // Check minimum count to skip insignificant debris
+            if (floatingVoxels.Count < minimumDebrisVoxelCount) 
+            {
+                return;
+            }
+
             if (voxelModifierShader == null || !vol.IsReady) return;
 
             // Phase 4: Mass Recalculation for Source
