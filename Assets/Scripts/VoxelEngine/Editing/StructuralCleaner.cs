@@ -322,10 +322,13 @@ namespace VoxelEngine.Core.Editing
                     }
                 }
 
-                // Update Source Database
-                Vector3 srcBrickWorldPosCorner = sourceOrigin + (new Vector3(srcBrickIdx.x, srcBrickIdx.y, srcBrickIdx.z) * brickSizeWorld);
-                Vector3Int srcGlobalCoord = VoxelEditManager.Instance.GetBrickCoordinate(srcBrickWorldPosCorner + Vector3.one * 0.01f);
-                VoxelEditManager.Instance.RegisterEdit(srcGlobalCoord, sourceUpdateData);
+                // Update Source Database (Only for persistent terrain)
+                if (!sourceVol.IsTransient)
+                {
+                    Vector3 srcBrickWorldPosCorner = sourceOrigin + (new Vector3(srcBrickIdx.x, srcBrickIdx.y, srcBrickIdx.z) * brickSizeWorld);
+                    Vector3Int srcGlobalCoord = VoxelEditManager.Instance.GetBrickCoordinate(srcBrickWorldPosCorner + Vector3.one * 0.01f);
+                    VoxelEditManager.Instance.RegisterEdit(srcGlobalCoord, sourceUpdateData);
+                }
 
                 cursor += 216;
 

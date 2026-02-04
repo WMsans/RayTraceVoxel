@@ -49,6 +49,7 @@ namespace VoxelEngine.Core.Editing
             var volumes = VoxelVolumeRegistry.Volumes;
             foreach (var vol in volumes)
             {
+                // Automatic world scan only targets stable (non-transient) volumes
                 if (vol.gameObject.activeInHierarchy && vol.IsReady && !vol.IsTransient)
                 {
                     if (queryBounds.HasValue && !queryBounds.Value.Intersects(vol.WorldBounds))
@@ -66,12 +67,43 @@ namespace VoxelEngine.Core.Editing
             }
         }
 
+        /// <summary>
+        /// Overload for targeted analysis of a specific volume (e.g., for recursive debris fracturing).
+        /// </summary>
+        public void AnalyzeWorld(VoxelVolume targetVolume, Bounds? queryBounds = null)
+        {
+            if (analysisShader == null || targetVolume == null) return;
+
+            if (targetVolume.gameObject.activeInHierarchy && targetVolume.IsReady)
+            {
+                if (!_analysisQueue.Contains(targetVolume))
+                {
+                    _analysisQueue.Enqueue(targetVolume);
+                }
+            }
+
+            if (!_isAnalyzing && _analysisQueue.Count > 0)
+            {
+                _isAnalyzing = true;
+                _floatingVoxelPositions.Clear();
+                ProcessNextVolume();
+            }
+        }
+
+        /// <summary>
+        /// Specifically analyzes a single volume.
+        /// </summary>
+        public void AnalyzeVolume(VoxelVolume targetVolume, Bounds? queryBounds = null)
+        {
+            AnalyzeWorld(targetVolume, queryBounds);
+        }
+
         private void ProcessNextVolume()
         {
             if (_analysisQueue.Count == 0)
             {
                 _isAnalyzing = false;
-                Debug.Log($"[Structural Analysis] World Scan Complete. Floating Voxels: {_floatingVoxelPositions.Count}");
+                Debug.Log($"[Structural Analysis] Analysis Batch Complete. Total Floating Voxels: {_floatingVoxelPositions.Count}");
                 return;
             }
 
@@ -316,19 +348,33 @@ namespace VoxelEngine.Core.Editing
                     debrisIslands[voxel.label].Add(worldPos);
                 }
 
-                Debug.Log($"[Structural Analysis] Found {debrisIslands.Count} distinct floating islands.");
+                Debug.Log($"[Structural Analysis] Found {debrisIslands.Count} distinct floating islands in {vol.name}.");
 
-                // Flatten for StructuralCleaner (or future physics processing)
-                List<Vector3> allFloatingVoxels = new List<Vector3>();
-                foreach (var island in debrisIslands.Values)
+                if (vol.IsTransient)
                 {
-                    allFloatingVoxels.AddRange(island);
-                    _floatingVoxelPositions.AddRange(island);
+                    // For Debris Volumes: If we have multiple islands, it means the debris split.
+                    // We keep the largest island in the original volume and extract others.
+                    if (debrisIslands.Count > 1)
+                    {
+                        var sortedIslands = debrisIslands.Values.OrderByDescending(island => island.Count).ToList();
+                        
+                        // Skip index 0 (largest island) - it stays in this volume
+                        for (int i = 1; i < sortedIslands.Count; i++)
+                        {
+                            var island = sortedIslands[i];
+                            _floatingVoxelPositions.AddRange(island);
+                            OnAnalysisCompleted?.Invoke(vol, island);
+                        }
+                    }
                 }
-
-                if (allFloatingVoxels.Count > 0)
+                else
                 {
-                    OnAnalysisCompleted?.Invoke(vol, allFloatingVoxels);
+                    // For World Terrain: Extract all floating islands into new Debris Volumes
+                    foreach (var island in debrisIslands.Values)
+                    {
+                        _floatingVoxelPositions.AddRange(island);
+                        OnAnalysisCompleted?.Invoke(vol, island);
+                    }
                 }
             }
 

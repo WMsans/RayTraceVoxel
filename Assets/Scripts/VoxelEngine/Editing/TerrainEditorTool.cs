@@ -115,10 +115,19 @@ namespace VoxelEngine.Core.Editing
             VoxelModifier modifier = new VoxelModifier(voxelModifierShader, targetVolume);
             modifier.Apply(brush, targetVolume.Resolution);
 
-            // Phase 1: Structural Integrity Analysis
+            // Phase 3: Recursive Fracturing Pipeline
             if (op == BrushOp.Subtract && structuralAnalyzer != null)
             {
-                structuralAnalyzer.AnalyzeWorld(brushBounds);
+                if (targetVolume.IsTransient)
+                {
+                    // If we edit a Debris Volume, trigger targeted analysis for further splits
+                    structuralAnalyzer.AnalyzeVolume(targetVolume, brushBounds);
+                }
+                else
+                {
+                    // Standard analysis for world terrain
+                    structuralAnalyzer.AnalyzeWorld(brushBounds);
+                }
             }
         }
 
