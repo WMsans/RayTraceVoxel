@@ -19,6 +19,9 @@ namespace VoxelEngine.Core.Editing
         [Tooltip("If true, removes neighbors of floating voxels to ensure clean breaks and remove diagonal artifacts.")]
         public bool erodeFloatingVoxels = true;
 
+        [Tooltip("Density multiplier for debris mass calculation (Mass = Volume * Density).")]
+        public float debrisDensity = 10.0f;
+
         private void Start()
         {
             if (analyzer != null)
@@ -400,8 +403,14 @@ namespace VoxelEngine.Core.Editing
                 if (debrisVol.meshCol != null)
                     debrisVol.meshCol.convex = true;
 
-                if (debrisVol.gameObject.GetComponent<Rigidbody>() == null)
-                    debrisVol.gameObject.AddComponent<Rigidbody>();
+                Rigidbody rb = debrisVol.gameObject.GetComponent<Rigidbody>();
+                if (rb == null)
+                    rb = debrisVol.gameObject.AddComponent<Rigidbody>();
+
+                // Calculate Mass proportional to Volume
+                float singleVoxelVol = Mathf.Pow(voxelSize, 3.0f);
+                float totalVolume = voxelsToKeep.Count * singleVoxelVol;
+                rb.mass = Mathf.Max(0.1f, totalVolume * debrisDensity);
 
                 VoxelPhysicsManager.Instance.Enqueue(debrisVol);
             }
