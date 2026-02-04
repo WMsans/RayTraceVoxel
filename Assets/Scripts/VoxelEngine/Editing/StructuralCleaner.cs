@@ -60,11 +60,8 @@ namespace VoxelEngine.Core.Editing
         {
             if (floatingVoxels == null || floatingVoxels.Count == 0) return;
             
-            // Check minimum count to skip insignificant debris
-            if (floatingVoxels.Count < minimumDebrisVoxelCount) 
-            {
-                return;
-            }
+            // MODIFICATION: Decide if we create debris or just clean
+            bool createDebris = floatingVoxels.Count >= minimumDebrisVoxelCount;
 
             if (voxelModifierShader == null || !vol.IsReady) return;
 
@@ -77,65 +74,73 @@ namespace VoxelEngine.Core.Editing
             float voxelSize = vol.WorldSize / vol.Resolution;
             float brickSizeWorld = voxelSize * 4.0f;
 
-            // 1. Calculate Bounds in LOCAL Space
-            // We must operate in the Source Volume's local space to maintain orientation.
-            Vector3 minLocal = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            Vector3 maxLocal = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            // Variables needed for Debris Creation
+            VoxelVolume debrisVolume = null;
 
-            foreach (var worldPos in floatingVoxels)
+            if (createDebris)
             {
-                Vector3 localPos = vol.transform.InverseTransformPoint(worldPos);
-                minLocal = Vector3.Min(minLocal, localPos);
-                maxLocal = Vector3.Max(maxLocal, localPos);
-            }
+                // 1. Calculate Bounds in LOCAL Space
+                // We must operate in the Source Volume's local space to maintain orientation.
+                Vector3 minLocal = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                Vector3 maxLocal = new Vector3(float.MinValue, float.MinValue, float.MinValue);
 
-            // 2. Determine Debris Volume Layout (Local)
-            Vector3 localSize = maxLocal - minLocal;
-            float maxDimension = Mathf.Max(localSize.x, Mathf.Max(localSize.y, localSize.z));
-            
-            int requiredResolution = Mathf.CeilToInt(maxDimension / voxelSize) + 2;
-            int debrisResolution = Mathf.NextPowerOfTwo(Mathf.Max(requiredResolution, 16));
-            float debrisWorldSize = debrisResolution * voxelSize;
+                foreach (var worldPos in floatingVoxels)
+                {
+                    Vector3 localPos = vol.transform.InverseTransformPoint(worldPos);
+                    minLocal = Vector3.Min(minLocal, localPos);
+                    maxLocal = Vector3.Max(maxLocal, localPos);
+                }
 
-            // 3. Determine Origin
-            // Calculate ideal origin (corner) in local space
-            Vector3 centerLocal = (minLocal + maxLocal) * 0.5f;
-            Vector3 idealOriginLocal = centerLocal - (Vector3.one * debrisWorldSize * 0.5f);
+                // 2. Determine Debris Volume Layout (Local)
+                Vector3 localSize = maxLocal - minLocal;
+                float maxDimension = Mathf.Max(localSize.x, Mathf.Max(localSize.y, localSize.z));
+                
+                int requiredResolution = Mathf.CeilToInt(maxDimension / voxelSize) + 2;
+                int debrisResolution = Mathf.NextPowerOfTwo(Mathf.Max(requiredResolution, 16));
+                float debrisWorldSize = debrisResolution * voxelSize;
 
-            // Snap Local Origin to the Source's Local Brick Grid
-            // This ensures voxels align 1:1 without resampling.
-            Vector3 debrisOriginLocal = new Vector3(
-                Mathf.Round(idealOriginLocal.x / brickSizeWorld) * brickSizeWorld,
-                Mathf.Round(idealOriginLocal.y / brickSizeWorld) * brickSizeWorld,
-                Mathf.Round(idealOriginLocal.z / brickSizeWorld) * brickSizeWorld
-            );
+                // 3. Determine Origin
+                // Calculate ideal origin (corner) in local space
+                Vector3 centerLocal = (minLocal + maxLocal) * 0.5f;
+                Vector3 idealOriginLocal = centerLocal - (Vector3.one * debrisWorldSize * 0.5f);
 
-            // Transform back to World Space for instantiation
-            Vector3 debrisOriginWorld = vol.transform.TransformPoint(debrisOriginLocal);
+                // Snap Local Origin to the Source's Local Brick Grid
+                // This ensures voxels align 1:1 without resampling.
+                Vector3 debrisOriginLocal = new Vector3(
+                    Mathf.Round(idealOriginLocal.x / brickSizeWorld) * brickSizeWorld,
+                    Mathf.Round(idealOriginLocal.y / brickSizeWorld) * brickSizeWorld,
+                    Mathf.Round(idealOriginLocal.z / brickSizeWorld) * brickSizeWorld
+                );
 
-            Debug.Log($"[StructuralCleaner] Analysis Complete: WorldOrigin={debrisOriginWorld}, Res={debrisResolution}");
+                // Transform back to World Space for instantiation
+                Vector3 debrisOriginWorld = vol.transform.TransformPoint(debrisOriginLocal);
 
-            // --- Phase 2: Volume Allocation ---
-            VoxelVolume debrisVolume = VoxelVolumePool.Instance.GetVolume(debrisOriginWorld, debrisWorldSize, -1, -1, debrisResolution, true);
-            
-            if (debrisVolume == null)
-            {
-                Debug.LogError("[StructuralCleaner] Failed to allocate debris volume. Pool exhausted?");
-                return;
-            }
-            
-            debrisVolume.gameObject.name = $"Debris_{System.DateTime.Now.Ticks}";
-            debrisVolume.IsTransient = true;
-            
-            // CRITICAL: Match rotation of the source volume!
-            // This volume's local grid is now aligned with the source's local grid.
-            debrisVolume.transform.rotation = vol.transform.rotation;
-            
-            // Ensure debris doesn't have a collider yet
-            if (VoxelPhysicsManager.Instance != null)
-            {
-                VoxelPhysicsManager.Instance.Remove(debrisVolume);
-                VoxelPhysicsManager.Instance.ClearCollider(debrisVolume);
+                Debug.Log($"[StructuralCleaner] Analysis Complete: WorldOrigin={debrisOriginWorld}, Res={debrisResolution}");
+
+                // --- Phase 2: Volume Allocation ---
+                debrisVolume = VoxelVolumePool.Instance.GetVolume(debrisOriginWorld, debrisWorldSize, -1, -1, debrisResolution, true);
+                
+                if (debrisVolume == null)
+                {
+                    Debug.LogError("[StructuralCleaner] Failed to allocate debris volume. Pool exhausted?");
+                    createDebris = false;
+                }
+                else
+                {
+                    debrisVolume.gameObject.name = $"Debris_{System.DateTime.Now.Ticks}";
+                    debrisVolume.IsTransient = true;
+                    
+                    // CRITICAL: Match rotation of the source volume!
+                    // This volume's local grid is now aligned with the source's local grid.
+                    debrisVolume.transform.rotation = vol.transform.rotation;
+                    
+                    // Ensure debris doesn't have a collider yet
+                    if (VoxelPhysicsManager.Instance != null)
+                    {
+                        VoxelPhysicsManager.Instance.Remove(debrisVolume);
+                        VoxelPhysicsManager.Instance.ClearCollider(debrisVolume);
+                    }
+                }
             }
             // ----------------------------------
 
@@ -202,7 +207,11 @@ namespace VoxelEngine.Core.Editing
             int voxelCount = localVoxelPositions.Count;
             int brickCount = uniqueBricks.Count;
 
-            if (voxelCount == 0) return;
+            if (voxelCount == 0)
+            {
+                if (debrisVolume != null) VoxelVolumePool.Instance.ReturnVolume(debrisVolume);
+                return;
+            }
 
             // 2. Setup Buffers
             ComputeBuffer positionsBuffer = new ComputeBuffer(voxelCount, 12);
@@ -212,7 +221,7 @@ namespace VoxelEngine.Core.Editing
             int3[] brickArray = uniqueBricks.Select(b => new int3(b.x, b.y, b.z)).ToArray();
             bricksBuffer.SetData(brickArray);
 
-            // 3. Dispatch Allocation
+            // 3. Dispatch Allocation (Source)
             int kernelAlloc = voxelModifierShader.FindKernel("AllocateNodesList");
             SetCommonBuffers(kernelAlloc, vol);
             voxelModifierShader.SetBuffer(kernelAlloc, "_TargetBricks", bricksBuffer);
@@ -224,21 +233,26 @@ namespace VoxelEngine.Core.Editing
             int groupsAlloc = Mathf.CeilToInt(brickCount / 64.0f);
             voxelModifierShader.Dispatch(kernelAlloc, groupsAlloc, 1, 1);
             
-            // 4. Dispatch Extraction
-            int kernelExtract = voxelModifierShader.FindKernel("ExtractBricksList");
-            SetCommonBuffers(kernelExtract, vol);
-            voxelModifierShader.SetBuffer(kernelExtract, "_TargetBricks", bricksBuffer);
-            voxelModifierShader.SetInt("_TargetBrickCount", brickCount);
-            voxelModifierShader.SetInts("_MaxBrickIndex", new int[] {resBricks-1, resBricks-1, resBricks-1});
-            voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
+            GraphicsBuffer readbackBuffer = null;
 
-            int totalVoxelsToRead = brickCount * 216;
-            GraphicsBuffer readbackBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxelsToRead, 4);
-            voxelModifierShader.SetBuffer(kernelExtract, "_ReadbackBuffer", readbackBuffer);
+            // 4. Dispatch Extraction (Only if generating Debris)
+            if (createDebris)
+            {
+                int kernelExtract = voxelModifierShader.FindKernel("ExtractBricksList");
+                SetCommonBuffers(kernelExtract, vol);
+                voxelModifierShader.SetBuffer(kernelExtract, "_TargetBricks", bricksBuffer);
+                voxelModifierShader.SetInt("_TargetBrickCount", brickCount);
+                voxelModifierShader.SetInts("_MaxBrickIndex", new int[] {resBricks-1, resBricks-1, resBricks-1});
+                voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
 
-            voxelModifierShader.Dispatch(kernelExtract, groupsAlloc, 1, 1);
+                int totalVoxelsToRead = brickCount * 216;
+                readbackBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxelsToRead, 4);
+                voxelModifierShader.SetBuffer(kernelExtract, "_ReadbackBuffer", readbackBuffer);
 
-            // 5. Dispatch Removal
+                voxelModifierShader.Dispatch(kernelExtract, groupsAlloc, 1, 1);
+            }
+
+            // 5. Dispatch Removal (Source) - Always Clean!
             int kernelRemove = voxelModifierShader.FindKernel("RemoveVoxelList");
             SetCommonBuffers(kernelRemove, vol);
             voxelModifierShader.SetBuffer(kernelRemove, "_TargetPositions", positionsBuffer);
@@ -252,24 +266,34 @@ namespace VoxelEngine.Core.Editing
                 VoxelPhysicsManager.Instance.Enqueue(vol);
             }
 
-            // 6. Readback with Data Interception (Phase 3)
-            AsyncGPUReadback.Request(readbackBuffer, (req) => 
+            // 6. Readback with Data Interception (Phase 3) OR Cleanup
+            if (createDebris && readbackBuffer != null)
             {
+                AsyncGPUReadback.Request(readbackBuffer, (req) => 
+                {
+                    positionsBuffer.Release();
+                    bricksBuffer.Release();
+                    readbackBuffer.Release();
+
+                    if (req.hasError) 
+                    {
+                        Debug.LogError("[StructuralCleaner] GPU Readback error");
+                        return;
+                    }
+
+                    using (NativeArray<uint> data = req.GetData<uint>())
+                    {
+                        ProcessReadbackData(data, vol, brickArray, debrisVolume, voxelsToRemove);
+                    }
+                });
+            }
+            else
+            {
+                // Simple Cleanup if we are just cleaning source
                 positionsBuffer.Release();
                 bricksBuffer.Release();
-                readbackBuffer.Release();
-
-                if (req.hasError) 
-                {
-                    Debug.LogError("[StructuralCleaner] GPU Readback error");
-                    return;
-                }
-
-                using (NativeArray<uint> data = req.GetData<uint>())
-                {
-                    ProcessReadbackData(data, vol, brickArray, debrisVolume, voxelsToRemove);
-                }
-            });
+                if (readbackBuffer != null) readbackBuffer.Release();
+            }
         }
 
         private void SetCommonBuffers(int kernel, VoxelVolume vol)
