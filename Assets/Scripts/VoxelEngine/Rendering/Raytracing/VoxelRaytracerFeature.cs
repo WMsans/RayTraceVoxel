@@ -307,7 +307,7 @@ namespace VoxelEngine.Core.Rendering
                 using (var builder = renderGraph.AddComputePass("Voxel Raytracer", out PassData data))
                 {
                     data.computeShader = _shader; data.kernel = _shader.FindKernel("CSMain");
-                    if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid()) VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1, 16);
+                    if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid()) VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2, 16);
                     data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
                     var pool = VoxelVolumePool.Instance; data.nodeBuffer = pool.GlobalNodeBuffer; data.payloadBuffer = pool.GlobalPayloadBuffer; data.brickDataBuffer = pool.GlobalBrickDataBuffer; data.pageTableBuffer = pool.GlobalPageTableBuffer; data.chunkBuffer = pool.ChunkBuffer; data.chunkCount = pool.VisibleChunkCount; data.tlasGridBuffer = pool.TLASGridBuffer; data.tlasChunkIndexBuffer = pool.TLASChunkIndexBuffer; data.tlasBoundsMin = pool.TLASBoundsMin; data.tlasBoundsMax = pool.TLASBoundsMax; data.tlasResolution = pool.TLASResolution; data.frameCount = Time.frameCount; data.materialBuffer = VoxelDefinitionManager.Instance.VoxelMaterialBuffer;
                     if (_albedoHandle != null) data.albedoArray = renderGraph.ImportTexture(_albedoHandle);

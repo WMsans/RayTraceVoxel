@@ -63,6 +63,7 @@ namespace VoxelEngine.Core
         public int MaxNodes => _maxNodes;
         public int MaxBricks => _maxBricks;
         public bool IsReady => BufferManager != null;
+        public bool IsTransient { get; set; } = false;
         
         private int[] _allocatedPages;
         public int[] AllocatedPages => _allocatedPages;

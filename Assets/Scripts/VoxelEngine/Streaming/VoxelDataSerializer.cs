@@ -12,7 +12,7 @@ namespace VoxelEngine.Core.Serialization
     {
         public static void Save(VoxelVolume volume, string filePath, Action<bool> onComplete)
         {
-            if (volume == null || !volume.IsReady)
+            if (volume == null || !volume.IsReady || volume.IsTransient)
             {
                 onComplete?.Invoke(false);
                 return;

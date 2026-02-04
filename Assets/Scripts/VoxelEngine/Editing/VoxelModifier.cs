@@ -32,12 +32,17 @@ namespace VoxelEngine.Core.Editing
 
             // 2. Alignment Check
             float brickWorldSize = SVONode.BRICK_SIZE * globalVoxelSize;
-            // [Alignment check logic omitted for brevity, assumed same as previous]
+            Vector3 alignmentOffset = vol.WorldOrigin / brickWorldSize;
+            bool isAligned = Mathf.Approximately(alignmentOffset.x, Mathf.Round(alignmentOffset.x)) &&
+                             Mathf.Approximately(alignmentOffset.y, Mathf.Round(alignmentOffset.y)) &&
+                             Mathf.Approximately(alignmentOffset.z, Mathf.Round(alignmentOffset.z));
 
             // 3. Calculate Brush in Voxel Space
+            // Use InverseTransformPoint to handle rotation, scale, and translation automatically.
+            // In our system, 1 unit in local space = 1 voxel.
+            Vector3 brushPosVoxel = vol.transform.InverseTransformPoint(brush.position);
+            
             float worldToVoxelScale = (float)vol.Resolution / vol.WorldSize;
-            Vector3 localBrushPos = brush.position - vol.WorldOrigin;
-            Vector3 brushPosVoxel = localBrushPos * worldToVoxelScale;
             float brushRadiusVoxel = brush.radius * worldToVoxelScale;
             Vector3 brushBoundsVoxel = brush.bounds * worldToVoxelScale;
 
@@ -64,15 +69,15 @@ namespace VoxelEngine.Core.Editing
             // 5. Select Kernels
             int kernelAlloc = _shader.FindKernel(brush.shape == 0 ? "AllocateNodesSphere" : "AllocateNodesCube");
             int kernelEdit = _shader.FindKernel(brush.shape == 0 ? "EditVoxelsSphere" : "EditVoxelsCube");
-            int kernelExtract = _shader.FindKernel("ExtractBricks"); // New Kernel
+            int kernelExtract = _shader.FindKernel("ExtractBricks"); 
 
             // Set Common Uniforms
             _shader.SetInts("_MinBrickIndex", new int[] { minBrickId.x, minBrickId.y, minBrickId.z });
             _shader.SetInts("_MaxBrickIndex", new int[] { maxBrickId.x, maxBrickId.y, maxBrickId.z });
             _shader.SetFloat("_GridSize", (float)vol.Resolution);
             _shader.SetInt("_MaxBricks", vol.MaxBricks);
-            _shader.SetInt("_NodeOffset", vol.BufferManager.PageTableOffset); // Changed
-            _shader.SetInt("_PayloadOffset", vol.BufferManager.PageTableOffset); // Changed
+            _shader.SetInt("_NodeOffset", vol.BufferManager.PageTableOffset); 
+            _shader.SetInt("_PayloadOffset", vol.BufferManager.PageTableOffset); 
             _shader.SetInt("_BrickOffset", vol.BufferManager.BrickDataOffset);
             _shader.SetVector("_BrushPosition", brushPosVoxel);
             _shader.SetVector("_BrushBounds", brushBoundsVoxel);
@@ -86,19 +91,33 @@ namespace VoxelEngine.Core.Editing
             _shader.SetBuffer(kernelAlloc, "_CounterBuffer", vol.CounterBuffer);
             _shader.SetBuffer(kernelAlloc, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelAlloc, "_BrickDataBuffer", vol.BrickDataBuffer);
-            _shader.SetBuffer(kernelAlloc, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); // New
+            _shader.SetBuffer(kernelAlloc, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); 
             
             _shader.SetBuffer(kernelEdit, "_NodeBuffer", vol.NodeBuffer);
             _shader.SetBuffer(kernelEdit, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelEdit, "_BrickDataBuffer", vol.BrickDataBuffer);
-            _shader.SetBuffer(kernelEdit, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); // New
+            _shader.SetBuffer(kernelEdit, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); 
 
             // 6. DISPATCH: Apply Edits to VRAM
             _shader.Dispatch(kernelAlloc, Mathf.CeilToInt(rangeX / 8.0f), Mathf.CeilToInt(rangeY / 8.0f), Mathf.CeilToInt(rangeZ / 8.0f));
-            _shader.Dispatch(kernelEdit, rangeX, rangeY, rangeZ);
+            _shader.Dispatch(kernelEdit, Mathf.CeilToInt(rangeX / 4.0f), Mathf.CeilToInt(rangeY / 4.0f), Mathf.CeilToInt(rangeZ / 4.0f));
+
+            // Phase 4: Trigger Collider Refresh
+            if (VoxelEngine.Physics.VoxelPhysicsManager.Instance != null)
+            {
+                VoxelEngine.Physics.VoxelPhysicsManager.Instance.Enqueue(vol);
+            }
 
             // --- Capture Edits ---
             
+            // Only capture edits for the persistent database if the volume is NOT transient
+            // AND if it's perfectly axis-aligned (terrain). 
+            // Debris that has rotated/moved would corrupt the axis-aligned database.
+            bool shouldUpdateDatabase = !vol.IsTransient && isAligned &&
+                                        Mathf.Approximately(Quaternion.Angle(vol.transform.rotation, Quaternion.identity), 0);
+
+            if (!shouldUpdateDatabase) return;
+
             // A. Create Readback Buffer
             // Size = Total Bricks * 216 Voxels * 4 Bytes (uint)
             int totalBricks = rangeX * rangeY * rangeZ;
@@ -111,14 +130,13 @@ namespace VoxelEngine.Core.Editing
             _shader.SetBuffer(kernelExtract, "_PayloadBuffer", vol.PayloadBuffer);
             _shader.SetBuffer(kernelExtract, "_BrickDataBuffer", vol.BrickDataBuffer);
             _shader.SetBuffer(kernelExtract, "_ReadbackBuffer", readbackBuffer);
-            _shader.SetBuffer(kernelExtract, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); // New
+            _shader.SetBuffer(kernelExtract, "_PageTableBuffer", vol.BufferManager.PageTableBuffer); 
             
             // Use same dispatch dimensions as Edit
             _shader.Dispatch(kernelExtract, Mathf.CeilToInt(rangeX / 4.0f), Mathf.CeilToInt(rangeY / 4.0f), Mathf.CeilToInt(rangeZ / 4.0f));
 
             // C. Request Async Readback
             // Capture necessary variables for the callback
-            Vector3 worldOrigin = vol.WorldOrigin;
             
             AsyncGPUReadback.Request(readbackBuffer, (request) =>
             {
@@ -131,14 +149,11 @@ namespace VoxelEngine.Core.Editing
                     return;
                 }
 
-                if (VoxelEditManager.Instance == null) return;
+                if (VoxelEditManager.Instance == null || vol == null) return;
 
                 // D. Process Data
                 using (NativeArray<uint> rawData = request.GetData<uint>())
                 {
-                    // Calculate Volume's Global Brick Origin
-                    Vector3Int volOriginBrick = VoxelEditManager.Instance.GetBrickCoordinate(worldOrigin);
-                    
                     int cursor = 0;
                     
                     // Iterate bricks in the same order as the Compute Shader (Z, Y, X)
@@ -149,18 +164,20 @@ namespace VoxelEngine.Core.Editing
                             for (int x = 0; x < rangeX; x++)
                             {
                                 // 1. Calculate Global Coordinate
-                                Vector3Int localOffset = minBrickId + new Vector3Int(x, y, z);
-                                Vector3Int globalCoord = volOriginBrick + localOffset;
+                                Vector3Int localBrickCoord = minBrickId + new Vector3Int(x, y, z);
+                                
+                                // Calculate the world position of this brick's min corner
+                                Vector3 brickWorldPos = vol.transform.TransformPoint((Vector3)localBrickCoord * brickVoxelSize);
+                                
+                                // Map to Global Brick Index
+                                Vector3Int globalCoord = VoxelEditManager.Instance.GetBrickCoordinate(brickWorldPos + Vector3.one * 0.01f);
 
                                 // 2. Extract 216 uints
-                                // We use GetSubArray for zero-allocation slicing, then ToArray() to store.
                                 uint[] brickData = rawData.GetSubArray(cursor, SVONode.BRICK_VOXEL_COUNT).ToArray();
                                 cursor += SVONode.BRICK_VOXEL_COUNT;
 
                                 // 3. Store in Database
                                 VoxelEditManager.Instance.RegisterEdit(globalCoord, brickData);
-                                
-                                // Note: RegisterEdit effectively marks it as dirty in the database.
                             }
                         }
                     }

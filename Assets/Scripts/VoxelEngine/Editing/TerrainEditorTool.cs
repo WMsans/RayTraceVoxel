@@ -4,6 +4,7 @@ using UnityEngine.Rendering;
 using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Rendering;
+using VoxelEngine.Core.Streaming;
 
 namespace VoxelEngine.Core.Editing
 {
@@ -20,6 +21,7 @@ namespace VoxelEngine.Core.Editing
 
         private InputSystem_Actions _input;
         private Vector3 _currentHitPoint;
+        private int _currentHitVolumeIndex = -1;
         private bool _hasHit;
         private float _lastEditTime;
 
@@ -72,26 +74,32 @@ namespace VoxelEngine.Core.Editing
             if (request.hasError) return;
 
             var data = request.GetData<Vector4>();
-            Vector4 hitData = data[0]; 
+            Vector4 hitPosData = data[0]; 
             
-            if (hitData.w > 0.5f)
+            if (hitPosData.w > 0.5f)
             {
-                _currentHitPoint = new Vector3(hitData.x, hitData.y, hitData.z);
+                _currentHitPoint = new Vector3(hitPosData.x, hitPosData.y, hitPosData.z);
+                _currentHitVolumeIndex = (int)data[1].x;
                 _hasHit = true;
             }
             else
             {
                 _hasHit = false;
+                _currentHitVolumeIndex = -1;
             }
         }
 
         private void ApplyBrush(BrushOp op)
         {
-            if (voxelModifierShader == null) return;
+            if (voxelModifierShader == null || _currentHitVolumeIndex < 0) return;
             if (VoxelEditManager.Instance == null)
             {
                 Debug.LogWarning("VoxelEditManager is missing. Edits will not be saved.");
             }
+
+            if (VoxelVolumePool.Instance == null || _currentHitVolumeIndex >= VoxelVolumePool.Instance.VisibleVolumes.Count) return;
+
+            VoxelVolume targetVolume = VoxelVolumePool.Instance.VisibleVolumes[_currentHitVolumeIndex];
 
             VoxelBrush brush = new VoxelBrush
             {
@@ -104,20 +112,32 @@ namespace VoxelEngine.Core.Editing
             brush.bounds = Vector3.one * brushRadius * 2;
             Bounds brushBounds = new Bounds(brush.position, brush.bounds);
             
-            foreach (var volume in VoxelVolumeRegistry.Volumes)
-            {
-                if (!volume.gameObject.activeInHierarchy) continue;
-                if (volume.WorldBounds.Intersects(brushBounds))
-                {
-                    VoxelModifier modifier = new VoxelModifier(voxelModifierShader, volume);
-                    // This call now triggers the GPU edit AND the async readback
-                    modifier.Apply(brush, volume.Resolution);
+            VoxelModifier modifier = new VoxelModifier(voxelModifierShader, targetVolume);
+            modifier.Apply(brush, targetVolume.Resolution);
 
-                    // Phase 1: Structural Integrity Analysis
-                    if (op == BrushOp.Subtract && structuralAnalyzer != null)
+            // Phase 3 & 4: Recursive Fracturing Pipeline & Sleep Thresholds
+            if (op == BrushOp.Subtract && structuralAnalyzer != null)
+            {
+                if (targetVolume.IsTransient)
+                {
+                    // Phase 4: Sleep Thresholds
+                    // Only run recursive analysis if the debris is "Awake" (active in physics)
+                    Rigidbody rb = targetVolume.GetComponent<Rigidbody>();
+                    bool isAwake = rb == null || !rb.IsSleeping();
+                    
+                    // Also consider "significant" edits (large brush) to wake it up if needed
+                    bool significantEdit = brushRadius > 1.0f;
+
+                    if (isAwake || significantEdit)
                     {
-                        structuralAnalyzer.AnalyzeWorld(brushBounds);
+                        if (rb != null && rb.IsSleeping()) rb.WakeUp();
+                        structuralAnalyzer.AnalyzeVolume(targetVolume, brushBounds);
                     }
+                }
+                else
+                {
+                    // Standard analysis for world terrain (always active)
+                    structuralAnalyzer.AnalyzeWorld(brushBounds);
                 }
             }
         }

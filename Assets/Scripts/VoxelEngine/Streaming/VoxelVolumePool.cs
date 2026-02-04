@@ -61,12 +61,14 @@ namespace VoxelEngine.Core.Streaming
 
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
+        private List<VoxelVolume> _visibleVolumes = new List<VoxelVolume>();
+        public IReadOnlyList<VoxelVolume> VisibleVolumes => _visibleVolumes;
         
         private PhysicalPageAllocator _nodeAllocator; 
         private VoxelMemoryAllocator _pageTableAllocator; 
         private VoxelMemoryAllocator _brickAllocator;
         
-        public int VisibleChunkCount { get; private set; }
+        public int VisibleChunkCount => _visibleVolumes.Count;
 
         private void Awake()
         {
@@ -230,6 +232,7 @@ namespace VoxelEngine.Core.Streaming
 
         private void UpdateChunkBuffer(Plane[] cullingPlanes)
         {
+            _visibleVolumes.Clear();
             int writeIndex = 0;
             for (int i = 0; i < _activeVolumes.Count; i++)
             {
@@ -239,6 +242,7 @@ namespace VoxelEngine.Core.Streaming
                     if (!GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds)) continue; 
                 }
 
+                _visibleVolumes.Add(vol);
                 ChunkDef def = new ChunkDef();
                 def.boundsMin = vol.WorldBounds.min;
                 def.nodeOffset = (uint)vol.BufferManager.PageTableOffset; 
@@ -251,12 +255,11 @@ namespace VoxelEngine.Core.Streaming
                 _chunkData[writeIndex] = def;
                 writeIndex++;
             }
-            VisibleChunkCount = writeIndex;
             
-            if (poolSize > 0 && VisibleChunkCount > 0)
+            if (poolSize > 0 && _visibleVolumes.Count > 0)
             {
-                ChunkBuffer.SetData(_chunkData, 0, 0, VisibleChunkCount);
-                ComputeTLAS(writeIndex);
+                ChunkBuffer.SetData(_chunkData, 0, 0, _visibleVolumes.Count);
+                ComputeTLAS(_visibleVolumes.Count);
             }
         }
 

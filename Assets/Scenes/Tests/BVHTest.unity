@@ -629,6 +629,9 @@ MonoBehaviour:
   voxelModifierShader: {fileID: 7200000, guid: b43ea892b71cebe47a5e309e71b4e842, type: 3}
   analyzer: {fileID: 681138562}
   erodeFloatingVoxels: 1
+  debrisDensity: 10
+  smallDebrisVoxelLimit: 128
+  minimumDebrisVoxelCount: 16
 --- !u!114 &681138564
 MonoBehaviour:
   m_ObjectHideFlags: 0
