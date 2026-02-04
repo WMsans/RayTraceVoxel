@@ -393,6 +393,18 @@ namespace VoxelEngine.Core.Editing
 
             // 6. Finalize
             Debug.Log($"[StructuralCleaner] Debris created: {debrisVol.name}");
+
+            if (VoxelPhysicsManager.Instance != null)
+            {
+                // Ensure convex collider for dynamic rigidbody
+                if (debrisVol.meshCol != null)
+                    debrisVol.meshCol.convex = true;
+
+                if (debrisVol.gameObject.GetComponent<Rigidbody>() == null)
+                    debrisVol.gameObject.AddComponent<Rigidbody>();
+
+                VoxelPhysicsManager.Instance.Enqueue(debrisVol);
+            }
         }
 
         // Helper to match Shader/Manager packing
