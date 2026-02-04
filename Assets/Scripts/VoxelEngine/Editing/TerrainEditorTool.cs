@@ -115,17 +115,28 @@ namespace VoxelEngine.Core.Editing
             VoxelModifier modifier = new VoxelModifier(voxelModifierShader, targetVolume);
             modifier.Apply(brush, targetVolume.Resolution);
 
-            // Phase 3: Recursive Fracturing Pipeline
+            // Phase 3 & 4: Recursive Fracturing Pipeline & Sleep Thresholds
             if (op == BrushOp.Subtract && structuralAnalyzer != null)
             {
                 if (targetVolume.IsTransient)
                 {
-                    // If we edit a Debris Volume, trigger targeted analysis for further splits
-                    structuralAnalyzer.AnalyzeVolume(targetVolume, brushBounds);
+                    // Phase 4: Sleep Thresholds
+                    // Only run recursive analysis if the debris is "Awake" (active in physics)
+                    Rigidbody rb = targetVolume.GetComponent<Rigidbody>();
+                    bool isAwake = rb == null || !rb.IsSleeping();
+                    
+                    // Also consider "significant" edits (large brush) to wake it up if needed
+                    bool significantEdit = brushRadius > 1.0f;
+
+                    if (isAwake || significantEdit)
+                    {
+                        if (rb != null && rb.IsSleeping()) rb.WakeUp();
+                        structuralAnalyzer.AnalyzeVolume(targetVolume, brushBounds);
+                    }
                 }
                 else
                 {
-                    // Standard analysis for world terrain
+                    // Standard analysis for world terrain (always active)
                     structuralAnalyzer.AnalyzeWorld(brushBounds);
                 }
             }

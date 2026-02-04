@@ -102,6 +102,12 @@ namespace VoxelEngine.Core.Editing
             _shader.Dispatch(kernelAlloc, Mathf.CeilToInt(rangeX / 8.0f), Mathf.CeilToInt(rangeY / 8.0f), Mathf.CeilToInt(rangeZ / 8.0f));
             _shader.Dispatch(kernelEdit, Mathf.CeilToInt(rangeX / 4.0f), Mathf.CeilToInt(rangeY / 4.0f), Mathf.CeilToInt(rangeZ / 4.0f));
 
+            // Phase 4: Trigger Collider Refresh
+            if (VoxelEngine.Physics.VoxelPhysicsManager.Instance != null)
+            {
+                VoxelEngine.Physics.VoxelPhysicsManager.Instance.Enqueue(vol);
+            }
+
             // --- Capture Edits ---
             
             // Only capture edits for the persistent database if the volume is NOT transient

@@ -89,9 +89,15 @@ namespace VoxelEngine.Physics
 
         public void ClearCollider(VoxelVolume volume)
         {
-                 MeshCollider mc = volume.meshCol;
-                 if (mc != null) mc.sharedMesh = null;
-                 mc.gameObject.SetActive(false);
+            if (volume.meshCol != null)
+            {
+                volume.meshCol.sharedMesh = null;
+                volume.meshCol.enabled = false;
+            }
+
+            // Also disable any BoxCollider added by StructuralCleaner
+            BoxCollider bc = volume.GetComponent<BoxCollider>();
+            if (bc != null) bc.enabled = false;
         }
 
         private void Update()
@@ -250,12 +256,18 @@ namespace VoxelEngine.Physics
         private void AssignMeshToCollider(VoxelVolume volume, Mesh mesh)
         {
             if (volume == null) return;
-            volume.meshCol.gameObject.SetActive(true);
+            volume.meshCol.enabled = true;
             
             // For debug visualization
             if (volume.meshFil != null) volume.meshFil.sharedMesh = mesh;
 
             volume.meshCol.sharedMesh = mesh;
+
+            // Phase 4: Convex Collider for Dynamic Debris
+            if (volume.IsTransient)
+            {
+                volume.meshCol.convex = true;
+            }
         }
 
         [BurstCompile]

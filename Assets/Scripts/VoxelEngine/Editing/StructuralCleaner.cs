@@ -37,10 +37,34 @@ namespace VoxelEngine.Core.Editing
                 analyzer.OnAnalysisCompleted -= HandleAnalysisCompleted;
         }
 
+        public void RecalculateDebrisMass(VoxelVolume vol, int removedVoxelCount)
+        {
+            if (!vol.IsTransient) return;
+
+            Rigidbody rb = vol.GetComponent<Rigidbody>();
+            if (rb == null) return;
+
+            float voxelSize = vol.WorldSize / vol.Resolution;
+            float singleVoxelVol = Mathf.Pow(voxelSize, 3.0f);
+            
+            // We don't have the exact current count easily, but we can estimate or track it.
+            // For now, let's assume the Rigidbody mass was already set and we subtract from it.
+            float removedMass = removedVoxelCount * singleVoxelVol * debrisDensity;
+            rb.mass = Mathf.Max(0.1f, rb.mass - removedMass);
+            
+            Debug.Log($"[StructuralCleaner] Updated Mass for {vol.name}: {rb.mass} (Removed {removedVoxelCount} voxels)");
+        }
+
         private void HandleAnalysisCompleted(VoxelVolume vol, List<Vector3> floatingVoxels)
         {
             if (floatingVoxels == null || floatingVoxels.Count == 0) return;
             if (voxelModifierShader == null || !vol.IsReady) return;
+
+            // Phase 4: Mass Recalculation for Source
+            if (vol.IsTransient)
+            {
+                RecalculateDebrisMass(vol, floatingVoxels.Count);
+            }
 
             // 1. Calculate Bounds
             Vector3 minBounds = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
@@ -483,9 +507,17 @@ namespace VoxelEngine.Core.Editing
                     Vector3 centerWorld = sourceVol.WorldOrigin + centerSourceLocal;
                     Vector3 centerDebrisLocal = centerWorld - debrisVol.WorldOrigin;
 
-                    BoxCollider bc = debrisVol.gameObject.AddComponent<BoxCollider>();
+                    // Reuse or add BoxCollider
+                    BoxCollider bc = debrisVol.GetComponent<BoxCollider>();
+                    if (bc == null) bc = debrisVol.gameObject.AddComponent<BoxCollider>();
+                    
+                    bc.enabled = true;
                     bc.center = centerDebrisLocal;
                     bc.size = sizeWorld;
+
+                    // Ensure the volume is active and MeshCollider is disabled
+                    debrisVol.gameObject.SetActive(true);
+                    if (debrisVol.meshCol != null) debrisVol.meshCol.enabled = false;
                 }
                 else
                 {
@@ -493,6 +525,7 @@ namespace VoxelEngine.Core.Editing
                     if (debrisVol.meshCol != null)
                         debrisVol.meshCol.convex = true;
 
+                    debrisVol.gameObject.SetActive(true);
                     VoxelPhysicsManager.Instance.Enqueue(debrisVol);
                 }
             }
