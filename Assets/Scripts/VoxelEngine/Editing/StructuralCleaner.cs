@@ -88,6 +88,7 @@ namespace VoxelEngine.Core.Editing
             }
             
             debrisVolume.gameObject.name = $"Debris_{System.DateTime.Now.Ticks}";
+            debrisVolume.IsTransient = true;
             
             // Ensure debris doesn't have a collider
             if (VoxelPhysicsManager.Instance != null)
@@ -392,6 +393,45 @@ namespace VoxelEngine.Core.Editing
             voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
 
             voxelModifierShader.Dispatch(kernelPaste, groups, 1, 1);
+
+            // --- Phase 5: Post-Process Readback & Database Hydration ---
+            int totalVoxels = count * 216;
+            GraphicsBuffer debrisReadbackBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxels, 4);
+            
+            int kernelExtractDebris = voxelModifierShader.FindKernel("ExtractBricksList");
+            SetCommonBuffers(kernelExtractDebris, debrisVol);
+            voxelModifierShader.SetBuffer(kernelExtractDebris, "_TargetBricks", targetBricksBuffer);
+            voxelModifierShader.SetInt("_TargetBrickCount", count);
+            voxelModifierShader.SetBuffer(kernelExtractDebris, "_ReadbackBuffer", debrisReadbackBuffer);
+            
+            voxelModifierShader.Dispatch(kernelExtractDebris, groups, 1, 1);
+
+            AsyncGPUReadback.Request(debrisReadbackBuffer, (req) =>
+            {
+                if (req.hasError || VoxelEditManager.Instance == null)
+                {
+                    debrisReadbackBuffer.Release();
+                    return;
+                }
+
+                using (NativeArray<uint> debrisData = req.GetData<uint>())
+                {
+                    for (int i = 0; i < targetBrickArray.Length; i++)
+                    {
+                        int3 localBrickIdx = targetBrickArray[i];
+                        uint[] brickData = new uint[216];
+                        debrisData.Slice(i * 216, 216).CopyTo(brickData);
+
+                        // Calculate Global Brick Coordinate
+                        Vector3 brickWorldPos = debrisOrigin + (new Vector3(localBrickIdx.x, localBrickIdx.y, localBrickIdx.z) * brickSizeWorld);
+                        Vector3Int globalCoord = VoxelEditManager.Instance.GetBrickCoordinate(brickWorldPos);
+
+                        VoxelEditManager.Instance.RegisterEdit(globalCoord, brickData);
+                    }
+                }
+                debrisReadbackBuffer.Release();
+                Debug.Log($"[StructuralCleaner] Hydrated Edit Database with {targetBrickArray.Length} debris bricks.");
+            });
 
             // 5. Cleanup
             targetBricksBuffer.Release();
