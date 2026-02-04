@@ -47,8 +47,6 @@ namespace VoxelEngine.Core.Editing
             float voxelSize = vol.WorldSize / vol.Resolution;
             float singleVoxelVol = Mathf.Pow(voxelSize, 3.0f);
             
-            // We don't have the exact current count easily, but we can estimate or track it.
-            // For now, let's assume the Rigidbody mass was already set and we subtract from it.
             float removedMass = removedVoxelCount * singleVoxelVol * debrisDensity;
             rb.mass = Mathf.Max(0.1f, rb.mass - removedMass);
             
@@ -66,44 +64,49 @@ namespace VoxelEngine.Core.Editing
                 RecalculateDebrisMass(vol, floatingVoxels.Count);
             }
 
-            // 1. Calculate Bounds
-            Vector3 minBounds = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            Vector3 maxBounds = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-
-            for (int i = 0; i < floatingVoxels.Count; i++)
-            {
-                minBounds = Vector3.Min(minBounds, floatingVoxels[i]);
-                maxBounds = Vector3.Max(maxBounds, floatingVoxels[i]);
-            }
-
-            // 2. Determine Center & Size
-            Vector3 boundsCenter = (minBounds + maxBounds) * 0.5f;
-            Vector3 rawSize = maxBounds - minBounds;
-            
-            float maxDimension = Mathf.Max(rawSize.x, Mathf.Max(rawSize.y, rawSize.z));
             float voxelSize = vol.WorldSize / vol.Resolution;
             float brickSizeWorld = voxelSize * 4.0f;
 
+            // 1. Calculate Bounds in LOCAL Space
+            // We must operate in the Source Volume's local space to maintain orientation.
+            Vector3 minLocal = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            Vector3 maxLocal = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+
+            foreach (var worldPos in floatingVoxels)
+            {
+                Vector3 localPos = vol.transform.InverseTransformPoint(worldPos);
+                minLocal = Vector3.Min(minLocal, localPos);
+                maxLocal = Vector3.Max(maxLocal, localPos);
+            }
+
+            // 2. Determine Debris Volume Layout (Local)
+            Vector3 localSize = maxLocal - minLocal;
+            float maxDimension = Mathf.Max(localSize.x, Mathf.Max(localSize.y, localSize.z));
+            
             int requiredResolution = Mathf.CeilToInt(maxDimension / voxelSize) + 2;
             int debrisResolution = Mathf.NextPowerOfTwo(Mathf.Max(requiredResolution, 16));
-
             float debrisWorldSize = debrisResolution * voxelSize;
-            
-            // Calculate initial origin based on bounds
-            Vector3 idealOrigin = boundsCenter - (Vector3.one * debrisWorldSize * 0.5f);
-            
-            // SNAP TO GLOBAL BRICK GRID
-            // This ensures that debris edits in the VoxelEditManager are perfectly aligned with the world grid.
-            Vector3 debrisOrigin = new Vector3(
-                Mathf.Round(idealOrigin.x / brickSizeWorld) * brickSizeWorld,
-                Mathf.Round(idealOrigin.y / brickSizeWorld) * brickSizeWorld,
-                Mathf.Round(idealOrigin.z / brickSizeWorld) * brickSizeWorld
+
+            // 3. Determine Origin
+            // Calculate ideal origin (corner) in local space
+            Vector3 centerLocal = (minLocal + maxLocal) * 0.5f;
+            Vector3 idealOriginLocal = centerLocal - (Vector3.one * debrisWorldSize * 0.5f);
+
+            // Snap Local Origin to the Source's Local Brick Grid
+            // This ensures voxels align 1:1 without resampling.
+            Vector3 debrisOriginLocal = new Vector3(
+                Mathf.Round(idealOriginLocal.x / brickSizeWorld) * brickSizeWorld,
+                Mathf.Round(idealOriginLocal.y / brickSizeWorld) * brickSizeWorld,
+                Mathf.Round(idealOriginLocal.z / brickSizeWorld) * brickSizeWorld
             );
 
-            Debug.Log($"[StructuralCleaner] Analysis Complete: Center={boundsCenter}, Size={debrisWorldSize}, Res={debrisResolution}, Origin={debrisOrigin} (Global Snapped)");
+            // Transform back to World Space for instantiation
+            Vector3 debrisOriginWorld = vol.transform.TransformPoint(debrisOriginLocal);
+
+            Debug.Log($"[StructuralCleaner] Analysis Complete: WorldOrigin={debrisOriginWorld}, Res={debrisResolution}");
 
             // --- Phase 2: Volume Allocation ---
-            VoxelVolume debrisVolume = VoxelVolumePool.Instance.GetVolume(debrisOrigin, debrisWorldSize, -1, -1, debrisResolution, true);
+            VoxelVolume debrisVolume = VoxelVolumePool.Instance.GetVolume(debrisOriginWorld, debrisWorldSize, -1, -1, debrisResolution, true);
             
             if (debrisVolume == null)
             {
@@ -114,7 +117,11 @@ namespace VoxelEngine.Core.Editing
             debrisVolume.gameObject.name = $"Debris_{System.DateTime.Now.Ticks}";
             debrisVolume.IsTransient = true;
             
-            // Ensure debris doesn't have a collider
+            // CRITICAL: Match rotation of the source volume!
+            // This volume's local grid is now aligned with the source's local grid.
+            debrisVolume.transform.rotation = vol.transform.rotation;
+            
+            // Ensure debris doesn't have a collider yet
             if (VoxelPhysicsManager.Instance != null)
             {
                 VoxelPhysicsManager.Instance.Remove(debrisVolume);
@@ -123,8 +130,6 @@ namespace VoxelEngine.Core.Editing
             // ----------------------------------
 
             // 1. Prepare Data
-            float worldToVoxelScale = vol.Resolution / vol.WorldSize;
-            
             HashSet<Vector3Int> voxelsToRemove = new HashSet<Vector3Int>();
             HashSet<Vector3Int> uniqueBricks = new HashSet<Vector3Int>();
 
@@ -139,10 +144,13 @@ namespace VoxelEngine.Core.Editing
                 new Vector3Int(0, 0, 1), new Vector3Int(0, 0, -1)
             };
 
+            float inverseVoxelSize = 1.0f / voxelSize;
+
             foreach (var worldPos in floatingVoxels)
             {
-                Vector3 localPos = (worldPos - vol.WorldOrigin) * worldToVoxelScale;
-                Vector3Int centerIdx = Vector3Int.FloorToInt(localPos);
+                // Convert World Pos -> Local Pos -> Voxel Index
+                Vector3 localPos = vol.transform.InverseTransformPoint(worldPos);
+                Vector3Int centerIdx = Vector3Int.FloorToInt(localPos * inverseVoxelSize);
 
                 int iterations = erodeFloatingVoxels ? 7 : 1; 
 
@@ -194,7 +202,7 @@ namespace VoxelEngine.Core.Editing
             int3[] brickArray = uniqueBricks.Select(b => new int3(b.x, b.y, b.z)).ToArray();
             bricksBuffer.SetData(brickArray);
 
-            // 3. Dispatch Allocation (Ensure bricks exist in source so we can extract them)
+            // 3. Dispatch Allocation
             int kernelAlloc = voxelModifierShader.FindKernel("AllocateNodesList");
             SetCommonBuffers(kernelAlloc, vol);
             voxelModifierShader.SetBuffer(kernelAlloc, "_TargetBricks", bricksBuffer);
@@ -205,8 +213,6 @@ namespace VoxelEngine.Core.Editing
              
             int groupsAlloc = Mathf.CeilToInt(brickCount / 64.0f);
             voxelModifierShader.Dispatch(kernelAlloc, groupsAlloc, 1, 1);
-
-            // We need to capture the floating data while it still exists.
             
             // 4. Dispatch Extraction
             int kernelExtract = voxelModifierShader.FindKernel("ExtractBricksList");
@@ -222,7 +228,7 @@ namespace VoxelEngine.Core.Editing
 
             voxelModifierShader.Dispatch(kernelExtract, groupsAlloc, 1, 1);
 
-            // 5. Dispatch Removal (Now it's safe to delete from source)
+            // 5. Dispatch Removal
             int kernelRemove = voxelModifierShader.FindKernel("RemoveVoxelList");
             SetCommonBuffers(kernelRemove, vol);
             voxelModifierShader.SetBuffer(kernelRemove, "_TargetPositions", positionsBuffer);
@@ -231,7 +237,6 @@ namespace VoxelEngine.Core.Editing
             int groupsRemove = Mathf.CeilToInt(voxelCount / 64.0f);
             voxelModifierShader.Dispatch(kernelRemove, groupsRemove, 1, 1);
 
-            // Update source terrain collider to reflect removed voxels
             if (VoxelPhysicsManager.Instance != null)
             {
                 VoxelPhysicsManager.Instance.Enqueue(vol);
@@ -252,7 +257,6 @@ namespace VoxelEngine.Core.Editing
 
                 using (NativeArray<uint> data = req.GetData<uint>())
                 {
-                    // Pass voxelsToRemove so we can filter out the ground voxels from the extracted bricks
                     ProcessReadbackData(data, vol, brickArray, debrisVolume, voxelsToRemove);
                 }
             });
@@ -281,10 +285,10 @@ namespace VoxelEngine.Core.Editing
             float voxelSize = sourceVol.WorldSize / sourceVol.Resolution;
             float brickSizeWorld = voxelSize * 4.0f; 
 
-            // Calculate offset for re-centering
+            // Offset Calculation (Global Grid) is not safe if rotated.
+            // Using Transform based offset calculation.
+            
             Vector3 sourceOrigin = sourceVol.WorldOrigin;
-            Vector3 debrisOrigin = debrisVol.WorldOrigin;
-
             // Precompute packed air to fill discarded voxels
             uint packedAir = PackVoxelData(4.0f, Vector3.up, 0);
 
@@ -296,7 +300,7 @@ namespace VoxelEngine.Core.Editing
                 // 1. Extract Raw Data
                 int3 srcBrickIdx = sourceBricks[i];
                 uint[] brickData = new uint[216];
-                uint[] sourceUpdateData = new uint[216]; // For updating the source database
+                uint[] sourceUpdateData = new uint[216];
                 
                 bool hasContent = false;
                 
@@ -310,45 +314,37 @@ namespace VoxelEngine.Core.Editing
                             uint rawVal = data[cursor + flatIdx];
 
                             // Map storage coord (x,y,z) to Logical Coord in Source Volume
-                            // Padding is 1. Brick Size is 4.
                             int3 logicalPos = srcBrickIdx * 4 + new int3(x - 1, y - 1, z - 1);
                             
                             bool isFloating = voxelsToKeep.Contains(new Vector3Int(logicalPos.x, logicalPos.y, logicalPos.z));
-
-                            // FIX: Check if the source voxel is Air.
-                            // Based on PackVoxelData: SDF 0 maps to ~127. Values > 127 are Air.
+                            
                             uint sdfEncoded = (rawVal >> 8) & 0xFF;
                             bool isSourceAir = sdfEncoded > 127;
 
                             if (isFloating)
                             {
-                                // It is a floating solid voxel we want to keep.
                                 brickData[flatIdx] = rawVal;
                                 hasContent = true;
-
-                                // For the source volume, this voxel is now AIR
                                 sourceUpdateData[flatIdx] = packedAir;
                             }
                             else if (isSourceAir)
                             {
-                                // IMPORTANT: It is Air. Keep it to preserve the SDF gradient (padding).
                                 brickData[flatIdx] = rawVal;
                                 sourceUpdateData[flatIdx] = rawVal;
                             }
                             else
                             {
-                                // It is Solid but NOT in our floating list. 
-                                // This is the "Ground" we are detaching from. Replace with Empty Air.
                                 brickData[flatIdx] = packedAir;
-                                sourceUpdateData[flatIdx] = rawVal; // Keep ground in source
+                                sourceUpdateData[flatIdx] = rawVal;
                             }
                         }
                     }
                 }
 
-                // Update Source Database (Only for persistent terrain)
+                // Update Source Database (Only for persistent terrain, which is axis aligned)
                 if (!sourceVol.IsTransient)
                 {
+                    // For persistent terrain, simple addition works because it's axis aligned.
                     Vector3 srcBrickWorldPosCorner = sourceOrigin + (new Vector3(srcBrickIdx.x, srcBrickIdx.y, srcBrickIdx.z) * brickSizeWorld);
                     Vector3Int srcGlobalCoord = VoxelEditManager.Instance.GetBrickCoordinate(srcBrickWorldPosCorner + Vector3.one * 0.01f);
                     VoxelEditManager.Instance.RegisterEdit(srcGlobalCoord, sourceUpdateData);
@@ -356,13 +352,15 @@ namespace VoxelEngine.Core.Editing
 
                 cursor += 216;
 
-                if (!hasContent) continue; // Skip empty bricks
+                if (!hasContent) continue;
 
-                // 3. Map to Debris Volume Space
-                Vector3 srcBrickWorldPos = sourceOrigin + (new Vector3(srcBrickIdx.x, srcBrickIdx.y, srcBrickIdx.z) * brickSizeWorld);
-                
-                // Local Pos in Debris Volume
-                Vector3 localPosInDebris = srcBrickWorldPos - debrisOrigin;
+                // 3. Map to Debris Volume Space (Handling Rotation)
+                // Get World Position of the Source Brick (considering rotation)
+                Vector3 srcBrickLocalPos = new Vector3(srcBrickIdx.x, srcBrickIdx.y, srcBrickIdx.z) * brickSizeWorld;
+                Vector3 srcBrickWorldPos = sourceVol.transform.TransformPoint(srcBrickLocalPos);
+
+                // Get Local Position in Debris Volume
+                Vector3 localPosInDebris = debrisVol.transform.InverseTransformPoint(srcBrickWorldPos);
 
                 int3 targetBrickIdx = new int3(
                     Mathf.RoundToInt(localPosInDebris.x / brickSizeWorld),
@@ -433,44 +431,9 @@ namespace VoxelEngine.Core.Editing
             voxelModifierShader.Dispatch(kernelPaste, groups, 1, 1);
 
             // --- Phase 5: Post-Process Readback & Database Hydration ---
-            int totalVoxels = count * 216;
-            GraphicsBuffer debrisReadbackBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, totalVoxels, 4);
+            // Only hydrate DB if it's not transient debris (unlikely for debris to hydrate DB, but kept for symmetry)
+            // Debris volumes are transient so we usually skip registering edits to the global DB for them.
             
-            int kernelExtractDebris = voxelModifierShader.FindKernel("ExtractBricksList");
-            SetCommonBuffers(kernelExtractDebris, debrisVol);
-            voxelModifierShader.SetBuffer(kernelExtractDebris, "_TargetBricks", targetBricksBuffer);
-            voxelModifierShader.SetInt("_TargetBrickCount", count);
-            voxelModifierShader.SetBuffer(kernelExtractDebris, "_ReadbackBuffer", debrisReadbackBuffer);
-            
-            voxelModifierShader.Dispatch(kernelExtractDebris, groups, 1, 1);
-
-            AsyncGPUReadback.Request(debrisReadbackBuffer, (req) =>
-            {
-                if (req.hasError || VoxelEditManager.Instance == null)
-                {
-                    debrisReadbackBuffer.Release();
-                    return;
-                }
-
-                using (NativeArray<uint> debrisData = req.GetData<uint>())
-                {
-                    for (int i = 0; i < targetBrickArray.Length; i++)
-                    {
-                        int3 localBrickIdx = targetBrickArray[i];
-                        uint[] brickData = new uint[216];
-                        debrisData.Slice(i * 216, 216).CopyTo(brickData);
-
-                        // Calculate Global Brick Coordinate
-                        Vector3 brickWorldPos = debrisOrigin + (new Vector3(localBrickIdx.x, localBrickIdx.y, localBrickIdx.z) * brickSizeWorld);
-                        Vector3Int globalCoord = VoxelEditManager.Instance.GetBrickCoordinate(brickWorldPos);
-
-                        VoxelEditManager.Instance.RegisterEdit(globalCoord, brickData);
-                    }
-                }
-                debrisReadbackBuffer.Release();
-                Debug.Log($"[StructuralCleaner] Hydrated Edit Database with {targetBrickArray.Length} debris bricks.");
-            });
-
             // 5. Cleanup
             targetBricksBuffer.Release();
             sourceVoxelDataBuffer.Release();
@@ -480,7 +443,6 @@ namespace VoxelEngine.Core.Editing
 
             if (VoxelPhysicsManager.Instance != null)
             {
-                // Calculate Mass proportional to Volume
                 float singleVoxelVol = Mathf.Pow(voxelSize, 3.0f);
                 float totalVolume = voxelsToKeep.Count * singleVoxelVol;
 
@@ -503,25 +465,24 @@ namespace VoxelEngine.Core.Editing
                     }
                     
                     Vector3 sizeWorld = (Vector3)(max - min + Vector3Int.one) * voxelSize;
-                    Vector3 centerSourceLocal = (Vector3)min * voxelSize + sizeWorld * 0.5f;
-                    Vector3 centerWorld = sourceVol.WorldOrigin + centerSourceLocal;
-                    Vector3 centerDebrisLocal = centerWorld - debrisVol.WorldOrigin;
+                    
+                    // Center in Local Space (Grid)
+                    Vector3 centerGrid = (Vector3)min + (Vector3)(max - min) * 0.5f + Vector3.one * 0.5f;
+                    Vector3 centerLocal = centerGrid * voxelSize;
 
-                    // Reuse or add BoxCollider
+                    // BoxCollider is local to the volume object
                     BoxCollider bc = debrisVol.GetComponent<BoxCollider>();
                     if (bc == null) bc = debrisVol.gameObject.AddComponent<BoxCollider>();
                     
                     bc.enabled = true;
-                    bc.center = centerDebrisLocal;
+                    bc.center = centerLocal;
                     bc.size = sizeWorld;
 
-                    // Ensure the volume is active and MeshCollider is disabled
                     debrisVol.gameObject.SetActive(true);
                     if (debrisVol.meshCol != null) debrisVol.meshCol.enabled = false;
                 }
                 else
                 {
-                    // Ensure convex collider for dynamic rigidbody
                     if (debrisVol.meshCol != null)
                         debrisVol.meshCol.convex = true;
 
@@ -531,7 +492,6 @@ namespace VoxelEngine.Core.Editing
             }
         }
 
-        // Helper to match Shader/Manager packing
         private static uint PackVoxelData(float sdf, Vector3 normal, uint materialID)
         {
             float MAX_SDF_RANGE = 4.0f;

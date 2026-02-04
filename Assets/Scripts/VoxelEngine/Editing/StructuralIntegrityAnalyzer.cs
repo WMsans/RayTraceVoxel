@@ -328,7 +328,7 @@ namespace VoxelEngine.Core.Editing
             if (!request.hasError)
             {
                 var data = request.GetData<DebrisVoxel>();
-                float scale = vol.WorldSize / vol.Resolution;
+                float voxelSize = vol.WorldSize / vol.Resolution;
                 
                 int readCount = Mathf.Min(count, data.Length);
                 
@@ -338,8 +338,14 @@ namespace VoxelEngine.Core.Editing
                 for (int i = 0; i < readCount; i++)
                 {
                     DebrisVoxel voxel = data[i];
-                    Vector3 local = new Vector3(voxel.position.x + 0.5f, voxel.position.y + 0.5f, voxel.position.z + 0.5f);
-                    Vector3 worldPos = vol.WorldOrigin + (local * scale);
+                    // Voxel position from shader is integer grid coordinates
+                    Vector3 localGridPos = new Vector3(voxel.position.x + 0.5f, voxel.position.y + 0.5f, voxel.position.z + 0.5f);
+                    
+                    // Convert to Local Units (relative to volume pivot)
+                    Vector3 localPos = localGridPos * voxelSize;
+
+                    // Convert to World Space using TransformPoint to handle Rotation/Scale correctly
+                    Vector3 worldPos = vol.transform.TransformPoint(localPos);
 
                     if (!debrisIslands.ContainsKey(voxel.label))
                     {
