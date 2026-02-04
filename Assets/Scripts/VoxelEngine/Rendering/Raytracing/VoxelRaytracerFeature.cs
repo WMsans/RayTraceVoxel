@@ -43,6 +43,7 @@ namespace VoxelEngine.Core.Rendering
 
             [Header("Culling")]
             public bool useCameraFarPlane = false; 
+            public bool cullFrustum = true;
 
             [Header("Dithering")]
             public Texture2D blueNoiseTexture;
@@ -221,9 +222,16 @@ namespace VoxelEngine.Core.Rendering
                 var cameraData = frameData.Get<UniversalCameraData>();
                 
                 // Culling update
-                Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
-                Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
-                VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes);
+                if (_settings.cullFrustum)
+                {
+                    Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
+                    Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
+                    VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes);
+                }
+                else
+                {
+                    VoxelVolumePool.Instance.UpdateVisibility(null);
+                }
 
                 if (VoxelVolumePool.Instance.VisibleChunkCount == 0) return;
 
