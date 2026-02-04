@@ -1,0 +1,118 @@
+#pragma kernel GenerateLeaves
+
+#include "../../../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+StructuredBuffer<SVONode> _NodeBuffer;
+StructuredBuffer<VoxelPayload> _PayloadBuffer;
+StructuredBuffer<uint> _BrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer; // New
+
+// --- Outputs ---
+// We reuse the GrassInstance struct layout: Position (12), Rotation (4), PackedData (4)
+struct LeafInstance {
+    float3 position;
+    float rotation;
+    uint packedData;
+};
+
+AppendStructuredBuffer<LeafInstance> _LeafAppendBuffer;
+
+// --- Uniforms ---
+float3 _ChunkWorldOrigin;
+float _ChunkWorldSize;
+uint _GridSize;
+uint _NodeOffset;
+uint _PayloadOffset;
+uint _BrickOffset;
+
+uint _TargetMaterialId; // Default: 6
+float _SdfThreshold;    // Surface closeness (e.g. 0.5)
+
+float Random(float3 p) {
+    return frac(sin(dot(p, float3(12.9898, 78.233, 45.5432))) * 43758.5453);
+}
+
+[numthreads(4, 4, 4)]
+void GenerateLeaves(uint3 id : SV_DispatchThreadID)
+{
+    // 1. Boundary Check
+    uint bricksPerAxis = _GridSize / BRICK_SIZE;
+    if (any(id >= bricksPerAxis)) return;
+
+    // 2. Resolve SVO Node
+    uint nodeIndex = GetNodeIndex(4, id);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    uint payloadIndex, matID;
+    UnpackNode(node, payloadIndex, matID);
+
+    if (payloadIndex == 0) return;
+
+    // 3. Get Brick Data
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+
+    // 4. Iterate Voxels
+    float scale = _ChunkWorldSize / (float)_GridSize;
+    float3 brickOriginLocal = id * BRICK_SIZE;
+
+    // Loop through logical 4x4x4 center
+    for (uint z = 1; z <= BRICK_SIZE; z++)
+    {
+        for (uint y = 1; y <= BRICK_SIZE; y++)
+        {
+            for (uint x = 1; x <= BRICK_SIZE; x++)
+            {
+                uint voxelIdx = _BrickOffset + brickPtr + 
+                               (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
+                               (y * BRICK_STORAGE_SIZE) + x;
+                
+                uint packedData = _BrickDataBuffer[voxelIdx];
+                
+                float sdf;
+                float3 normal;
+                uint mat;
+                UnpackVoxelData(packedData, sdf, normal, mat);
+
+                // --- Filtering ---
+                // Only spawn on Leaf material
+                if (mat != _TargetMaterialId) continue;
+                
+                // Only spawn near the surface (SDF zero crossing)
+                if (abs(sdf) > _SdfThreshold) continue;
+
+                // --- Generation ---
+                int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+                float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset + 0.5;
+                
+                // Project to exact surface
+                float3 surfacePosLocal = voxelPosLocal - normal * sdf;
+                float3 worldPos = _ChunkWorldOrigin + surfacePosLocal * scale;
+
+                // Jitter (3D jitter for leaves to fluff them up)
+                float3 jitterSeed = brickOriginLocal + (float3)voxelOffset;
+                float3 jitter = float3(
+                    Random(jitterSeed),
+                    Random(jitterSeed + float3(4.2, 9.1, 1.3)),
+                    Random(jitterSeed + float3(1.5, 6.7, 2.4))
+                ) * 2.0 - 1.0;
+                
+                worldPos += jitter * 0.4 * scale; 
+
+                LeafInstance instance;
+                instance.position = worldPos;
+                instance.rotation = Random(worldPos) * 6.28318;
+                
+                // Packed Data:
+                // Bits 0-7: Height Scale (Randomize size)
+                // Bits 8-15: Unused
+                // Bits 16-31: Color Variation
+                uint size = (uint)((Random(worldPos + float3(0,1,0)) * 0.5 + 0.5) * 255.0); // 0.5 to 1.0 scale
+                uint colorVar = (uint)(Random(worldPos + float3(1,0,1)) * 65535.0);
+                
+                instance.packedData = (size << 8) | (colorVar << 16);
+
+                _LeafAppendBuffer.Append(instance);
+            }
+        }
+    }
+}

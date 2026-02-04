@@ -1,0 +1,385 @@
+#pragma kernel AllocateNodesSphere
+#pragma kernel EditVoxelsSphere
+#pragma kernel AllocateNodesCube
+#pragma kernel EditVoxelsCube
+#pragma kernel ExtractBricks
+#pragma kernel RemoveVoxelList
+#pragma kernel AllocateNodesList
+#pragma kernel ExtractBricksList
+#pragma kernel PasteBricksList
+
+#include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+RWStructuredBuffer<SVONode> _NodeBuffer;
+ RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
+RWStructuredBuffer<uint> _BrickDataBuffer;
+RWStructuredBuffer<uint> _CounterBuffer;
+StructuredBuffer<uint> _PageTableBuffer; 
+RWStructuredBuffer<uint> _ReadbackBuffer; 
+StructuredBuffer<float3> _TargetPositions;
+int _TargetCount;
+StructuredBuffer<int3> _TargetBricks;
+int _TargetBrickCount;
+StructuredBuffer<uint> _SourceVoxelData;
+
+int3 _MinBrickIndex;
+ int3 _MaxBrickIndex;
+float _GridSize;
+int _MaxBricks;
+int _NodeOffset;
+int _PayloadOffset;
+int _BrickOffset;
+float3 _BrushPosition; 
+float3 _BrushBounds;   
+float _BrushRadius;    
+int _BrushMaterialId;
+ int _BrushOp; 
+float _Smoothness;
+
+int GetLeafNodeIndex(int3 gridPos) {
+    uint level = 4;
+    uint index = GetNodeIndex(level, (uint3)gridPos);
+ return index;
+}
+
+[numthreads(8, 8, 8)]
+void AllocateNodesSphere(uint3 id : SV_DispatchThreadID)
+{
+    int3 brickIdx = _MinBrickIndex + (int3)id;
+ if (any(brickIdx > _MaxBrickIndex)) return;
+
+    float3 brickCenter = (float3)brickIdx * 4.0 + 2.0;
+    float dist = length(brickCenter - _BrushPosition);
+ if (dist > (_BrushRadius + 4.0)) return;
+
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+ // Check Payload and Flag
+    uint existingPayload = node.packedInfo & 0xFFFF;
+ bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+
+    // Allocate if Empty OR Optimized Solid
+    if (existingPayload == 0)
+    {
+        uint newPayloadIdx;
+ InterlockedAdd(_CounterBuffer[1], 1, newPayloadIdx);
+        newPayloadIdx += 1; 
+
+        uint newBrickVoxelPtr;
+        InterlockedAdd(_CounterBuffer[2], 216, newBrickVoxelPtr);
+        
+        if ((newBrickVoxelPtr + 216) > ((uint)_MaxBricks * 216)) return;
+ VoxelPayload pl;
+        pl.brickDataIndex = newBrickVoxelPtr;
+        _PayloadBuffer[GetPhysicalIndex(newPayloadIdx, _PayloadOffset, _PageTableBuffer)] = pl;
+ // --- INITIALIZATION LOGIC ---
+        uint packedFill;
+ if (isOptimizedSolid)
+        {
+            // If it was optimized solid, fill with SOLID matter (-4.0 SDF)
+            // Use material from the optimized node
+            uint existingMat = (node.packedInfo >> 16) & 0xFF;
+ packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), existingMat);
+        }
+        else
+        {
+            // If it was empty/air, fill with AIR (4.0 SDF)
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
+ }
+
+        for (uint i = 0; i < 216; i++) {
+            _BrickDataBuffer[_BrickOffset + newBrickVoxelPtr + i] = packedFill;
+ }
+        
+        // Link new payload, PRESERVE flags except the solid flag (clear it)
+        uint currentInfo = node.packedInfo & 0xFFFF0000;
+ currentInfo &= ~NODE_FLAG_SOLID; // Clear solid flag
+        
+        uint newPackedInfo = (newPayloadIdx & 0xFFFF) |
+ currentInfo;
+        
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = newPackedInfo;
+    }
+}
+
+[numthreads(4, 4, 4)]
+void EditVoxelsSphere(uint3 id : SV_DispatchThreadID)
+{
+    int3 brickIdx = _MinBrickIndex + (int3)id;
+ if (any(brickIdx > _MaxBrickIndex)) return;
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    uint payloadIdx, matID;
+ UnpackNode(node, payloadIdx, matID);
+    if (payloadIdx == 0) return;
+    
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+ for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
+                uint voxelIdx = _BrickOffset + brickPtr + z*36 + y*6 + x;
+ uint packed = _BrickDataBuffer[voxelIdx];
+                float sdf; float3 norm; uint mat;
+                UnpackVoxelData(packed, sdf, norm, mat);
+                int3 voxelOffset = int3(x,y,z) - int3(1,1,1);
+ float3 voxelPosLocal = (float3)brickIdx * 4.0 + (float3)voxelOffset;
+                float3 diff = voxelPosLocal - _BrushPosition;
+                float distRaw = length(diff);
+ float dist = distRaw - _BrushRadius;
+                float3 sphereNormal = (distRaw > 1e-5) ? diff / distRaw : float3(0,1,0);
+ if (_BrushOp == 0) {
+                    float h = clamp( 0.5 + 0.5 * (sdf - dist) / _Smoothness, 0.0, 1.0 );
+ sdf = lerp( sdf, dist, h ) - _Smoothness * h * (1.0 - h);
+                    norm = normalize(lerp(norm, sphereNormal, h));
+ if (h > 0.5) mat = _BrushMaterialId;
+                }
+                else if (_BrushOp == 1) {
+                    float h = clamp( 0.5 - 0.5 * (sdf + dist) / _Smoothness, 0.0, 1.0 );
+ sdf = lerp( sdf, -dist, h ) + _Smoothness * h * (1.0 - h);
+                    norm = normalize(lerp(norm, -sphereNormal, h));
+ }
+                else if (_BrushOp == 2) {
+                    if (dist < 0) mat = _BrushMaterialId;
+ }
+                _BrickDataBuffer[voxelIdx] = PackVoxelData(sdf, norm, mat);
+ }
+        }
+    }
+}
+
+[numthreads(8, 8, 8)]
+void AllocateNodesCube(uint3 id : SV_DispatchThreadID) { }
+
+[numthreads(4, 4, 4)]
+void EditVoxelsCube(uint3 id : SV_DispatchThreadID) { }
+
+[numthreads(4, 4, 4)]
+void ExtractBricks(uint3 id : SV_DispatchThreadID)
+{
+    int3 brickIdx = _MinBrickIndex + (int3)id;
+ if (any(brickIdx > _MaxBrickIndex)) return;
+    int3 range = (_MaxBrickIndex - _MinBrickIndex) + 1;
+    if (any(id >= (uint3)range)) return;
+ uint brickLinearIdx = id.z * (range.x * range.y) + id.y * range.x + id.x;
+    uint writeStart = brickLinearIdx * BRICK_VOXEL_COUNT;
+ int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIdx, matID;
+    UnpackNode(node, payloadIdx, matID);
+ // If payload is 0, we check if it is Empty or Solid Optimized
+    if (payloadIdx == 0)
+    {
+        bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+ uint packedFill;
+
+        if (isOptimizedSolid)
+            packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), matID);
+ else
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0, 1, 0), 0);
+ for (uint i = 0; i < BRICK_VOXEL_COUNT; i++) {
+            _ReadbackBuffer[writeStart + i] = packedFill;
+ }
+        return;
+    }
+
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+ uint brickPtr = payload.brickDataIndex;
+
+    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
+                uint voxelIdx = _BrickOffset + brickPtr + (z * 36) + (y * 6) + x;
+ uint data = _BrickDataBuffer[voxelIdx];
+                _ReadbackBuffer[writeStart + (z * 36) + (y * 6) + x] = data;
+ }
+        }
+    }
+}
+
+// --- Helper Function for Ghost Voxel Updates ---
+void ClearVoxelInBrick(int3 brickIdx, int3 globalVoxelPos)
+{
+    if (any(brickIdx < _MinBrickIndex) || any(brickIdx > _MaxBrickIndex)) return;
+
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIdx, matID;
+    UnpackNode(node, payloadIdx, matID);
+    
+    if (payloadIdx == 0) return;
+
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+
+    int3 localPos = globalVoxelPos - (brickIdx * 4);
+    int3 storagePos = localPos + int3(1, 1, 1); // Add padding offset
+
+    if (any(storagePos < 0) || any(storagePos >= BRICK_STORAGE_SIZE)) return;
+
+    uint voxelIdx = _BrickOffset + brickPtr + (storagePos.z * 36) + (storagePos.y * 6) + storagePos.x;
+    
+    uint packed = _BrickDataBuffer[voxelIdx];
+    float sdf; float3 norm; uint mat;
+    UnpackVoxelData(packed, sdf, norm, mat);
+
+    sdf = MAX_SDF_RANGE; 
+
+    _BrickDataBuffer[voxelIdx] = PackVoxelData(sdf, norm, mat);
+}
+
+[numthreads(64, 1, 1)]
+void RemoveVoxelList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetCount) return;
+ float3 worldPos = _TargetPositions[id.x];
+    int3 voxelPos = (int3)floor(worldPos);
+    
+    // Original logic only updated the home brick
+    // int3 brickIdx = (int3)floor((float3)voxelPos / 4.0);
+    // ... update ...
+
+    // New logic: Update Home Brick AND Neighbors if on boundary
+    int3 homeBrick = (int3)floor((float3)voxelPos / 4.0);
+    int3 lp = voxelPos - (homeBrick * 4); // Local position 0..3
+
+    // Determine loop range for neighbors (optimization)
+    // If lp is 0, we must check neighbor at -1. If lp is 3, check neighbor at +1.
+    int3 minOff = int3(lp.x == 0 ? -1 : 0, lp.y == 0 ? -1 : 0, lp.z == 0 ? -1 : 0);
+    int3 maxOff = int3(lp.x == 3 ? 1 : 0, lp.y == 3 ? 1 : 0, lp.z == 3 ? 1 : 0);
+
+    for (int z = minOff.z; z <= maxOff.z; z++)
+    for (int y = minOff.y; y <= maxOff.y; y++)
+    for (int x = minOff.x; x <= maxOff.x; x++)
+    {
+        ClearVoxelInBrick(homeBrick + int3(x, y, z), voxelPos);
+    }
+}
+
+[numthreads(64, 1, 1)]
+void AllocateNodesList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetBrickCount) return;
+
+    int3 brickIdx = _TargetBricks[id.x];
+ if (any(brickIdx > _MaxBrickIndex)) return;
+
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+ uint existingPayload = node.packedInfo & 0xFFFF;
+    bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+ if (existingPayload == 0)
+    {
+        uint newPayloadIdx;
+        InterlockedAdd(_CounterBuffer[1], 1, newPayloadIdx);
+ newPayloadIdx += 1; 
+
+        uint newBrickVoxelPtr;
+        InterlockedAdd(_CounterBuffer[2], 216, newBrickVoxelPtr);
+        
+        if ((newBrickVoxelPtr + 216) > ((uint)_MaxBricks * 216)) return;
+        
+        VoxelPayload pl;
+ pl.brickDataIndex = newBrickVoxelPtr;
+        _PayloadBuffer[GetPhysicalIndex(newPayloadIdx, _PayloadOffset, _PageTableBuffer)] = pl;
+        
+        uint packedFill;
+ if (isOptimizedSolid)
+        {
+            uint existingMat = (node.packedInfo >> 16) & 0xFF;
+ packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), existingMat);
+        }
+        else
+        {
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0,1,0), 0);
+ }
+
+        for (uint i = 0; i < 216; i++) {
+            _BrickDataBuffer[_BrickOffset + newBrickVoxelPtr + i] = packedFill;
+ }
+        
+        uint currentInfo = node.packedInfo & 0xFFFF0000;
+ currentInfo &= ~NODE_FLAG_SOLID;
+        
+        uint newPackedInfo = (newPayloadIdx & 0xFFFF) | currentInfo;
+        
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = newPackedInfo;
+ }
+}
+
+[numthreads(64, 1, 1)]
+void ExtractBricksList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetBrickCount) return;
+    int3 brickIdx = _TargetBricks[id.x];
+ uint writeStart = id.x * BRICK_VOXEL_COUNT;
+
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIdx, matID;
+ UnpackNode(node, payloadIdx, matID);
+
+    if (payloadIdx == 0)
+    {
+        bool isOptimizedSolid = (node.packedInfo & NODE_FLAG_SOLID) != 0;
+ uint packedFill;
+
+        if (isOptimizedSolid)
+            packedFill = PackVoxelData(-MAX_SDF_RANGE, float3(0,1,0), matID);
+ else
+            packedFill = PackVoxelData(MAX_SDF_RANGE, float3(0, 1, 0), 0);
+ for (uint i = 0; i < BRICK_VOXEL_COUNT; i++) {
+            _ReadbackBuffer[writeStart + i] = packedFill;
+ }
+        return;
+    }
+
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+ uint brickPtr = payload.brickDataIndex;
+
+    for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+        for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+            for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
+                uint voxelIdx = _BrickOffset + brickPtr + (z * 36) + (y * 6) + x;
+ uint data = _BrickDataBuffer[voxelIdx];
+                _ReadbackBuffer[writeStart + (z * 36) + (y * 6) + x] = data;
+ }
+        }
+    }
+}
+[numthreads(64, 1, 1)]
+void PasteBricksList(uint3 id : SV_DispatchThreadID)
+{
+    if ((int)id.x >= _TargetBrickCount) return;
+    
+    // 1. Identify Target
+    int3 brickIdx = _TargetBricks[id.x];
+    if (any(brickIdx > _MaxBrickIndex)) return;
+
+    // 2. Resolve Memory Location via SVO
+    int nodeIndex = GetLeafNodeIndex(brickIdx);
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIdx, matID;
+    UnpackNode(node, payloadIdx, matID);
+
+    // Safety: Allocation should have happened already
+    if (payloadIdx == 0) return;
+
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIdx, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+
+    // 3. Bulk Copy
+    // Each thread handles 1 brick. We copy 216 voxels.
+    // Ensure _SourceVoxelData is ordered the same as _TargetBricks
+    uint readStart = id.x * 216; 
+    
+    // Unrolling this loop is generally safe for modern GPUs, or the compiler will handle it.
+    for (uint i = 0; i < 216; i++) 
+    {
+        _BrickDataBuffer[_BrickOffset + brickPtr + i] = _SourceVoxelData[readStart + i];
+    }
+}

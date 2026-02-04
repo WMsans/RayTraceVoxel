@@ -1,0 +1,141 @@
+#pragma kernel GenerateGrass
+
+#include "../../../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+// --- Inputs ---
+// We bind the Volume's data buffers
+StructuredBuffer<SVONode> _NodeBuffer;
+StructuredBuffer<VoxelPayload> _PayloadBuffer;
+StructuredBuffer<uint> _BrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer; // New
+
+// --- Outputs ---
+// Indirect Append Buffer for instances
+struct GrassInstance {
+    float3 position;
+    float rotation;
+    uint packedData;
+};
+
+AppendStructuredBuffer<GrassInstance> _GrassAppendBuffer;
+
+// --- Uniforms ---
+float3 _ChunkWorldOrigin;
+float _ChunkWorldSize;
+uint _GridSize;      // Chunk Resolution (e.g., 64)
+uint _NodeOffset;    // Volume's offset in global node buffer
+uint _PayloadOffset; // Volume's offset in global payload buffer
+uint _BrickOffset;   // Volume's offset in global brick buffer
+
+uint _TargetMaterialId; // ID for grass-valid terrain (e.g., 2 or 4)
+float _SdfThreshold;    // Max SDF distance to consider "surface" (e.g., 0.8)
+float _NormalYThreshold;// Min Y-component of normal (e.g., 0.7 for flat ground)
+
+// Simple Hash for rotation/variation
+float Random(float3 p) {
+    return frac(sin(dot(p, float3(12.9898, 78.233, 45.5432))) * 43758.5453);
+}
+
+[numthreads(4, 4, 4)]
+void GenerateGrass(uint3 id : SV_DispatchThreadID)
+{
+    // 1. Boundary Check (Brick Grid Space)
+    uint bricksPerAxis = _GridSize / BRICK_SIZE;
+    if (any(id >= bricksPerAxis)) return;
+
+    // 2. Resolve SVO Node for this Brick
+    // We use the same indexing logic as SVOBuilder to map (x,y,z) brick coord to Node Index
+    // Level 4 is the Leaf Level.
+    uint nodeIndex = GetNodeIndex(4, id);
+    
+    // Read Node from Global Buffer
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    
+    uint payloadIndex, matID;
+    UnpackNode(node, payloadIndex, matID);
+
+    // If no payload, this brick is empty/air
+    if (payloadIndex == 0) return;
+
+    // 3. Get Brick Data Pointer
+    VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)];
+    uint brickPtr = payload.brickDataIndex;
+
+    // 4. Iterate Voxels within the Brick
+    // Bricks are 6x6x6 (including padding). We only iterate the logical 4x4x4 center.
+    // Logical range: [1..4] inclusive
+    
+    float scale = _ChunkWorldSize / (float)_GridSize;
+    float3 brickOriginLocal = id * BRICK_SIZE;
+
+    for (uint z = 1; z <= BRICK_SIZE; z++)
+    {
+        for (uint y = 1; y <= BRICK_SIZE; y++)
+        {
+            for (uint x = 1; x <= BRICK_SIZE; x++)
+            {
+                // Calculate Index in BrickDataBuffer
+                uint voxelIdx = _BrickOffset + brickPtr + 
+                               (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
+                               (y * BRICK_STORAGE_SIZE) + x;
+                
+                uint packedData = _BrickDataBuffer[voxelIdx];
+                
+                // Unpack Voxel
+                float sdf;
+                float3 normal;
+                uint mat;
+                UnpackVoxelData(packedData, sdf, normal, mat);
+
+                // --- 5. Filtering Logic ---
+
+                // A. Material Check
+                if (mat != _TargetMaterialId) continue;
+
+                // B. Surface Check
+                // SDF is stored in Voxel Units. 
+                // We want points very close to the zero-crossing.
+                if (abs(sdf) > _SdfThreshold) continue;
+
+                // C. Slope/Normal Check
+                // Only spawn on upward facing surfaces
+                if (normal.y < _NormalYThreshold) continue;
+
+                // --- 6. Instance Generation ---
+
+                // Calculate Voxel Center Position (Local to Chunk, in Voxel Units)
+                // Subtract Padding (1) to get logical coordinate 0..3
+                int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+                
+                // Base position (Voxel Center)
+                float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset + 0.5; 
+                
+                // Position Refinement: Project to exact surface
+                // P_surf = P_center - Normal * SDF
+                float3 surfacePosLocal = voxelPosLocal - normal * sdf;
+                
+                // Transform to World Space
+                float3 worldPos = _ChunkWorldOrigin + surfacePosLocal * scale;
+
+                // Use the integer voxel coordinate (stable seed) to generate random offsets
+                float3 jitterSeed = brickOriginLocal + (float3)voxelOffset;
+                float jitterX = (Random(jitterSeed) * 2.0 - 1.0) * 0.35; // +/- 35% of voxel size
+                float jitterZ = (Random(jitterSeed + float3(7.1, 3.3, 1.9)) * 2.0 - 1.0) * 0.35;
+
+                worldPos.x += jitterX * scale;
+                worldPos.z += jitterZ * scale;
+
+                // Create Instance
+                GrassInstance instance;
+                instance.position = worldPos;
+                instance.rotation = Random(worldPos) * 6.28318; // 0..2PI
+                
+                // Pack auxiliary data (e.g., height variation based on noise)
+                uint var = (uint)(Random(worldPos + float3(1,1,1)) * 255.0);
+                instance.packedData = (var << 16) | 0xFFFF; // Placeholder
+
+                _GrassAppendBuffer.Append(instance);
+            }
+        }
+    }
+}

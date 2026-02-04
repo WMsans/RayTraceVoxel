@@ -1,0 +1,335 @@
+#pragma kernel InitDenseStructure
+#pragma kernel BuildBricks
+#pragma kernel PropagateLOD 
+
+#include "../../Shared/Shaders/Includes/VoxelStructures.hlsl"
+#include "./GeneratorPipeline.hlsl"
+
+// --- Global Buffers ---
+RWStructuredBuffer<SVONode> _NodeBuffer;
+RWStructuredBuffer<VoxelPayload> _PayloadBuffer;
+RWStructuredBuffer<uint> _BrickDataBuffer; 
+RWStructuredBuffer<uint> _CounterBuffer;
+StructuredBuffer<uint> _PageTableBuffer;
+
+StructuredBuffer<LBVHNode> _LBVHNodeBuffer;
+StructuredBuffer<int> _SDFObjectIndexBuffer;
+
+struct EditInfo {
+    int3 globalGridPos;
+    int dataIndex;
+};
+StructuredBuffer<EditInfo> _EditInfoBuffer;
+StructuredBuffer<uint> _EditVoxelBuffer;
+int _EditCount;
+float _GlobalVoxelSize;
+int _GlobalBrickSize;
+
+// --- Global Uniforms ---
+uint _GridSize;
+float3 _ChunkWorldOrigin;
+float _ChunkWorldSize;
+uint _NodeOffset;
+uint _PayloadOffset;
+uint _BrickOffset;
+int _NumDynamicObjects;
+
+// Mipmapping Uniforms
+uint _TargetLevelOffset;
+uint _TargetLevelCount;
+
+bool SampleEdit(float3 pos, out float e_sdf, out float3 e_norm, out uint e_mat) {
+    e_sdf = MAX_SDF_RANGE; e_norm = float3(0,1,0); e_mat = 0;
+    if (_EditCount == 0) return false;
+    float globalBrickSizeWorld = (float)_GlobalBrickSize * _GlobalVoxelSize;
+    if (globalBrickSizeWorld <= 0.001) return false;
+    int3 globalGridPos = floor(pos / globalBrickSizeWorld);
+    for (int i = 0; i < _EditCount; i++) {
+        EditInfo info = _EditInfoBuffer[i];
+        if (all(info.globalGridPos == globalGridPos)) {
+             float3 brickOrigin = (float3)globalGridPos * globalBrickSizeWorld;
+             float3 localPos = pos - brickOrigin; 
+             int3 idx = (int3)floor(localPos / _GlobalVoxelSize) + int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+             idx = clamp(idx, 0, BRICK_STORAGE_SIZE - 1);
+             uint flatIdx = info.dataIndex + (idx.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + idx.y * BRICK_STORAGE_SIZE + idx.x);
+             uint packedData = _EditVoxelBuffer[flatIdx];
+             UnpackVoxelData(packedData, e_sdf, e_norm, e_mat);
+             if (e_mat == 255) return false; // Passthrough flag
+             return true;
+        }
+    }
+    return false;
+}
+
+void ApplyEdits(inout GenerationContext ctx, float3 pos, float voxelSize) {
+    if (_EditCount == 0) return;
+    if (voxelSize <= _GlobalVoxelSize * 1.01) {
+        float e_sdf; float3 e_norm; uint e_mat;
+        if (SampleEdit(pos, e_sdf, e_norm, e_mat)) {
+            ctx.sdf = e_sdf; ctx.gradient = e_norm; ctx.material = e_mat;
+        }
+    } else {
+        int samplesPerAxis = clamp(ceil(voxelSize / _GlobalVoxelSize), 1, 4);
+        float step = voxelSize / (float)samplesPerAxis;
+        float startOffset = -voxelSize * 0.5 + step * 0.5;
+        float accumSDF = 0; float3 accumNorm = 0; bool anyEditFound = false;
+        uint dominantMaterial = ctx.material;
+        [loop] // Force loop to prevent unrolling issues with dynamic bounds
+        for (int z = 0; z < samplesPerAxis; z++) {
+            for (int y = 0; y < samplesPerAxis; y++) {
+                for (int x = 0; x < samplesPerAxis; x++) {
+                     float3 offset = float3(x,y,z) * step + startOffset;
+                     float3 samplePos = pos + offset;
+                     float e_sdf; float3 e_norm; uint e_mat;
+                     bool isEdited = SampleEdit(samplePos, e_sdf, e_norm, e_mat);
+                     float sampleVal; float3 sampleGrad;
+                     if (isEdited) { sampleVal = e_sdf; sampleGrad = e_norm; if (e_mat != 0) dominantMaterial = e_mat; anyEditFound = true; } 
+                     else { sampleVal = ctx.sdf + dot(ctx.gradient, offset); sampleGrad = ctx.gradient; }
+                     accumSDF += sampleVal; accumNorm += sampleGrad;
+                }
+            }
+        }
+        if (anyEditFound) {
+             float count = (float)(samplesPerAxis * samplesPerAxis * samplesPerAxis);
+             ctx.sdf = accumSDF / count; ctx.gradient = normalize(accumNorm); ctx.material = dominantMaterial;
+        }
+    }
+}
+
+[numthreads(64, 1, 1)]
+void InitDenseStructure(uint id : SV_DispatchThreadID)
+{
+    if (id == 0) _CounterBuffer[0] = 4681;
+    if (id >= 4681) return;
+    SVONode node;
+    node.packedInfo = 0;
+    node.topology = 0;
+    node.lodColor = 0;
+    uint level = 0;
+    uint indexInLevel = id;
+    if (id >= 585) { level = 4; indexInLevel = id - 585; }
+    else if (id >= 73) { level = 3; indexInLevel = id - 73; }
+    else if (id >= 9) { level = 2; indexInLevel = id - 9; }
+    else if (id >= 1) { level = 1; indexInLevel = id - 1; }
+
+    if (level < 4) {
+        uint nextLevelOffset = 0;
+        if (level == 0) nextLevelOffset = 1;
+        if (level == 1) nextLevelOffset = 9;
+        if (level == 2) nextLevelOffset = 73;
+        if (level == 3) nextLevelOffset = 585;
+        uint childPtr = nextLevelOffset + (indexInLevel * 8);
+        node.topology = (0xFF << 24) | (childPtr & 0xFFFFFF);
+    }
+    _NodeBuffer[GetPhysicalIndex(id, _NodeOffset, _PageTableBuffer)] = node;
+}
+
+[numthreads(4, 4, 4)]
+void BuildBricks(uint3 id : SV_DispatchThreadID)
+{
+    uint bricksAxis = _GridSize / BRICK_SIZE;
+    if (id.x >= bricksAxis || id.y >= bricksAxis || id.z >= bricksAxis) return;
+    
+    float3 brickOriginLocal = id * BRICK_SIZE;
+    float3 brickCenterLocal = brickOriginLocal + (float)BRICK_SIZE * 0.5;
+    float scale = _ChunkWorldSize / (float)_GridSize;
+    float3 brickCenterWorld = _ChunkWorldOrigin + (brickCenterLocal * scale);
+    float3 brickMin = _ChunkWorldOrigin + ((brickOriginLocal - BRICK_PADDING) * scale);
+    float3 brickMax = _ChunkWorldOrigin + ((brickOriginLocal + BRICK_SIZE + BRICK_PADDING) * scale);
+
+    // 2. LBVH Traversal
+    uint activeObjects[32];
+    for(int i=0; i<32; i++) activeObjects[i] = 0;
+    int activeCount = 0;
+
+    if (_NumDynamicObjects > 0) {
+        int stack[32];
+        int stackPtr = 0;
+        stack[0] = 0; 
+        stackPtr++;
+        while(stackPtr > 0 && activeCount < 32) {
+            int nodeIdx = stack[--stackPtr];
+            LBVHNode node = _LBVHNodeBuffer[nodeIdx];
+            if (all(max(brickMin, node.boundsMin) <= min(brickMax, node.boundsMax))) {
+                if (node.leftChild < 0) {
+                    int objIdx = ~node.leftChild;
+                    int realIdx = _SDFObjectIndexBuffer[objIdx];
+                    activeObjects[activeCount++] = realIdx;
+                } else {
+                    if(stackPtr < 30) {
+                        stack[stackPtr++] = node.leftChild;
+                        stack[stackPtr++] = node.rightChild;
+                    }
+                }
+            }
+        }
+    }
+    // Sort
+    for (int k = 1; k < activeCount; k++) {
+        uint key = activeObjects[k];
+        int j = k - 1;
+        while (j >= 0 && activeObjects[j] > key) {
+            activeObjects[j + 1] = activeObjects[j];
+            j = j - 1;
+        }
+        activeObjects[j + 1] = key;
+    }
+
+    float worldRadius = 3.0 * scale;
+    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0);
+    ApplyEdits(centerCtx, brickCenterWorld, scale);
+    ApplyDynamicObjects(centerCtx, brickCenterWorld, activeObjects, activeCount);
+    
+    // If potentially solid (inside terrain bounds)
+    if (centerCtx.sdf < worldRadius)
+    {
+        uint nodeIndex = GetNodeIndex(4, id);
+
+        // --- PASS 1: Check Uniformity (No Allocation) ---
+        bool isFullSolid = true;
+        bool isUniformMat = true;
+        uint commonMat = 0;
+        bool firstSample = true;
+
+        [loop]
+        for (uint z = 0; z < BRICK_STORAGE_SIZE; z++) {
+            for (uint y = 0; y < BRICK_STORAGE_SIZE; y++) {
+                for (uint x = 0; x < BRICK_STORAGE_SIZE; x++) {
+                    int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+                    float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
+                    float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
+                    
+                    // Generate without writing
+                    GenerationContext vCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    ApplyEdits(vCtx, voxelPosWorld, scale);
+                    ApplyDynamicObjects(vCtx, voxelPosWorld, activeObjects, activeCount);
+                    
+                    if (vCtx.sdf >= 0.0) { isFullSolid = false; break; } // Hit Air
+                    
+                    uint mat = vCtx.material;
+                    if (mat == 0) mat = 1;
+
+                    if (firstSample) {
+                        commonMat = mat;
+                        firstSample = false;
+                    } else if (mat != commonMat) {
+                        isUniformMat = false;
+                        break;
+                    }
+                }
+                if (!isFullSolid || !isUniformMat) break;
+            }
+            if (!isFullSolid || !isUniformMat) break;
+        }
+
+        // --- OPTIMIZATION: Fully Solid & Uniform ---
+        if (isFullSolid && isUniformMat && !firstSample)
+        {
+             // Write Flag, Skip Allocation
+             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = NODE_FLAG_SOLID | ((commonMat & 0xFF) << 16);
+             _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(1,1,1,1));
+             return; 
+        }
+
+        // --- PASS 2: Allocate & Write (Mixed/Surface) ---
+        uint brickPtr;
+        InterlockedAdd(_CounterBuffer[2], BRICK_VOXEL_COUNT, brickPtr);
+
+        float4 accumulatedColor = 0;
+        float voxelCount = 0;
+        uint detectedMaterial = 0;
+
+        [loop]
+        for (uint z2 = 0; z2 < BRICK_STORAGE_SIZE; z2++) {
+            for (uint y2 = 0; y2 < BRICK_STORAGE_SIZE; y2++) {
+                for (uint x2 = 0; x2 < BRICK_STORAGE_SIZE; x2++) {
+                    int3 voxelOffset = int3(x2, y2, z2) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
+                    float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
+                    float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
+                    
+                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    ApplyEdits(voxelCtx, voxelPosWorld, scale);
+                    ApplyDynamicObjects(voxelCtx, voxelPosWorld, activeObjects, activeCount);
+                    
+                    float sdf = voxelCtx.sdf;
+                    uint mat = voxelCtx.material;
+                    if (mat == 0) mat = 1;
+
+                    // Direct Write
+                    uint packedData = PackVoxelData(sdf / scale, voxelCtx.gradient, mat);
+                    uint idx = _BrickOffset + brickPtr + (z2 * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + y2 * BRICK_STORAGE_SIZE + x2);
+                    _BrickDataBuffer[idx] = packedData;
+
+                    // LOD
+                    if (x2 >= BRICK_PADDING && x2 < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        y2 >= BRICK_PADDING && y2 < BRICK_STORAGE_SIZE - BRICK_PADDING &&
+                        z2 >= BRICK_PADDING && z2 < BRICK_STORAGE_SIZE - BRICK_PADDING)
+                    {
+                        if (sdf < 0) {
+                             accumulatedColor += 1.0; // White for now
+                             voxelCount += 1.0;
+                             detectedMaterial = mat;
+                        }
+                    }
+                }
+            }
+        }
+
+        uint payloadIndex;
+        InterlockedAdd(_CounterBuffer[1], 1, payloadIndex);
+        payloadIndex += 1; 
+
+        VoxelPayload payload;
+        payload.brickDataIndex = brickPtr;
+        _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)] = payload;
+
+        uint packed = (payloadIndex & 0xFFFF) | ((detectedMaterial & 0xFF) << 16);
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = packed;
+
+        if (voxelCount > 0) {
+            float density = voxelCount / (float)(BRICK_SIZE * BRICK_SIZE * BRICK_SIZE);
+            _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(accumulatedColor.rgb / voxelCount, density));
+        } else {
+            _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
+        }
+    }
+    else
+    {
+        uint nodeIndex = GetNodeIndex(4, id);
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = 0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
+    }
+}
+
+// [PropagateLOD remains unchanged]
+[numthreads(64, 1, 1)]
+void PropagateLOD(uint id : SV_DispatchThreadID)
+{
+    if (id >= _TargetLevelCount) return;
+    uint nodeIndex = _TargetLevelOffset + id;
+    SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
+    if (node.topology == 0) {
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
+        return;
+    }
+    uint childBasePtr = node.topology & 0xFFFFFF; 
+    float4 acc = 0; float count = 0; uint maxMaterial = 0;
+    for (int i = 0; i < 8; i++) {
+        SVONode child = _NodeBuffer[GetPhysicalIndex(childBasePtr + i, _NodeOffset, _PageTableBuffer)];
+        float4 c = UnpackColor(child.lodColor);
+        if (c.a > 0.0) {
+            acc.rgb += c.rgb; acc.a += c.a; count += 1.0;
+            uint childPayload, childMat;
+            UnpackNode(child, childPayload, childMat);
+            if (childMat != 0) maxMaterial = childMat;
+        }
+    }
+    if (count > 0.0) {
+        float3 avgColor = acc.rgb / count; float nodeDensity = acc.a / 8.0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = PackColor(float4(avgColor, nodeDensity));
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = (maxMaterial & 0xFF) << 16;
+    } else {
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].lodColor = 0;
+        _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)].packedInfo = 0;
+    }
+}
