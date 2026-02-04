@@ -630,7 +630,7 @@ MonoBehaviour:
   analyzer: {fileID: 681138562}
   erodeFloatingVoxels: 1
   debrisDensity: 10
-  smallDebrisVoxelLimit: 64
+  smallDebrisVoxelLimit: 128
   minimumDebrisVoxelCount: 16
 --- !u!114 &681138564
 MonoBehaviour:

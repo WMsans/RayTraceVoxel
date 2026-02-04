@@ -441,10 +441,6 @@ namespace VoxelEngine.Core.Editing
             voxelModifierShader.Dispatch(kernelPaste, groups, 1, 1);
 
             // --- Phase 5: Post-Process Readback & Database Hydration ---
-            // Only hydrate DB if it's not transient debris (unlikely for debris to hydrate DB, but kept for symmetry)
-            // Debris volumes are transient so we usually skip registering edits to the global DB for them.
-            
-            // 5. Cleanup
             targetBricksBuffer.Release();
             sourceVoxelDataBuffer.Release();
 
@@ -476,16 +472,20 @@ namespace VoxelEngine.Core.Editing
                     
                     Vector3 sizeWorld = (Vector3)(max - min + Vector3Int.one) * voxelSize;
                     
-                    // Center in Local Space (Grid)
+                    // Center in Local Space (Grid) of the SOURCE volume
                     Vector3 centerGrid = (Vector3)min + (Vector3)(max - min) * 0.5f + Vector3.one * 0.5f;
-                    Vector3 centerLocal = centerGrid * voxelSize;
+                    Vector3 centerSourceLocal = centerGrid * voxelSize;
+
+                    // Convert Source Local -> World -> Debris Local
+                    Vector3 centerWorld = sourceVol.transform.TransformPoint(centerSourceLocal);
+                    Vector3 centerDebrisLocal = debrisVol.transform.InverseTransformPoint(centerWorld);
 
                     // BoxCollider is local to the volume object
                     BoxCollider bc = debrisVol.GetComponent<BoxCollider>();
                     if (bc == null) bc = debrisVol.gameObject.AddComponent<BoxCollider>();
                     
                     bc.enabled = true;
-                    bc.center = centerLocal;
+                    bc.center = centerDebrisLocal;
                     bc.size = sizeWorld;
 
                     debrisVol.gameObject.SetActive(true);
