@@ -204,7 +204,13 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     ApplyEdits(vCtx, voxelPosWorld, scale);
                     ApplyDynamicObjects(vCtx, voxelPosWorld, activeObjects, activeCount);
                     
-                    if (vCtx.sdf >= 0.0) { isFullSolid = false; break; } // Hit Air
+                    // 1. Check for Air
+                    if (vCtx.sdf >= 0.0) { isFullSolid = false; break; }
+
+                    // If the voxel is solid (sdf < 0) but very close to the surface, 
+                    // we must keep the data to preserve gradients/normals.
+                    // We use a threshold of 1.5 voxels (scale * 1.5).
+                    if (vCtx.sdf > -scale * 4) { isFullSolid = false; break; }
                     
                     uint mat = vCtx.material;
                     if (mat == 0) mat = 1;

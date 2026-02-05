@@ -429,23 +429,11 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
             SVONode leafNode = _GlobalNodeBuffer[GetPhysicalIndex(nodeIndex, chunk.pageTableOffset, _PageTableBuffer)];
             float2 tLeaf = IntersectBox(rayOriginNode, rayDir, nodePos, nodePos + nodeSize);
 
-            // --- OPTIMIZATION CHECK: Solid Leaf Node ---
-            if (leafNode.packedInfo & NODE_FLAG_SOLID)
-            {
-                // This node is marked solid.
-                result.hit = true;
-                // Entry point of the AABB
-                result.pos = rayOriginNode + rayDir * tLeaf.x;
-                result.normal = GetLODNormal(result.pos, nodePos, float3(nodeSize, nodeSize, nodeSize));
-                result.matId = (leafNode.packedInfo >> 16) & 0xFF;
-                result.brickId = 0;
-                // No brick data
-                return result;
-            }
-
             uint payloadIndex, matID;
             UnpackNode(leafNode, payloadIndex, matID);
 
+            // If a payload exists, we MUST raymarch it to get the correct voxel normals/gradients,
+            // even if the node is flagged as "Solid" (which implies fully allocated, not necessarily flat).
             if (payloadIndex != 0)
             {
                 VoxelPayload payload = _GlobalPayloadBuffer[GetPhysicalIndex(payloadIndex, chunk.payloadPageTableOffset, _PageTableBuffer)];
@@ -453,11 +441,11 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
 
                 float tMarch = max(tCurrent, tLeaf.x);
                 float marchEnd = min(tEnd, tLeaf.y);
-
+                
                 for (int m = 0; m < _MaxMarchSteps; m++)
                 {
                     if (tMarch >= marchEnd) break;
-                    
+
                     float3 p = rayOriginNode + rayDir * tMarch;
                     float3 localPos = p - nodePos;
                     float dist = SampleBrick(chunk.brickOffset, brickPtr, localPos);
