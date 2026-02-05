@@ -5,6 +5,7 @@ using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Rendering;
 using VoxelEngine.Core.Streaming;
+using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Editing
 {
@@ -99,30 +100,66 @@ namespace VoxelEngine.Core.Editing
 
             if (VoxelVolumePool.Instance == null || _currentHitVolumeIndex >= VoxelVolumePool.Instance.VisibleVolumes.Count) return;
 
-            VoxelVolume targetVolume = VoxelVolumePool.Instance.VisibleVolumes[_currentHitVolumeIndex];
+            // Identify the Primary Hit Volume to determine Context (World vs. Debris)
+            VoxelVolume hitVolume = VoxelVolumePool.Instance.VisibleVolumes[_currentHitVolumeIndex];
 
+            // Step 1: Define World-Space Brush Bounds
+            Bounds brushBounds = new Bounds(_currentHitPoint, Vector3.one * brushRadius * 2.0f);
+
+            // Step 2 & 3: Broad Phase - Query and Filter Intersecting Volumes
+            List<VoxelVolume> volumesToEdit = new List<VoxelVolume>();
+
+            if (hitVolume.IsTransient)
+            {
+                // Context: Debris
+                // If we hit a dynamic object, we ONLY want to edit that object. 
+                // We shouldn't accidentally sculpt the terrain behind it or other rocks nearby.
+                volumesToEdit.Add(hitVolume);
+            }
+            else
+            {
+                // Context: World Terrain
+                // We want seamless editing across chunk boundaries.
+                // Iterate ALL active volumes (not just visible ones, to ensure boundary correctness)
+                foreach (var vol in VoxelVolumeRegistry.Volumes)
+                {
+                    // Filter: Must be active, ready, and NOT a transient debris object
+                    if (vol.gameObject.activeInHierarchy && vol.IsReady && !vol.IsTransient)
+                    {
+                        if (vol.WorldBounds.Intersects(brushBounds))
+                        {
+                            volumesToEdit.Add(vol);
+                        }
+                    }
+                }
+            }
+
+            // Step 4: Iterative Application (Narrow Phase)
             VoxelBrush brush = new VoxelBrush
             {
                 position = _currentHitPoint,
                 radius = brushRadius,
                 materialId = brushMaterial,
                 shape = (int)BrushShape.Sphere,
-                op = (int)op
+                op = (int)op,
+                bounds = Vector3.one * brushRadius * 2
             };
-            brush.bounds = Vector3.one * brushRadius * 2;
-            Bounds brushBounds = new Bounds(brush.position, brush.bounds);
-            
-            VoxelModifier modifier = new VoxelModifier(voxelModifierShader, targetVolume);
-            modifier.Apply(brush, targetVolume.Resolution);
+
+            foreach (var vol in volumesToEdit)
+            {
+                // The VoxelModifier handles transforming the world-space brush into local volume space
+                VoxelModifier modifier = new VoxelModifier(voxelModifierShader, vol);
+                modifier.Apply(brush, vol.Resolution);
+            }
 
             // Phase 3 & 4: Recursive Fracturing Pipeline & Sleep Thresholds
             if (op == BrushOp.Subtract && structuralAnalyzer != null)
             {
-                if (targetVolume.IsTransient)
+                if (hitVolume.IsTransient)
                 {
                     // Phase 4: Sleep Thresholds
                     // Only run recursive analysis if the debris is "Awake" (active in physics)
-                    Rigidbody rb = targetVolume.GetComponent<Rigidbody>();
+                    Rigidbody rb = hitVolume.GetComponent<Rigidbody>();
                     bool isAwake = rb == null || !rb.IsSleeping();
                     
                     // Also consider "significant" edits (large brush) to wake it up if needed
@@ -131,7 +168,7 @@ namespace VoxelEngine.Core.Editing
                     if (isAwake || significantEdit)
                     {
                         if (rb != null && rb.IsSleeping()) rb.WakeUp();
-                        structuralAnalyzer.AnalyzeVolume(targetVolume, brushBounds);
+                        structuralAnalyzer.AnalyzeVolume(hitVolume, brushBounds);
                     }
                 }
                 else
