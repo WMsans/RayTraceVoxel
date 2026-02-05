@@ -106,15 +106,10 @@ float3 GetLODNormal(float3 hitPos, float3 boxPos, float3 boxSize)
     float3 p = hitPos - center; 
     float3 signP = sign(p); 
     float3 absP = abs(p); 
-    float bevelSize = boxSize.x * 0.1;
-    float3 bevelNormal = normalize(max(absP - (boxSize * 0.5 - bevelSize), 0.0) * signP); 
-    
-    if (length(bevelNormal) > 0.001) 
-        return bevelNormal;
         
-    float maxAxis = max(max(absP.x, absP.y), absP.z); 
+    float maxAxis = max(max(absP.x, absP.y), absP.z);
     if (absP.x >= maxAxis - 1e-4) return float3(signP.x, 0, 0);
-    if (absP.y >= maxAxis - 1e-4) return float3(0, signP.y, 0); 
+    if (absP.y >= maxAxis - 1e-4) return float3(0, signP.y, 0);
     return float3(0, 0, signP.z);
 }
 
@@ -156,11 +151,11 @@ float3 GetVoxelNormal(uint brickOffset, uint brickPtr, float3 localPos)
     
     UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx], s, v000, m); 
     UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + 1], s, v001, m); 
-    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + BRICK_STORAGE_SIZE], s, v010, m); 
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + BRICK_STORAGE_SIZE], s, v010, m);
     UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + BRICK_STORAGE_SIZE + 1], s, v011, m); 
     UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + sliceStride], s, v100, m);
     UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + sliceStride + 1], s, v101, m); 
-    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + sliceStride + BRICK_STORAGE_SIZE], s, v110, m); 
+    UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + sliceStride + BRICK_STORAGE_SIZE], s, v110, m);
     UnpackVoxelData(_GlobalBrickDataBuffer[baseIdx + sliceStride + BRICK_STORAGE_SIZE + 1], s, v111, m); 
     
     float3 mixX00 = lerp(v000, v001, f.x);
@@ -853,7 +848,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float NdotL = dot(hit.normal, L);
         
         // Adaptive shadow bias: larger at grazing angles to prevent self-shadowing
-        float shadowBias = lerp(0.05, 1, saturate(NdotL)) + 3;
+        float shadowBias = lerp(0.1, 5, saturate(NdotL));
         
         float shadow = 0.3;
         
