@@ -28,6 +28,10 @@ MonoBehaviour:
     enableFXAA: 1
     enableTAA: 1
     taaBlend: 0.9
+    enableOutline: 1
+    outlineColor: {r: 0.9996352, g: 1, b: 0.7122642, a: 1}
+    outlineThickness: 1
+    outlineThreshold: 0.01
     lodBias: 1
     useCameraFarPlane: 0
     cullFrustum: 1

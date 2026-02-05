@@ -37,6 +37,12 @@ namespace VoxelEngine.Core.Rendering
             public bool enableFXAA = true;
             public bool enableTAA = true; 
             [Range(0.0f, 1.0f)] public float taaBlend = 0.93f; 
+
+            [Header("Outline")]
+            public bool enableOutline = false;
+            public Color outlineColor = Color.black;
+            [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
+            public float outlineThreshold = 0.01f;
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -145,6 +151,10 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _HistoryTexParams = Shader.PropertyToID("_HistoryTex");
             private static readonly int _BlendParams = Shader.PropertyToID("_Blend");
 
+            // Outline IDs
+            private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
+            private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
+
             // Debug IDs
             private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
             private static readonly int _DebugViewBricksParams = Shader.PropertyToID("_DebugViewBricks");
@@ -168,7 +178,7 @@ namespace VoxelEngine.Core.Rendering
                 _shader = settings.raytraceShader;
                 renderPassEvent = settings.injectionPoint;
             }
-
+            
             public void UpdateSettings(Settings newSettings) { _settings = newSettings; }
             public void Setup(Material composite, Material fxaa, Material taa) 
             { 
@@ -221,7 +231,19 @@ namespace VoxelEngine.Core.Rendering
                 // Debug fields
                 public float debugNormals; public float debugBricks;
             }
-            private class CompositePassData { public TextureHandle source; public TextureHandle depthSource; public Material material; public bool useFSR; public float sharpness; }
+            private class CompositePassData { 
+                public TextureHandle source; 
+                public TextureHandle depthSource; 
+                public Material material; 
+                public bool useFSR; 
+                public float sharpness;
+                
+                // Outline Data
+                public bool enableOutline;
+                public Color outlineColor;
+                public float outlineThickness;
+                public float outlineThreshold;
+            }
             private class FXAAPassData { public TextureHandle source; public Material material; }
             private class TAAPassData { public TextureHandle source; public TextureHandle history; public TextureHandle motion; public TextureHandle destination; public Material material; public float blend; }
             private class GrassPassData { public TextureHandle colorTarget; public TextureHandle depthTarget; }
@@ -229,21 +251,16 @@ namespace VoxelEngine.Core.Rendering
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
                 if (VoxelVolumePool.Instance == null) return;
-
                 var cameraData = frameData.Get<UniversalCameraData>();
-                
-                // Culling update
-                if (_settings.cullFrustum)
-                {
+
+                // [Update Culling Logic - Same as original]
+                if (_settings.cullFrustum) {
                     Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
                     Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
                     VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes, cameraData.camera.transform.position, _settings.shadowDistance);
-                }
-                else
-                {
+                } else {
                     VoxelVolumePool.Instance.UpdateVisibility(null);
                 }
-
                 if (VoxelVolumePool.Instance.VisibleChunkCount == 0) return;
 
                 var resourceData = frameData.Get<UniversalResourceData>();
@@ -265,10 +282,8 @@ namespace VoxelEngine.Core.Rendering
                 // Create Textures
                 TextureDesc colorDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat, enableRandomWrite = true, name = "VoxelRaytraceResult_LowRes" };
                 TextureHandle lowResResult = renderGraph.CreateTexture(colorDesc);
-
                 TextureDesc depthDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat, enableRandomWrite = true, name = "VoxelRaytraceDepth_LowRes" };
                 TextureHandle lowResDepth = renderGraph.CreateTexture(depthDesc);
-                
                 TextureDesc mvDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16_SFloat, enableRandomWrite = true, name = "VoxelMotionVectors" };
                 TextureHandle motionVectorTex = renderGraph.CreateTexture(mvDesc);
 
@@ -393,7 +408,7 @@ namespace VoxelEngine.Core.Rendering
                     compositeSource = historyWrite;
                 }
 
-                // --- 3. Composite (Upscale) Pass & Depth Write ---
+                // --- 3. Composite (Upscale) Pass & Depth Write & OUTLINE ---
                 using (var builder = renderGraph.AddRasterRenderPass<CompositePassData>("Composite & Upscale", out var compData))
                 {
                     compData.source = compositeSource; 
@@ -401,13 +416,16 @@ namespace VoxelEngine.Core.Rendering
                     compData.material = _compositeMaterial;
                     compData.useFSR = (_settings.upscalingMode == UpscalingMode.SpatialFSR);
                     compData.sharpness = _settings.sharpness;
+                    
+                    // Populate Outline Data
+                    compData.enableOutline = _settings.enableOutline;
+                    compData.outlineColor = _settings.outlineColor;
+                    compData.outlineThickness = _settings.outlineThickness;
+                    compData.outlineThreshold = _settings.outlineThreshold;
 
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
                     
-                    // [IMPORTANT] FORCE DEPTH WRITE for Grass Occlusion
-                    // Even if using FXAA intermediate, we MUST write the Voxel Depth to the MAIN Camera Depth Buffer
-                    // so subsequent passes (Grass) can test against it.
                     builder.SetRenderAttachment(compositeOutput, 0, AccessFlags.Write);
                     builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.Write);
 
@@ -417,9 +435,24 @@ namespace VoxelEngine.Core.Rendering
                         
                         cData.material.SetTexture(_VoxelDepthTextureParams, cData.depthSource);
                         cData.material.SetFloat(_SharpnessParams, cData.sharpness);
-                        if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR"); else cData.material.DisableKeyword("_UPSCALING_FSR");
                         
-                        // This Blit writes Color to compositeOutput AND Depth to activeDepthTexture (via Shader SV_Depth)
+                        // FSR Keyword
+                        if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR"); 
+                        else cData.material.DisableKeyword("_UPSCALING_FSR");
+
+                        // Outline Keyword & Params
+                        if (cData.enableOutline) 
+                        {
+                            cData.material.EnableKeyword("_OUTLINE_ON");
+                            cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
+                            // Pass thickness in X, threshold in Y
+                            cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineThreshold, 0, 0));
+                        }
+                        else 
+                        {
+                            cData.material.DisableKeyword("_OUTLINE_ON");
+                        }
+                        
                         Blitter.BlitTexture(context.cmd, cData.source, new Vector4(1, 1, 0, 0), cData.material, 0);
                     });
                 }
@@ -456,7 +489,7 @@ namespace VoxelEngine.Core.Rendering
 
                 // --- 5. FXAA Pass ---
                 if (useFXAA)
-                {
+                    {
                     using (var builder = renderGraph.AddRasterRenderPass<FXAAPassData>("FXAA Pass", out var fxaaData))
                     {
                         fxaaData.source = compositeOutput;
