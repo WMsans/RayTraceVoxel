@@ -136,29 +136,44 @@ Shader "Hidden/VoxelComposite"
 
                 // 3. Apply Outline
                 #if defined(_OUTLINE_ON)
-                    float2 outlineOff = _BlitTexture_TexelSize.xy * _OutlineParams.x;
+                    float2 e = _BlitTexture_TexelSize.xy * _OutlineParams.x;
                     
-                    // Sample neighbors
-                    float dN = SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, outlineOff.y)).r;
-                    float dS = SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv - float2(0, outlineOff.y)).r;
-                    float dE = SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(outlineOff.x, 0)).r;
-                    float dW = SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv - float2(outlineOff.x, 0)).r;
-                    
-                    // [FIX] Convert to LinearEyeDepth to obtain consistent world-space distances.
-                    // Raw depth derivatives explode near the camera, causing "whole surface outline".
-                    float linN = LinearEyeDepth(dN, _ZBufferParams);
-                    float linS = LinearEyeDepth(dS, _ZBufferParams);
-                    float linE = LinearEyeDepth(dE, _ZBufferParams);
-                    float linW = LinearEyeDepth(dW, _ZBufferParams);
+                    // Fetch Linear depths
+                    float depth = LinearEyeDepth(currentDepth, _ZBufferParams);
+                    float du = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, -e.y)).r, _ZBufferParams);
+                    float dr = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(e.x, 0)).r, _ZBufferParams);
+                    float dd = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, e.y)).r, _ZBufferParams);
+                    float dl = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(-e.x, 0)).r, _ZBufferParams);
 
-                    // Edge detection using finite difference on Linear Depth
-                    float depthDiff = abs(linN - linS) + abs(linE - linW);
+                    float depth_diff = 0.0;
+                    float neg_depth_diff = 0.5;
+
+                    // [FIX] Use Relative Depth Difference
+                    // Dividing by 'depth' ensures that distant objects (where derivatives are large in world units)
+                    // do not trigger the threshold. This fixes the "whole world outline" issue.
+                    float invDepth = 1.0 / (depth + 1e-6);
+
+                    depth_diff += clamp((du - depth) * invDepth, 0.0, 1.0);
+                    depth_diff += clamp((dd - depth) * invDepth, 0.0, 1.0);
+                    depth_diff += clamp((dr - depth) * invDepth, 0.0, 1.0);
+                    depth_diff += clamp((dl - depth) * invDepth, 0.0, 1.0);
+
+                    neg_depth_diff += (depth - du) * invDepth;
+                    neg_depth_diff += (depth - dd) * invDepth;
+                    neg_depth_diff += (depth - dr) * invDepth;
+                    neg_depth_diff += (depth - dl) * invDepth;
+
+                    neg_depth_diff = clamp(neg_depth_diff, 0.0, 1.0);
+                    // smoothstep(0.5, 0.5, x) behaves like a hard step function
+                    neg_depth_diff = clamp(step(0.5, neg_depth_diff) * 10.0, 0.0, 1.0);
+
+                    // A threshold of 0.2 now represents a ~20% relative change in depth, 
+                    // which is consistent regardless of distance.
+                    float outlineVal = smoothstep(0.2, 0.3, depth_diff);
                     
-                    // Threshold check (Threshold is now in World Units, e.g. 0.01 = 1cm)
-                    float isEdge = step(_OutlineParams.y, depthDiff);
-                    
-                    // Mix color
-                    col = lerp(col, _OutlineColor.rgb, isEdge * _OutlineColor.a);
+                    // Combine with negative depth diff if you want ridges, 
+                    // otherwise strictly follow user snippet which only used depth_diff for lerp.
+                    col = lerp(col, _OutlineColor.rgb, outlineVal * _OutlineColor.a);
                 #endif
 
                 if (alpha <= 0.0) discard;
