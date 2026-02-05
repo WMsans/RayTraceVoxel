@@ -721,7 +721,17 @@ float3 LightingDirect(float3 albedo, float3 N, float3 V, float3 L, float3 lightC
 { 
     roughness = max(roughness, 0.05);
     float3 H = normalize(V + L); 
-    float NdotL = max(dot(N, L), 0.0); 
+    
+    // [CEL SHADING] 1. Stepped Diffuse (NdotL)
+    // Instead of a smooth dot product, we quantize it into bands.
+    float NdotL_Raw = max(dot(N, L), 0.0);
+    
+    // Example: 3 discrete bands (Shadow, Mid-tone, Highlight)
+    // Using smoothstep creates a tiny soft edge to prevent aliasing artifacts
+    float band1 = smoothstep(0.0, 0.05, NdotL_Raw); // Shadow to Mid transition
+    float band2 = smoothstep(0.5, 0.55, NdotL_Raw); // Mid to Highlight transition
+    float steppedNdotL = 0.1 + (0.4 * band1) + (0.5 * band2); 
+
     float3 F0 = float3(0.04, 0.04, 0.04);
     F0 = lerp(F0, albedo, metallic); 
     
@@ -730,14 +740,25 @@ float3 LightingDirect(float3 albedo, float3 N, float3 V, float3 L, float3 lightC
     float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0); 
     
     float3 numerator = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001; 
+    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL_Raw + 0.0001; 
     float3 specular = numerator / denominator;
     
+    // [CEL SHADING] 2. Stepped Specular
+    // We threshold the specular intensity to create a sharp "anime-style" gleam
+    float specLum = dot(specular, float3(0.2126, 0.7152, 0.0722));
+    // The threshold adapts slightly to roughness
+    float specThreshold = 0.5 - (roughness * 0.3); 
+    float steppedSpec = smoothstep(specThreshold, specThreshold + 0.05, specLum);
+    
+    // Boost the stepped specular to make it pop
+    float3 finalSpecular = steppedSpec * lightColor * 5.0; 
+
     float3 kS = F; 
     float3 kD = float3(1.0, 1.0, 1.0) - kS; 
     kD *= 1.0 - metallic;
-    
-    return (kD * albedo / PI + specular) * lightColor * NdotL * 3.0;
+
+    // Combine: Use steppedNdotL for the diffuse term, add sharp specular on top
+    return (kD * albedo / PI * steppedNdotL) * lightColor * 3.0 + finalSpecular;
 }
 
 // -----------------------------------------------------------------------------
