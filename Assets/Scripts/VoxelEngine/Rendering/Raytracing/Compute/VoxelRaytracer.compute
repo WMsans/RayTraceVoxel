@@ -502,66 +502,20 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
 }
 
 // -----------------------------------------------------------------------------
-// Kernel
+// Scene Traversal
 // -----------------------------------------------------------------------------
 
-[numthreads(8, 8, 1)]
-void CSMain (uint3 id : SV_DispatchThreadID)
+HitInfo TraceScene(float3 rayOrigin, float3 rayDir, float maxDist)
 {
-    uint width, height; 
-    _Result.GetDimensions(width, height);
-    
-    if (id.x >= width || id.y >= height) return;
-
-    // --- OPTIMIZATION 0: Early exit if no chunks ---
-    if (_ChunkCount == 0) 
-    {
-        float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
-        float2 sampleUV = uv * 0.5 + 0.5;
-        _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
-        _ResultDepth[id.xy] = 0.0;
-        _MotionVectorTexture[id.xy] = 0;
-        return;
-    }
-
-    float2 jitter = _RaytraceParams.yz;
-    float2 uv = (id.xy + 0.5 + jitter) / float2(width, height) * 2.0 - 1.0;
-    float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
-    float3 rayDir = normalize(mul((float3x3)_CameraToWorld, viewRay.xyz));
-    float3 rayOrigin = _CameraToWorld._m03_m13_m23;
-    float depthVal = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (id.xy + 0.5) / float2(width, height), 0);
-    float linearDepth = 1.0 / (_ZBufferParams.z * depthVal + _ZBufferParams.w);
-    float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0, 0, 1)));
-    float maxDist = linearDepth / max(dot(rayDir, forward), 0.0001);
-    float dither = GetDither(id.xy);
-    
-    rayOrigin += rayDir * dither * 0.05;
-
     float closestT = maxDist;
     HitInfo bestHit = (HitInfo)0; 
     bestHit.hit = false;
     bestHit.chunkId = -1;
-    bool anyHit = false;
 
     float2 tScene = IntersectBox(rayOrigin, rayDir, _TLASBoundsMin, _TLASBoundsMax);
 
-    // --- OPTIMIZATION 1: Occlusion Culling ---
-    // If the rasterized geometry (walls, terrain) is closer than the voxel volume, stop.
-    // We check if maxDist (raster depth) is less than tScene.x (voxel entry).
-    // Note: tScene.x can be negative if inside, so we only cull if we are outside and blocked.
-    if (tScene.x > 0 && closestT < tScene.x)
-    {
-        // Blocked by raster geometry. Do nothing (output undefined or clear?) 
-        // We should just let it be transparent so composite shader passes raster.
-        _Result[id.xy] = float4(0, 0, 0, 0);
-        _ResultDepth[id.xy] = 0; 
-        return;
-    }
-
     if (tScene.x < tScene.y && tScene.y > 0)
     {
-        // --- OPTIMIZATION 2: Brute Force Fallback ---
-        // If chunk count is low, iterating chunks is FASTER than marching an empty grid.
         if (_ChunkCount < 64)
         {
             float tCurrent = max(0.0, tScene.x);
@@ -597,7 +551,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                                 bestHit.chunkId = k;
                                 bestHit.pos = hitWorld;
                                 bestHit.normal = normalize(mul(info.normal, (float3x3)chunk.worldToLocal));
-                                anyHit = true;
                             }
                         }
                     }
@@ -606,7 +559,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         }
         else 
         {
-            // --- Existing TLAS Grid Logic ---
             float tCurrent = max(0.0, tScene.x);
             float tMaxLimit = min(closestT, tScene.y);
             float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
@@ -669,7 +621,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
                                             bestHit.chunkId = chunkId;
                                             bestHit.pos = hitWorld;
                                             bestHit.normal = normalize(mul(info.normal, (float3x3)chunk.worldToLocal));
-                                            anyHit = true;
                                         }
                                     }
                                 }
@@ -703,61 +654,259 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             }
         }
     }
+    return bestHit;
+}
 
+bool TraceShadow(float3 rayOrigin, float3 rayDir, float maxDist)
+{
+    float2 tScene = IntersectBox(rayOrigin, rayDir, _TLASBoundsMin, _TLASBoundsMax);
+    if (tScene.x >= tScene.y || tScene.y <= 0) return false;
 
-    if (anyHit)
+    if (_ChunkCount < 64)
     {
+        for (int k = 0; k < _ChunkCount; k++)
+        {
+            ChunkDef chunk = _ChunkBuffer[k];
+            float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
+            if (tBox.x < tBox.y && tBox.x < maxDist && tBox.y > 0)
+            {
+                float3 localOrigin = mul(chunk.worldToLocal, float4(rayOrigin, 1.0)).xyz;
+                float3 localDir = normalize(mul((float3x3)chunk.worldToLocal, rayDir));
+                float boundsSz = 64.0;
+                float2 tLocalBox = IntersectBox(localOrigin, localDir, float3(0,0,0), float3(boundsSz, boundsSz, boundsSz));
+                if (tLocalBox.x < tLocalBox.y && tLocalBox.y > 0)
+                {
+                    HitInfo info = TraceSVO(chunk, localOrigin, localDir, min(maxDist, tLocalBox.y), max(0.0, tLocalBox.x));
+                    if (info.hit) return true;
+                }
+            }
+        }
+    }
+    else
+    {
+        float tCurrent = max(0.0, tScene.x);
+        float tMaxLimit = min(maxDist, tScene.y);
+        float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
+        float3 invDir = 1.0 / (rayDir + sign(rayDir) * 1e-6);
+        float3 startPos = rayOrigin + rayDir * (tCurrent + 1e-4) - _TLASBoundsMin;
+        int3 cellIdx = clamp(int3(startPos / cellSize), 0, _TLASResolution - 1);
+        int3 step = int3(sign(rayDir));
+        float3 tDelta = abs(cellSize * invDir);
+        float3 cellBoundMin = _TLASBoundsMin + float3(cellIdx) * cellSize;
+        float3 cellBoundMax = cellBoundMin + cellSize;
+        float3 nextBoundary = float3(rayDir.x > 0 ? cellBoundMax.x : cellBoundMin.x, rayDir.y > 0 ? cellBoundMax.y : cellBoundMin.y, rayDir.z > 0 ? cellBoundMax.z : cellBoundMin.z);
+        float3 tNext = (nextBoundary - rayOrigin) * invDir;
+
+        int iter = 0;
+        int maxIter = _TLASResolution * 3;
+        while (iter < maxIter && tCurrent < tMaxLimit)
+        {
+            if (all(cellIdx >= 0) && all(cellIdx < _TLASResolution))
+            {
+                uint flatIdx = cellIdx.z * _TLASResolution * _TLASResolution + cellIdx.y * _TLASResolution + cellIdx.x;
+                TLASCell cell = _TLASGridBuffer[flatIdx];
+                for (uint k = 0; k < cell.count; k++)
+                {
+                    int chunkId = _TLASChunkIndexBuffer[cell.offset + k];
+                    ChunkDef chunk = _ChunkBuffer[chunkId];
+                    float2 tBox = IntersectBox(rayOrigin, rayDir, chunk.boundsMin, chunk.boundsMax);
+                    if (tBox.x < tBox.y && tBox.x < maxDist && tBox.y > tCurrent - 0.01)
+                    {
+                        float3 localOrigin = mul(chunk.worldToLocal, float4(rayOrigin, 1.0)).xyz;
+                        float3 localDir = normalize(mul((float3x3)chunk.worldToLocal, rayDir));
+                        float2 tLocalBox = IntersectBox(localOrigin, localDir, float3(0,0,0), float3(64,64,64));
+                        if (tLocalBox.x < tLocalBox.y && tLocalBox.y > 0)
+                        {
+                            HitInfo info = TraceSVO(chunk, localOrigin, localDir, min(maxDist, tLocalBox.y), max(0.0, tLocalBox.x));
+                            if (info.hit) return true;
+                        }
+                    }
+                }
+            }
+            float tExit = min(min(tNext.x, tNext.y), tNext.z);
+            tCurrent = tExit;
+            if (tNext.x <= tNext.y && tNext.x <= tNext.z) { tNext.x += tDelta.x; cellIdx.x += step.x; }
+            else if (tNext.y <= tNext.z) { tNext.y += tDelta.y; cellIdx.y += step.y; }
+            else { tNext.z += tDelta.z; cellIdx.z += step.z; }
+            iter++;
+        }
+    }
+    return false;
+}
+
+float3 LightingDirect(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic) 
+{ 
+    roughness = max(roughness, 0.05);
+    float3 H = normalize(V + L); 
+    float NdotL = max(dot(N, L), 0.0); 
+    float3 F0 = float3(0.04, 0.04, 0.04);
+    F0 = lerp(F0, albedo, metallic); 
+    
+    float NDF = DistributionGGX(N, H, roughness); 
+    float G = GeometrySmith(N, V, L, roughness);
+    float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0); 
+    
+    float3 numerator = NDF * G * F;
+    float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL + 0.0001; 
+    float3 specular = numerator / denominator;
+    
+    float3 kS = F; 
+    float3 kD = float3(1.0, 1.0, 1.0) - kS; 
+    kD *= 1.0 - metallic;
+    
+    return (kD * albedo / PI + specular) * lightColor * NdotL * 3.0;
+}
+
+// -----------------------------------------------------------------------------
+// Kernel
+// -----------------------------------------------------------------------------
+
+[numthreads(8, 8, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    uint width, height; 
+    _Result.GetDimensions(width, height);
+    if (id.x >= width || id.y >= height) return;
+
+    if (_ChunkCount == 0) 
+    {
+        float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
+        float2 sampleUV = uv * 0.5 + 0.5;
+        _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
+        _ResultDepth[id.xy] = 0.0;
+        _MotionVectorTexture[id.xy] = 0;
+        return;
+    }
+
+    float2 jitter = _RaytraceParams.yz;
+    float2 uv = (id.xy + 0.5 + jitter) / float2(width, height) * 2.0 - 1.0;
+    float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
+    float3 rayDir = normalize(mul((float3x3)_CameraToWorld, viewRay.xyz));
+    float3 rayOrigin = _CameraToWorld._m03_m13_m23;
+    float depthVal = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (id.xy + 0.5) / float2(width, height), 0);
+    float linearDepth = 1.0 / (_ZBufferParams.z * depthVal + _ZBufferParams.w);
+    float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0, 0, 1)));
+    float maxDist = linearDepth / max(dot(rayDir, forward), 0.0001);
+    float dither = GetDither(id.xy);
+    
+    rayOrigin += rayDir * dither * 0.05;
+
+    float3 resultColor = 0;
+    float3 throughput = 1;
+    HitInfo primaryHit = (HitInfo)0;
+    bool anyPrimaryHit = false;
+    float currentMaxDist = maxDist;
+
+    // --- Optimization: Check TLAS bounds once for primary ray ---
+    float2 tScene = IntersectBox(rayOrigin, rayDir, _TLASBoundsMin, _TLASBoundsMax);
+    if (tScene.x > 0 && maxDist < tScene.x)
+    {
+        float2 sampleUV = (id.xy + 0.5) / float2(width, height);
+        _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
+        _ResultDepth[id.xy] = 0; 
+        return;
+    }
+
+    for (int bounce = 0; bounce < 3; bounce++)
+    {
+        HitInfo hit = TraceScene(rayOrigin, rayDir, currentMaxDist);
+        
+        if (!hit.hit)
+        {
+            if (bounce == 0)
+            {
+                float2 sampleUV = (id.xy + 0.5) / float2(width, height);
+                resultColor = _SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb;
+            }
+            else
+            {
+                resultColor += throughput * GetSkyColor(rayDir);
+            }
+            break;
+        }
+
+        if (bounce == 0)
+        {
+            primaryHit = hit;
+            anyPrimaryHit = true;
+        }
+
+        // Material sampling
         float3 albedo, normal;
         float roughness, ao, metallic;
-        
-        if (bestHit.isLOD) 
+        if (hit.isLOD) 
         {
-            float dist = length(bestHit.pos - rayOrigin);
+            float dist = length(hit.pos - rayOrigin);
             float spotSize = dist * _RaytraceParams.x;
             float mip = max(0.0, log2(spotSize * 16.0));
-            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, metallic, ao, mip);
+            TriplanarSampling(hit.pos, hit.normal, hit.matId, albedo, normal, roughness, metallic, ao, mip);
         } 
         else 
         {
-            TriplanarSampling(bestHit.pos, bestHit.normal, bestHit.matId, albedo, normal, roughness, metallic, ao, 0);
+            TriplanarSampling(hit.pos, hit.normal, hit.matId, albedo, normal, roughness, metallic, ao, 0);
         }
-        
-        float3 V = normalize(rayOrigin - bestHit.pos); 
+
+        float3 V = -rayDir;
         float3 L = normalize(_MainLightPosition.xyz);
-        float3 color = LightingPBR(albedo, bestHit.normal, V, L, _MainLightColor.rgb, roughness, metallic, ao);
         
-        if (_DebugViewBricks > 0.5) 
+        float shadow = 1.0;
+        if (TraceShadow(hit.pos + hit.normal * 0.02, L, 100.0))
         {
-            if (bestHit.isLOD) 
-                color = float3(1.0, 0.0, 0.0) * 0.5 + bestHit.lodColor * 0.5;
-            else if (bestHit.brickId == 0) 
-                color = float3(0, 1, 0); // Debug: Green for Solid Opt
-            else 
-                color = GetRandomColor(bestHit.brickId);
+            shadow = 0.0;
         }
+
+        float3 direct = LightingDirect(albedo, hit.normal, V, L, _MainLightColor.rgb * shadow, roughness, metallic);
+        float3 ambient = albedo * ao * 0.05 * GetSkyColor(hit.normal);
         
-        if (_DebugViewNormals > 0.5) 
-            color = bestHit.normal * 0.5 + 0.5;
-            
-        _Result[id.xy] = float4(color, 1.0);
+        resultColor += throughput * (direct + ambient);
+
+        // Debug views (only on first hit)
+        if (bounce == 0)
+        {
+            if (_DebugViewBricks > 0.5) 
+            {
+                if (hit.isLOD) resultColor = float3(1.0, 0.0, 0.0) * 0.5 + hit.lodColor * 0.5;
+                else if (hit.brickId == 0) resultColor = float3(0, 1, 0);
+                else resultColor = GetRandomColor(hit.brickId);
+                break; 
+            }
+            if (_DebugViewNormals > 0.5) 
+            {
+                resultColor = hit.normal * 0.5 + 0.5;
+                break;
+            }
+        }
+
+        // Setup next bounce
+        float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+        float3 F = FresnelSchlick(max(dot(hit.normal, V), 0.0), F0);
         
-        float4 clipPos = mul(_CameraViewProjection, float4(bestHit.pos, 1.0));
+        throughput *= F * (1.0 - roughness);
+        rayDir = reflect(rayDir, hit.normal);
+        rayOrigin = hit.pos + hit.normal * 0.02;
+        currentMaxDist = 1000.0;
+
+        if (max(throughput.r, max(throughput.g, throughput.b)) < 0.05)
+            break;
+    }
+
+    if (anyPrimaryHit)
+    {
+        _Result[id.xy] = float4(resultColor, 1.0);
+        
+        float4 clipPos = mul(_CameraViewProjection, float4(primaryHit.pos, 1.0));
         _ResultDepth[id.xy] = clipPos.z / clipPos.w;
         
-        float4 prevClipPos = mul(_PrevViewProjMatrix, float4(bestHit.pos, 1.0));
+        float4 prevClipPos = mul(_PrevViewProjMatrix, float4(primaryHit.pos, 1.0));
         float2 ndc = clipPos.xy / clipPos.w;
         float2 prevNdc = prevClipPos.xy / prevClipPos.w;
         float2 currentUV = ndc * 0.5 + 0.5;
         float2 prevUV = prevNdc * 0.5 + 0.5;
-        
         _MotionVectorTexture[id.xy] = currentUV - prevUV;
     }
     else
     {
-        float2 sampleUV = uv * 0.5 + 0.5;
-        float4 skyColor = _SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0);
-        
-        _Result[id.xy] = float4(skyColor.rgb, 1.0);
+        _Result[id.xy] = float4(resultColor, 1.0);
         _ResultDepth[id.xy] = 0.0;
         
         float3 farPos = rayOrigin + rayDir * 1000.0;
@@ -767,13 +916,12 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float2 prevNdc = prevClipPos.xy / prevClipPos.w;
         float2 currentUV = ndc * 0.5 + 0.5;
         float2 prevUV = prevNdc * 0.5 + 0.5;
-        
         _MotionVectorTexture[id.xy] = currentUV - prevUV;
     }
 
     if (all(id.xy == (uint2)_MousePosition)) 
     { 
-        _RaycastBuffer[0] = float4(bestHit.pos, anyHit ? 1.0 : 0.0);
-        _RaycastBuffer[1] = float4((float)bestHit.chunkId, 0, 0, 0);
+        _RaycastBuffer[0] = float4(primaryHit.pos, anyPrimaryHit ? 1.0 : 0.0);
+        _RaycastBuffer[1] = float4((float)primaryHit.chunkId, 0, 0, 0);
     }
 }
