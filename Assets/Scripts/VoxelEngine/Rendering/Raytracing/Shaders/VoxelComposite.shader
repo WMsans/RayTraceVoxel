@@ -121,14 +121,6 @@ Shader "Hidden/VoxelComposite"
                 return output * rcpWeight;
             }
 
-            float normalIndicator(float3 normalEdgeBias, float3 baseNormal, float3 newNormal, float depth_diff)
-            {
-                float normalDiff = dot(baseNormal - newNormal, normalEdgeBias);
-                float normalIndicator = clamp(smoothstep(-0.01, 0.01, normalDiff), 0.0, 1.0);
-                float depthIndicator = clamp(sign(depth_diff * 0.25 + 0.0025), 0.0, 1.0);
-                return (1.0 - dot(baseNormal, newNormal)) * depthIndicator * normalIndicator;
-            }
-
             FragOutput Frag(Varyings input)
             {
                 FragOutput output;
@@ -158,7 +150,6 @@ Shader "Hidden/VoxelComposite"
                     float dl = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(-e.x, 0)).r, _ZBufferParams);
                     
                     float depth_diff = 0.0;
-                    float neg_depth_diff = 0.0;
                     
                     // Use Relative Depth Difference
                     float invDepth = 1.0 / (depth + 1e-6);
@@ -167,38 +158,12 @@ Shader "Hidden/VoxelComposite"
                     depth_diff += clamp((dr - depth) * invDepth, 0.0, 1.0);
                     depth_diff += clamp((dl - depth) * invDepth, 0.0, 1.0);
 
-                    neg_depth_diff += clamp((depth - du) * invDepth, 0.0, 1.0);
-                    neg_depth_diff += clamp((depth - dd) * invDepth, 0.0, 1.0);
-                    neg_depth_diff += clamp((depth - dr) * invDepth, 0.0, 1.0);
-                    neg_depth_diff += clamp((depth - dl) * invDepth, 0.0, 1.0);
-
                     // Fixed threshold (since parameter was removed)
                     float outlineVal = smoothstep(0.2, 0.3, depth_diff);
                     
                     // Mix original color with Outline Color using Strength
                     float3 outlineMix = lerp(col, _OutlineColor.rgb, _OutlineParams.y); 
                     col = lerp(col, outlineMix, outlineVal);
-
-                    // --- Normal Diff Highlight ---
-                    float normal_diff = 0.0;
-                    float3 normal = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv).rgb * 2.0 - 1.0;
-                    float3 nu = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv + float2(0.0, -e.y)).rgb * 2.0 - 1.0;
-                    float3 nr = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv + float2(e.x, 0.0)).rgb * 2.0 - 1.0;
-                    float3 nd = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv + float2(0.0, e.y)).rgb * 2.0 - 1.0;
-                    float3 nl = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv + float2(-e.x, 0.0)).rgb * 2.0 - 1.0;
-                    
-                    float3 normal_edge_bias = float3(1.0, 1.0, 1.0);
-                    
-                    normal_diff += normalIndicator(normal_edge_bias, normal, nu, depth_diff);
-                    normal_diff += normalIndicator(normal_edge_bias, normal, nr, depth_diff);
-                    normal_diff += normalIndicator(normal_edge_bias, normal, nd, depth_diff);
-                    normal_diff += normalIndicator(normal_edge_bias, normal, nl, depth_diff);
-                    
-                    normal_diff = smoothstep(0.2, 0.8, normal_diff);
-                    normal_diff = clamp(normal_diff - neg_depth_diff, 0.0, 1.0);
-                    
-                    float3 final_highlight_color = lerp(col, _HighlightColor.rgb, _HighlightStrength);
-                    col = lerp(col, final_highlight_color, normal_diff);
                 #endif
 
                 if (alpha <= 0.0) discard;
