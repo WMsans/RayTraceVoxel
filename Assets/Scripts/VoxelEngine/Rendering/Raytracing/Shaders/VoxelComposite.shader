@@ -6,7 +6,6 @@ Shader "Hidden/VoxelComposite"
         _Sharpness ("Sharpness", Range(0, 1)) = 0.5
         
         // Exposed properties for material inspection/defaults
-        _OutlineColor ("Outline Color", Color) = (0,0,0,1)
         _OutlineParams ("Outline Params", Vector) = (1, 0.01, 0, 0)
     }
     SubShader
@@ -35,9 +34,8 @@ Shader "Hidden/VoxelComposite"
             float4 _BlitTexture_TexelSize; // x=1/w, y=1/h, z=w, w=h
             float _Sharpness;
             // Outline Uniforms
-            float4 _OutlineColor;
             float4 _OutlineParams;
-            // x: thickness, y: threshold
+            // x: thickness
 
             struct Varyings
             {
@@ -137,43 +135,28 @@ Shader "Hidden/VoxelComposite"
                 // 3. Apply Outline
                 #if defined(_OUTLINE_ON)
                     float2 e = _BlitTexture_TexelSize.xy * _OutlineParams.x;
-                    
                     // Fetch Linear depths
                     float depth = LinearEyeDepth(currentDepth, _ZBufferParams);
                     float du = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, -e.y)).r, _ZBufferParams);
                     float dr = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(e.x, 0)).r, _ZBufferParams);
                     float dd = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, e.y)).r, _ZBufferParams);
                     float dl = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(-e.x, 0)).r, _ZBufferParams);
-
+                    
                     float depth_diff = 0.0;
-                    float neg_depth_diff = 0.5;
-
-                    // [FIX] Use Relative Depth Difference
-                    // Dividing by 'depth' ensures that distant objects (where derivatives are large in world units)
-                    // do not trigger the threshold. This fixes the "whole world outline" issue.
+                    
+                    // Use Relative Depth Difference
                     float invDepth = 1.0 / (depth + 1e-6);
-
                     depth_diff += clamp((du - depth) * invDepth, 0.0, 1.0);
                     depth_diff += clamp((dd - depth) * invDepth, 0.0, 1.0);
                     depth_diff += clamp((dr - depth) * invDepth, 0.0, 1.0);
                     depth_diff += clamp((dl - depth) * invDepth, 0.0, 1.0);
 
-                    neg_depth_diff += (depth - du) * invDepth;
-                    neg_depth_diff += (depth - dd) * invDepth;
-                    neg_depth_diff += (depth - dr) * invDepth;
-                    neg_depth_diff += (depth - dl) * invDepth;
-
-                    neg_depth_diff = clamp(neg_depth_diff, 0.0, 1.0);
-                    // smoothstep(0.5, 0.5, x) behaves like a hard step function
-                    neg_depth_diff = clamp(step(0.5, neg_depth_diff) * 10.0, 0.0, 1.0);
-
-                    // A threshold of 0.2 now represents a ~20% relative change in depth, 
-                    // which is consistent regardless of distance.
+                    // Fixed threshold (since parameter was removed)
                     float outlineVal = smoothstep(0.2, 0.3, depth_diff);
                     
-                    // Combine with negative depth diff if you want ridges, 
-                    // otherwise strictly follow user snippet which only used depth_diff for lerp.
-                    col = lerp(col, _OutlineColor.rgb, outlineVal * _OutlineColor.a);
+                    // CHANGED: Mix original color with Light Color
+                    float3 outlineMix = lerp(col, _MainLightColor.rgb, 0.5); 
+                    col = lerp(col, outlineMix, outlineVal);
                 #endif
 
                 if (alpha <= 0.0) discard;

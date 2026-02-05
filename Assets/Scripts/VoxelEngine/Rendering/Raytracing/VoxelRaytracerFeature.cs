@@ -40,9 +40,7 @@ namespace VoxelEngine.Core.Rendering
 
             [Header("Outline")]
             public bool enableOutline = false;
-            public Color outlineColor = Color.black;
             [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
-            public float outlineThreshold = 0.01f;
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -152,7 +150,6 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _BlendParams = Shader.PropertyToID("_Blend");
 
             // Outline IDs
-            private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
             private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
 
             // Debug IDs
@@ -240,9 +237,8 @@ namespace VoxelEngine.Core.Rendering
                 
                 // Outline Data
                 public bool enableOutline;
-                public Color outlineColor;
                 public float outlineThickness;
-                public float outlineThreshold;
+                public Vector4 mainLightColor; // ADDED
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
             private class TAAPassData { public TextureHandle source; public TextureHandle history; public TextureHandle motion; public TextureHandle destination; public Material material; public float blend; }
@@ -419,9 +415,10 @@ namespace VoxelEngine.Core.Rendering
                     
                     // Populate Outline Data
                     compData.enableOutline = _settings.enableOutline;
-                    compData.outlineColor = _settings.outlineColor;
+                    // REMOVED: compData.outlineColor = _settings.outlineColor;
                     compData.outlineThickness = _settings.outlineThickness;
-                    compData.outlineThreshold = _settings.outlineThreshold;
+                    // REMOVED: compData.outlineThreshold = _settings.outlineThreshold;
+                    compData.mainLightColor = mainCol; // ADDED (mainCol is available from SetupLights called earlier)
 
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
@@ -431,12 +428,11 @@ namespace VoxelEngine.Core.Rendering
 
                     builder.SetRenderFunc((CompositePassData cData, RasterGraphContext context) =>
                     {
-                        if (useFXAA) { context.cmd.ClearRenderTarget(false, true, Color.clear); } // Clear intermediate color only
+                        if (useFXAA) { context.cmd.ClearRenderTarget(false, true, Color.clear); }
                         
                         cData.material.SetTexture(_VoxelDepthTextureParams, cData.depthSource);
                         cData.material.SetFloat(_SharpnessParams, cData.sharpness);
                         
-                        // FSR Keyword
                         if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR"); 
                         else cData.material.DisableKeyword("_UPSCALING_FSR");
 
@@ -444,9 +440,12 @@ namespace VoxelEngine.Core.Rendering
                         if (cData.enableOutline) 
                         {
                             cData.material.EnableKeyword("_OUTLINE_ON");
-                            cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
-                            // Pass thickness in X, threshold in Y
-                            cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineThreshold, 0, 0));
+                            
+                            // ADDED: Pass Main Light Color
+                            cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
+
+                            // UPDATED: Pass thickness in X, hardcoded or zero parameters elsewhere
+                            cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, 0, 0, 0));
                         }
                         else 
                         {
