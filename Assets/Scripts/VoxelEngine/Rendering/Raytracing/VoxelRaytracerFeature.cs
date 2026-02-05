@@ -42,6 +42,9 @@ namespace VoxelEngine.Core.Rendering
             public bool enableOutline = false;
             [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
             [Range(0.0f, 1.0f)] public float outlineStrength = 0.5f;
+            public Color outlineColor = Color.black;
+            public Color highlightColor = Color.white;
+            [Range(0.0f, 1.0f)] public float highlightStrength = 0.5f;
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -113,6 +116,7 @@ namespace VoxelEngine.Core.Rendering
             // Shader IDs
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
             private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
+            private static readonly int _ResultNormalsParams = Shader.PropertyToID("_ResultNormals");
             private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
             private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
             private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
@@ -152,6 +156,10 @@ namespace VoxelEngine.Core.Rendering
 
             // Outline IDs
             private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
+            private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
+            private static readonly int _HighlightColorParams = Shader.PropertyToID("_HighlightColor");
+            private static readonly int _HighlightStrengthParams = Shader.PropertyToID("_HighlightStrength");
+            private static readonly int _VoxelNormalTextureParams = Shader.PropertyToID("_VoxelNormalTexture");
 
             // Debug IDs
             private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
@@ -225,7 +233,7 @@ namespace VoxelEngine.Core.Rendering
 
             // --- Pass Data Classes ---
             private class PassData {
-                public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
+                public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle targetNormals; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
                 // Debug fields
                 public float debugNormals; public float debugBricks;
             }
@@ -240,7 +248,13 @@ namespace VoxelEngine.Core.Rendering
                 public bool enableOutline;
                 public float outlineThickness;
                 public float outlineStrength;
+                public Color outlineColor;
                 public Vector4 mainLightColor; // ADDED
+                
+                // Highlight Data
+                public TextureHandle normalTexture;
+                public Color highlightColor;
+                public float highlightStrength;
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
             private class TAAPassData { public TextureHandle source; public TextureHandle history; public TextureHandle motion; public TextureHandle destination; public Material material; public float blend; }
@@ -282,6 +296,8 @@ namespace VoxelEngine.Core.Rendering
                 TextureHandle lowResResult = renderGraph.CreateTexture(colorDesc);
                 TextureDesc depthDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat, enableRandomWrite = true, name = "VoxelRaytraceDepth_LowRes" };
                 TextureHandle lowResDepth = renderGraph.CreateTexture(depthDesc);
+                TextureDesc normDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat, enableRandomWrite = true, name = "VoxelRaytraceNormals" };
+                TextureHandle lowResNormals = renderGraph.CreateTexture(normDesc);
                 TextureDesc mvDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16_SFloat, enableRandomWrite = true, name = "VoxelMotionVectors" };
                 TextureHandle motionVectorTex = renderGraph.CreateTexture(mvDesc);
 
@@ -346,7 +362,7 @@ namespace VoxelEngine.Core.Rendering
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
                     if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
-                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
+                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
                     
                     // --- Debug Setup ---
                     data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
@@ -354,6 +370,7 @@ namespace VoxelEngine.Core.Rendering
 
                     builder.UseTexture(data.targetColor, AccessFlags.Write);
                     builder.UseTexture(data.targetDepth, AccessFlags.Write);
+                    builder.UseTexture(data.targetNormals, AccessFlags.Write);
                     builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
                     builder.UseTexture(data.sourceColor, AccessFlags.Read);
@@ -380,7 +397,7 @@ namespace VoxelEngine.Core.Rendering
                         if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _NormalTextureArrayParams, pd.normalArray);
                         if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _MaskTextureArrayParams, pd.maskArray);
                         cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, pd.cameraToWorld); cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, pd.cameraInverseProjection); cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, pd.viewProj); cmd.SetComputeMatrixParam(cs, _PrevViewProjMatrixParams, pd.prevViewProj);
-                        cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, _SourceTexParams, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
+                        cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, _SourceTexParams, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, _ResultNormalsParams, pd.targetNormals); cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
                         cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor); cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
                         
                         // --- Set Debug Params ---
@@ -417,14 +434,20 @@ namespace VoxelEngine.Core.Rendering
                     
                     // Populate Outline Data
                     compData.enableOutline = _settings.enableOutline;
-                    // REMOVED: compData.outlineColor = _settings.outlineColor;
+                    compData.outlineColor = _settings.outlineColor;
                     compData.outlineThickness = _settings.outlineThickness;
                     compData.outlineStrength = _settings.outlineStrength;
                     // REMOVED: compData.outlineThreshold = _settings.outlineThreshold;
                     compData.mainLightColor = mainCol; // ADDED (mainCol is available from SetupLights called earlier)
+                    
+                    // Populate Highlight Data
+                    compData.normalTexture = lowResNormals;
+                    compData.highlightColor = _settings.highlightColor;
+                    compData.highlightStrength = _settings.highlightStrength;
 
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
+                    builder.UseTexture(compData.normalTexture, AccessFlags.Read);
                     
                     builder.SetRenderAttachment(compositeOutput, 0, AccessFlags.Write);
                     builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.Write);
@@ -446,9 +469,15 @@ namespace VoxelEngine.Core.Rendering
                             
                             // ADDED: Pass Main Light Color
                             cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
+                            cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
 
                             // UPDATED: Pass thickness in X, strength in Y
                             cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
+
+                            // Set Highlight Params
+                            cData.material.SetTexture(_VoxelNormalTextureParams, cData.normalTexture);
+                            cData.material.SetColor(_HighlightColorParams, cData.highlightColor);
+                            cData.material.SetFloat(_HighlightStrengthParams, cData.highlightStrength);
                         }
                         else 
                         {

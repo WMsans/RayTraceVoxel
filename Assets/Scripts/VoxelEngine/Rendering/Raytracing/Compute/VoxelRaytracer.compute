@@ -45,6 +45,7 @@ SamplerState sampler_LinearRepeat
 
 RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
+RWTexture2D<float4> _ResultNormals;
 RWStructuredBuffer<float4> _RaycastBuffer;
 RWTexture2D<float2> _MotionVectorTexture;
 
@@ -745,16 +746,16 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     _Result.GetDimensions(width, height);
  if (id.x >= width || id.y >= height) return;
 
-    if (_ChunkCount == 0) 
-    {
-        float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
- float2 sampleUV = uv * 0.5 + 0.5;
-        _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
-        _ResultDepth[id.xy] = 0.0;
-        _MotionVectorTexture[id.xy] = 0;
- return;
-    }
-
+        if (_ChunkCount == 0) 
+        {
+            float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
+            float2 sampleUV = uv * 0.5 + 0.5;
+            _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
+            _ResultDepth[id.xy] = 0.0;
+            _ResultNormals[id.xy] = float4(0.5, 0.5, 0.5, 0.0);
+            _MotionVectorTexture[id.xy] = 0;
+            return;
+        }
     float2 jitter = _RaytraceParams.yz;
     float2 uv = (id.xy + 0.5 + jitter) / float2(width, height) * 2.0 - 1.0;
  float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
@@ -882,34 +883,35 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             break;
  }
 
-    if (anyPrimaryHit)
-    {
-        _Result[id.xy] = float4(resultColor, 1.0);
- float4 clipPos = mul(_CameraViewProjection, float4(primaryHit.pos, 1.0));
-        _ResultDepth[id.xy] = clipPos.z / clipPos.w;
-        
-        float4 prevClipPos = mul(_PrevViewProjMatrix, float4(primaryHit.pos, 1.0));
- float2 ndc = clipPos.xy / clipPos.w;
-        float2 prevNdc = prevClipPos.xy / prevClipPos.w;
-        float2 currentUV = ndc * 0.5 + 0.5;
- float2 prevUV = prevNdc * 0.5 + 0.5;
-        _MotionVectorTexture[id.xy] = currentUV - prevUV;
- }
-    else
-    {
-        _Result[id.xy] = float4(resultColor, 1.0);
- _ResultDepth[id.xy] = 0.0;
-        
-        float3 farPos = rayOrigin + rayDir * 1000.0;
-        float4 clipPos = mul(_CameraViewProjection, float4(farPos, 1.0));
- float4 prevClipPos = mul(_PrevViewProjMatrix, float4(farPos, 1.0));
-        float2 ndc = clipPos.xy / clipPos.w;
-        float2 prevNdc = prevClipPos.xy / prevClipPos.w;
- float2 currentUV = ndc * 0.5 + 0.5;
-        float2 prevUV = prevNdc * 0.5 + 0.5;
- _MotionVectorTexture[id.xy] = currentUV - prevUV;
-    }
-
+        if (anyPrimaryHit)
+        {
+            _Result[id.xy] = float4(resultColor, 1.0);
+            float4 clipPos = mul(_CameraViewProjection, float4(primaryHit.pos, 1.0));
+            _ResultDepth[id.xy] = clipPos.z / clipPos.w;
+            _ResultNormals[id.xy] = float4(primaryHit.normal * 0.5 + 0.5, 1.0);
+            
+            float4 prevClipPos = mul(_PrevViewProjMatrix, float4(primaryHit.pos, 1.0));
+            float2 ndc = clipPos.xy / clipPos.w;
+            float2 prevNdc = prevClipPos.xy / prevClipPos.w;
+            float2 currentUV = ndc * 0.5 + 0.5;
+            float2 prevUV = prevNdc * 0.5 + 0.5;
+            _MotionVectorTexture[id.xy] = currentUV - prevUV;
+        }
+        else
+        {
+            _Result[id.xy] = float4(resultColor, 1.0);
+            _ResultDepth[id.xy] = 0.0;
+            _ResultNormals[id.xy] = float4(0.5, 0.5, 0.5, 0.0);
+            
+            float3 farPos = rayOrigin + rayDir * 1000.0;
+            float4 clipPos = mul(_CameraViewProjection, float4(farPos, 1.0));
+            float4 prevClipPos = mul(_PrevViewProjMatrix, float4(farPos, 1.0));
+            float2 ndc = clipPos.xy / clipPos.w;
+            float2 prevNdc = prevClipPos.xy / prevClipPos.w;
+            float2 currentUV = ndc * 0.5 + 0.5;
+            float2 prevUV = prevNdc * 0.5 + 0.5;
+            _MotionVectorTexture[id.xy] = currentUV - prevUV;
+        }
     if (all(id.xy == (uint2)_MousePosition)) 
     { 
         _RaycastBuffer[0] = float4(primaryHit.pos, anyPrimaryHit ? 1.0 : 0.0);
