@@ -40,7 +40,12 @@ namespace VoxelEngine.Core.Rendering
         private ComputeBuffer _grassAppendBuffer;
         private ComputeBuffer _indirectArgsBuffer;
         private uint[] _argsData = new uint[] { 0, 0, 0, 0, 0 };
+        private bool _isDirty = true;
         
+        // --- Static Frustum Cache ---
+        private static Plane[] _frustumPlanes = new Plane[6];
+        private static int _lastPlaneFrame = -1;
+
         // --- References ---
         private VoxelVolume _volume;
         private Material _grassMaterial;
@@ -57,8 +62,6 @@ namespace VoxelEngine.Core.Rendering
             
             if (grassShader != null)
                 _grassMaterial = new Material(grassShader);
-            
-            InitializeBuffers();
         }
 
         private void OnEnable()
@@ -71,6 +74,7 @@ namespace VoxelEngine.Core.Rendering
         {
             _volume.OnRegenerationComplete -= Refresh;
             ActiveRenderers.Remove(this);
+            ReleaseBuffers();
         }
 
         private void OnDestroy()
@@ -82,6 +86,7 @@ namespace VoxelEngine.Core.Rendering
 
         private void InitializeBuffers()
         {
+            if (_grassAppendBuffer != null) return;
             _grassAppendBuffer = new ComputeBuffer(maxInstances, 20, ComputeBufferType.Append);
             _indirectArgsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
         }
@@ -89,24 +94,66 @@ namespace VoxelEngine.Core.Rendering
         private void ReleaseBuffers()
         {
             _grassAppendBuffer?.Release();
+            _grassAppendBuffer = null;
             _indirectArgsBuffer?.Release();
+            _indirectArgsBuffer = null;
+        }
+
+        private void Update()
+        {
+            // Update frustum planes once per frame
+            if (Time.frameCount != _lastPlaneFrame)
+            {
+                if (Camera.main != null)
+                {
+                    GeometryUtility.CalculateFrustumPlanes(Camera.main, _frustumPlanes);
+                    _lastPlaneFrame = Time.frameCount;
+                }
+            }
+
+            // Check Visibility
+            bool visible = GeometryUtility.TestPlanesAABB(_frustumPlanes, _volume.WorldBounds);
+
+            if (visible)
+            {
+                if (_grassAppendBuffer == null)
+                {
+                    InitializeBuffers();
+                    _isDirty = true;
+                }
+
+                if (_isDirty && _volume.IsReady)
+                {
+                    DispatchGeneration();
+                    _isDirty = false;
+                }
+            }
+            else
+            {
+                if (_grassAppendBuffer != null)
+                {
+                    ReleaseBuffers();
+                }
+            }
         }
 
         public void Refresh()
         {
-            if (grassCompute == null || !_volume.IsReady) return;
+            _isDirty = true;
+            // If already visible, we could dispatch here, but Update will catch it.
+        }
+
+        private void DispatchGeneration()
+        {
+            if (grassCompute == null || !_volume.IsReady || _grassAppendBuffer == null) return;
             
             // --- 0. Calculate LOD Scale ---
-            // Lower LOD (further chunks) have larger voxels.
-            // We scale the grass up to compensate for the lower density (fewer voxels per area).
             float currentVoxelSize = _volume.WorldSize / (float)_volume.Resolution;
             float baseVoxelSize = 1.0f;
             
             if (VoxelEditManager.Instance != null) 
                 baseVoxelSize = VoxelEditManager.Instance.voxelSize;
 
-            // Ratio of current voxel size to base size. 
-            // e.g., Base=1.0, Current=2.0 (LOD1) -> Scale=2.0
             _lodScale = Mathf.Max(1.0f, currentVoxelSize / baseVoxelSize);
 
             // 1. Reset Counter
@@ -117,15 +164,15 @@ namespace VoxelEngine.Core.Rendering
             grassCompute.SetBuffer(kernel, "_NodeBuffer", _volume.NodeBuffer);
             grassCompute.SetBuffer(kernel, "_PayloadBuffer", _volume.PayloadBuffer);
             grassCompute.SetBuffer(kernel, "_BrickDataBuffer", _volume.BrickDataBuffer);
-            grassCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer); // New
+            grassCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer);
             grassCompute.SetBuffer(kernel, "_GrassAppendBuffer", _grassAppendBuffer);
 
             grassCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin);
             grassCompute.SetFloat("_ChunkWorldSize", _volume.WorldSize);
             grassCompute.SetInt("_GridSize", _volume.Resolution);
             
-            grassCompute.SetInt("_NodeOffset", _volume.BufferManager.PageTableOffset); // Changed
-            grassCompute.SetInt("_PayloadOffset", _volume.BufferManager.PageTableOffset); // Changed
+            grassCompute.SetInt("_NodeOffset", _volume.BufferManager.PageTableOffset);
+            grassCompute.SetInt("_PayloadOffset", _volume.BufferManager.PageTableOffset);
             grassCompute.SetInt("_BrickOffset", _volume.BufferManager.BrickDataOffset);
             
             grassCompute.SetInt("_TargetMaterialId", targetMaterialId);
@@ -135,19 +182,16 @@ namespace VoxelEngine.Core.Rendering
             int groups = Mathf.CeilToInt((_volume.Resolution / 4.0f) / 4.0f);
             grassCompute.Dispatch(kernel, groups, groups, groups);
             
-            // 3. Set Mesh Data FIRST (Index Count, Start Index, etc.)
-            // We update the CPU array and upload it. Index [1] (Instance Count) is 0 here.
+            // 3. Set Mesh Data
             _argsData[0] = (uint)_grassMesh.GetIndexCount(0);
-            _argsData[1] = 0; // Placeholder, will be filled by CopyCount
+            _argsData[1] = 0; 
             _argsData[2] = (uint)_grassMesh.GetIndexStart(0);
             _argsData[3] = (uint)_grassMesh.GetBaseVertex(0);
-            _argsData[4] = 0; // Start Instance
+            _argsData[4] = 0; 
             
             _indirectArgsBuffer.SetData(_argsData); 
 
-            // 4. Copy Instance Count SECOND
-            // This takes the count from the AppendBuffer and writes it into byte offset 4 
-            // (which corresponds to the uint at index 1) of the indirect args buffer.
+            // 4. Copy Instance Count
             ComputeBuffer.CopyCount(_grassAppendBuffer, _indirectArgsBuffer, 4); 
             
             _renderBounds = _volume.WorldBounds;
@@ -163,7 +207,6 @@ namespace VoxelEngine.Core.Rendering
             _grassMaterial.SetColor("_BaseColor", baseColor);
             _grassMaterial.SetColor("_TipColor", tipColor);
             
-            // [LOD Logic] Scale blade dimensions by the LOD scale calculated in OnVolumeRegenerated
             _grassMaterial.SetFloat("_BladeWidth", bladeWidth * _lodScale);
             _grassMaterial.SetFloat("_BladeHeight", bladeHeight * _lodScale);
             

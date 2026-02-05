@@ -540,6 +540,8 @@ MonoBehaviour:
   viewer: {fileID: 587925452}
   splitFactor: 1.5
   mergeFactor: 1.8
+  mainCamera: {fileID: 527118853}
+  shadowDistance: 256
 --- !u!114 &681138558
 MonoBehaviour:
   m_ObjectHideFlags: 0
