@@ -852,7 +852,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float shadow = 1.0;
         if (TraceShadow(hit.pos + hit.normal * 0.02, L, 100.0))
         {
-            shadow = 0.0;
+            shadow = 0.3;
         }
 
         float3 direct = LightingDirect(albedo, hit.normal, V, L, _MainLightColor.rgb * shadow, roughness, metallic);
