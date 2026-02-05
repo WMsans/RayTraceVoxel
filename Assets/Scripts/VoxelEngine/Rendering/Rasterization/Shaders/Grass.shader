@@ -5,6 +5,7 @@ Shader "VoxelEngine/Grass"
         [Header(Shading)]
         _BaseColor("Base Color (Root)", Color) = (0.1, 0.3, 0.1, 1)
         _TipColor("Tip Color (Top)", Color) = (0.4, 0.6, 0.2, 1)
+        _SpecularColor("Specular Color", Color) = (0.2, 0.5, 0.2, 1)
         
         [Header(Wind)]
         _WindTex("Wind Noise (Grayscale)", 2D) = "white" {}
@@ -23,7 +24,7 @@ Shader "VoxelEngine/Grass"
     {
         Tags { "RenderType"="Opaque" "Queue"="Geometry" "RenderPipeline" = "UniversalPipeline" }
         LOD 100
-        Cull Off // Draw both sides of the blades
+        Cull Off 
 
         Pass
         {
@@ -36,25 +37,28 @@ Shader "VoxelEngine/Grass"
             #pragma fragment frag
             #pragma multi_compile_instancing
             #pragma instancing_options procedural:setup
+            
+            // Shadow Support
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
+            #pragma multi_compile _ _SHADOWS_SOFT
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 
-            // --- Structure matching C# GrassInstance ---
-            // Stride = 20 bytes (float3 + float + uint)
             struct GrassInstance
             {
                 float3 position;
                 float rotation;
-                uint packedData; // [Color 16] [Height 8] [Type 8]
+                uint packedData; 
             };
 
-            // Read-Only Buffer from Compute Shader
             StructuredBuffer<GrassInstance> _GrassInstanceBuffer;
 
-            // --- Uniforms ---
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseColor;
                 float4 _TipColor;
+                float4 _SpecularColor;
                 float4 _WindTex_ST;
                 float _WindSpeed;
                 float _WindStrength;
@@ -72,6 +76,7 @@ Shader "VoxelEngine/Grass"
             {
                 float4 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
+                float3 normalOS : NORMAL; // Mesh now has UP normals
                 uint instanceID : SV_InstanceID;
             };
 
@@ -80,17 +85,12 @@ Shader "VoxelEngine/Grass"
                 float4 positionCS : SV_POSITION;
                 float2 uv : TEXCOORD0;
                 float3 color : TEXCOORD1;
+                float3 normalWS : NORMAL;
+                float3 positionWS : TEXCOORD3;
+                float4 shadowCoord : TEXCOORD4;
             };
 
-            // Mandatory for procedural instancing
-            void setup()
-            {
-                #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
-                    // We don't use the unity_ObjectToWorld matrix because we transform manually in vertex shader.
-                    // However, for shadows/depth passes, Unity might expect this to be set.
-                    // For now, we leave it simple.
-                #endif
-            }
+            void setup() {}
 
             Varyings vert(Attributes input)
             {
@@ -98,35 +98,26 @@ Shader "VoxelEngine/Grass"
                 UNITY_SETUP_INSTANCE_ID(input);
 
                 float3 posWS = input.positionOS.xyz;
-                float3 instancePos = float3(0, 0, 0);
+                float3 instancePos = float3(0,0,0);
                 float rotation = 0;
                 float heightScale = 1.0;
                 float colorVariation = 0.5;
 
                 #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
-                    // 1. Fetch Instance Data
                     GrassInstance inst = _GrassInstanceBuffer[input.instanceID];
                     instancePos = inst.position;
                     rotation = inst.rotation;
-
-                    // 2. Unpack Data
-                    // Packed: [Color 16] [Height 8] [Type 8]
-                    uint p = inst.packedData;
                     
-                    // Height (0-255 mapped to 0.5x - 2.5x)
-                    uint hRaw = (p >> 8) & 0xFF;
-                    heightScale = (hRaw / 255.0) * 2.0 + 0.5; 
-
-                    // Color Var (0-65535 mapped to 0.0 - 1.0)
-                    uint cRaw = (p >> 16) & 0xFFFF;
-                    colorVariation = cRaw / 65535.0; 
+                    uint p = inst.packedData;
+                    heightScale = ((p >> 8) & 0xFF) / 255.0 * 2.0 + 0.5; 
+                    colorVariation = ((p >> 16) & 0xFFFF) / 65535.0; 
                 #endif
 
-                // 3. Apply Dimensions
+                // Dimensions
                 posWS.xz *= _BladeWidth;
                 posWS.y *= _BladeHeight * heightScale;
 
-                // 4. Apply Rotation (Y-Axis)
+                // Rotation
                 float s, c;
                 sincos(rotation, s, c);
                 float3 rotPos;
@@ -135,34 +126,35 @@ Shader "VoxelEngine/Grass"
                 rotPos.z = posWS.x * -s + posWS.z * c;
                 posWS = rotPos;
 
-                // 5. Move to World Space
                 float3 worldPos = instancePos + posWS;
 
-                // 6. Wind Displacement (Vertex Shader)
-                // Sample noise based on world position and time
+                // --- Improved Wind ---
                 float2 windUV = (instancePos.xz * _WindFrequency) + (_Time.y * _WindSpeed * _WindDirection.xy);
                 float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
-                
-                // Remap 0..1 to -1..1
                 windNoise = (windNoise * 2.0 - 1.0);
-
-                // Pin the root: Multiply by UV.y (0 at bottom, 1 at top)
-                // Using pow(uv.y, 2) creates a nice curve where the tip bends more than the middle
+                
+                // Curve factor: input.uv.y is 0 at bottom, 1 at top.
+                // Pow(2) creates a nice parabolic bend.
                 float bendFactor = pow(input.uv.y, 2.0);
                 
+                // Displacement
                 worldPos.xz += windNoise * _WindStrength * bendFactor * _WindDirection.xy;
-                
-                // Slight Y depression to simulate bending down (simple approximation)
-                worldPos.y -= abs(windNoise) * _WindStrength * 0.2 * bendFactor;
+                // Height reduction (keep length consistent-ish)
+                worldPos.y -= abs(windNoise) * _WindStrength * 0.3 * bendFactor;
 
-                // 7. Output
+                // --- Output ---
                 output.positionCS = TransformWorldToHClip(worldPos);
                 output.uv = input.uv;
+                output.positionWS = worldPos;
+                output.normalWS = TransformObjectToWorldNormal(input.normalOS); // Uses (0,1,0) mostly
 
-                // 8. Calculate Color
-                // Darken the root color slightly based on random variation
+                // Shadow Coord
+                output.shadowCoord = TransformWorldToShadowCoord(worldPos);
+
+                // Pre-calc Gradient Color
                 float3 localBase = lerp(_BaseColor.rgb * 0.5, _BaseColor.rgb, colorVariation);
-                // Gradient from Base (Root) to Tip
+                // Darken root (Ambient Occlusion effect)
+                localBase *= 0.5; 
                 output.color = lerp(localBase, _TipColor.rgb, input.uv.y);
 
                 return output;
@@ -170,9 +162,24 @@ Shader "VoxelEngine/Grass"
 
             half4 frag(Varyings input) : SV_Target
             {
-                // Simple Unlit/Gradient output
-                // Can be upgraded to Lit if normals are processed
-                return half4(input.color, 1.0);
+                // Light Data
+                Light mainLight = GetMainLight(input.shadowCoord);
+                
+                // Half-Lambert Lighting (Softer, better for foliage)
+                float NdotL = dot(input.normalWS, mainLight.direction) * 0.5 + 0.5;
+                
+                // Shadows
+                float shadow = mainLight.shadowAttenuation;
+                
+                // Final Diffuse
+                float3 lighting = NdotL * mainLight.color * shadow;
+                
+                // Simple Ambient (Fake)
+                lighting += float3(0.2, 0.25, 0.3) * 0.5; 
+
+                float3 finalColor = input.color * lighting;
+
+                return half4(finalColor, 1.0);
             }
             ENDHLSL
         }

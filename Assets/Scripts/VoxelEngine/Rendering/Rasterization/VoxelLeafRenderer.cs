@@ -34,7 +34,12 @@ namespace VoxelEngine.Core.Rendering
         private ComputeBuffer _appendBuffer;
         private ComputeBuffer _argsBuffer;
         private uint[] _argsData = new uint[] { 0, 0, 0, 0, 0 };
+        private bool _isDirty = true;
         
+        // --- Static Frustum Cache ---
+        private static Plane[] _frustumPlanes = new Plane[6];
+        private static int _lastPlaneFrame = -1;
+
         private VoxelVolume _volume;
         private Material _material;
         private Mesh _mesh; // Reusing the Cross-Quad mesh
@@ -50,9 +55,6 @@ namespace VoxelEngine.Core.Rendering
             
             if (leafShader != null)
                 _material = new Material(leafShader);
-            
-            _appendBuffer = new ComputeBuffer(maxInstances, 20, ComputeBufferType.Append);
-            _argsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
         }
 
         private void OnEnable()
@@ -65,24 +67,77 @@ namespace VoxelEngine.Core.Rendering
         {
             _volume.OnRegenerationComplete -= Refresh;
             ActiveLeafRenderers.Remove(this);
+            ReleaseBuffers();
         }
 
         private void OnDestroy()
         {
-            _appendBuffer?.Release();
-            _argsBuffer?.Release();
+            ReleaseBuffers();
             if (_material) Destroy(_material);
             if (_mesh) Destroy(_mesh);
         }
 
+        private void InitializeBuffers()
+        {
+            if (_appendBuffer != null) return;
+            _appendBuffer = new ComputeBuffer(maxInstances, 20, ComputeBufferType.Append);
+            _argsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
+        }
+
+        private void ReleaseBuffers()
+        {
+            _appendBuffer?.Release();
+            _appendBuffer = null;
+            _argsBuffer?.Release();
+            _argsBuffer = null;
+        }
+
+        private void Update()
+        {
+            // Update frustum planes once per frame
+            if (Time.frameCount != _lastPlaneFrame)
+            {
+                if (Camera.main != null)
+                {
+                    GeometryUtility.CalculateFrustumPlanes(Camera.main, _frustumPlanes);
+                    _lastPlaneFrame = Time.frameCount;
+                }
+            }
+
+            // Check Visibility
+            bool visible = GeometryUtility.TestPlanesAABB(_frustumPlanes, _volume.WorldBounds);
+
+            if (visible)
+            {
+                if (_appendBuffer == null)
+                {
+                    InitializeBuffers();
+                    _isDirty = true;
+                }
+
+                if (_isDirty && _volume.IsReady)
+                {
+                    DispatchGeneration();
+                    _isDirty = false;
+                }
+            }
+            else
+            {
+                if (_appendBuffer != null)
+                {
+                    ReleaseBuffers();
+                }
+            }
+        }
+
         public void Refresh()
         {
-            if (leafCompute == null || !_volume.IsReady) return;
+            _isDirty = true;
+        }
 
-            // [CHANGE] LOD Scaling removed for leaves.
-            // float currentVoxelSize = _volume.WorldSize / (float)_volume.Resolution;
-            // float baseVoxelSize = (VoxelEditManager.Instance != null) ? VoxelEditManager.Instance.voxelSize : 1.0f;
-            // _lodScale = Mathf.Max(1.0f, currentVoxelSize / baseVoxelSize);
+        private void DispatchGeneration()
+        {
+            if (leafCompute == null || !_volume.IsReady || _appendBuffer == null) return;
 
             _appendBuffer.SetCounterValue(0);
 
@@ -90,15 +145,15 @@ namespace VoxelEngine.Core.Rendering
             leafCompute.SetBuffer(kernel, "_NodeBuffer", _volume.NodeBuffer);
             leafCompute.SetBuffer(kernel, "_PayloadBuffer", _volume.PayloadBuffer);
             leafCompute.SetBuffer(kernel, "_BrickDataBuffer", _volume.BrickDataBuffer);
-            leafCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer); // New
+            leafCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer); 
             leafCompute.SetBuffer(kernel, "_LeafAppendBuffer", _appendBuffer);
 
             leafCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin);
             leafCompute.SetFloat("_ChunkWorldSize", _volume.WorldSize);
             leafCompute.SetInt("_GridSize", _volume.Resolution);
             
-            leafCompute.SetInt("_NodeOffset", _volume.BufferManager.PageTableOffset); // Changed
-            leafCompute.SetInt("_PayloadOffset", _volume.BufferManager.PageTableOffset); // Changed
+            leafCompute.SetInt("_NodeOffset", _volume.BufferManager.PageTableOffset);
+            leafCompute.SetInt("_PayloadOffset", _volume.BufferManager.PageTableOffset);
             leafCompute.SetInt("_BrickOffset", _volume.BufferManager.BrickDataOffset);
             
             leafCompute.SetInt("_TargetMaterialId", targetMaterialId);
@@ -126,7 +181,6 @@ namespace VoxelEngine.Core.Rendering
             _material.SetColor("_BaseColor", innerColor);
             _material.SetColor("_TipColor", outerColor);
             
-            // [CHANGE] Removed _lodScale multiplication. Leaves are now constant size.
             _material.SetFloat("_BladeHeight", leafScale); 
             
             _material.SetFloat("_WindSpeed", windSpeed);
