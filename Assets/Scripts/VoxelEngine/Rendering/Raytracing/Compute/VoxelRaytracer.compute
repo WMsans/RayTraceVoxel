@@ -849,14 +849,32 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 V = -rayDir;
         float3 L = normalize(_MainLightPosition.xyz);
         
-        float shadow = 1.0;
-        if (TraceShadow(hit.pos + hit.normal * 0.02, L, 100.0))
+        // Calculate NdotL for shadow bias and lighting check
+        float NdotL = dot(hit.normal, L);
+        
+        // Adaptive shadow bias: larger at grazing angles to prevent self-shadowing
+        float shadowBias = lerp(0.05, 1, saturate(NdotL)) + 3;
+        
+        float shadow = 0.3;
+        
+        // Only compute shadow if surface faces the light
+        if (NdotL > 0.001)
         {
-            shadow = 0.3;
+            // Offset along normal AND slightly along light direction for robust bias
+            float3 shadowOrigin = hit.pos + hit.normal * shadowBias + L * 0.01;
+            
+            if (!TraceShadow(shadowOrigin, L, 100.0))
+            {
+                shadow = 1.0; // Not in shadow
+            }
         }
 
-        float3 direct = LightingDirect(albedo, hit.normal, V, L, _MainLightColor.rgb * shadow, roughness, metallic);
-        float3 ambient = albedo * ao * 0.05 * GetSkyColor(hit.normal);
+        // Direct lighting is completely blocked when in shadow (shadow = 0)
+        // This ensures no specular highlights appear in shadowed areas
+        float3 direct = shadow * LightingDirect(albedo, hit.normal, V, L, _MainLightColor.rgb, roughness, metallic);
+        
+        // Ambient lighting (indirect) is always present regardless of shadow
+        float3 ambient = albedo * ao * 0.15 * GetSkyColor(hit.normal);
         
         resultColor += throughput * (direct + ambient);
 
