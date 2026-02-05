@@ -6,7 +6,7 @@ Shader "Hidden/VoxelComposite"
         _Sharpness ("Sharpness", Range(0, 1)) = 0.5
         
         // Exposed properties for material inspection/defaults
-        _OutlineParams ("Outline Params", Vector) = (1, 0.01, 0, 0)
+        _OutlineParams ("Outline Params", Vector) = (1, 0.5, 0, 0)
     }
     SubShader
     {
@@ -35,7 +35,7 @@ Shader "Hidden/VoxelComposite"
             float _Sharpness;
             // Outline Uniforms
             float4 _OutlineParams;
-            // x: thickness
+            // x: thickness, y: strength
 
             struct Varyings
             {
@@ -154,8 +154,8 @@ Shader "Hidden/VoxelComposite"
                     // Fixed threshold (since parameter was removed)
                     float outlineVal = smoothstep(0.2, 0.3, depth_diff);
                     
-                    // CHANGED: Mix original color with Light Color
-                    float3 outlineMix = lerp(col, _MainLightColor.rgb, 0.5); 
+                    // Mix original color with Light Color using Strength
+                    float3 outlineMix = lerp(col, _MainLightColor.rgb, _OutlineParams.y); 
                     col = lerp(col, outlineMix, outlineVal);
                 #endif
 

@@ -41,6 +41,7 @@ namespace VoxelEngine.Core.Rendering
             [Header("Outline")]
             public bool enableOutline = false;
             [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
+            [Range(0.0f, 1.0f)] public float outlineStrength = 0.5f;
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -238,6 +239,7 @@ namespace VoxelEngine.Core.Rendering
                 // Outline Data
                 public bool enableOutline;
                 public float outlineThickness;
+                public float outlineStrength;
                 public Vector4 mainLightColor; // ADDED
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
@@ -417,6 +419,7 @@ namespace VoxelEngine.Core.Rendering
                     compData.enableOutline = _settings.enableOutline;
                     // REMOVED: compData.outlineColor = _settings.outlineColor;
                     compData.outlineThickness = _settings.outlineThickness;
+                    compData.outlineStrength = _settings.outlineStrength;
                     // REMOVED: compData.outlineThreshold = _settings.outlineThreshold;
                     compData.mainLightColor = mainCol; // ADDED (mainCol is available from SetupLights called earlier)
 
@@ -444,8 +447,8 @@ namespace VoxelEngine.Core.Rendering
                             // ADDED: Pass Main Light Color
                             cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
 
-                            // UPDATED: Pass thickness in X, hardcoded or zero parameters elsewhere
-                            cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, 0, 0, 0));
+                            // UPDATED: Pass thickness in X, strength in Y
+                            cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
                         }
                         else 
                         {
