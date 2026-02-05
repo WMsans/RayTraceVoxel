@@ -184,7 +184,10 @@ namespace VoxelEngine.Core.Streaming
             // --- AGGRESSIVE CULLING CHECKS ---
             // If no camera is available, assume everything is in view
             bool inFrustum = (mainCamera == null) || GeometryUtility.TestPlanesAABB(_frustumPlanes, node.Bounds);
-            bool inShadowRange = distance < shadowDistance;
+            
+            // [FIX] Better Shadow Range Check (Distance to Bounds)
+            Vector3 closest = node.Bounds.ClosestPoint(viewerPosition);
+            bool inShadowRange = (closest - viewerPosition).sqrMagnitude < (shadowDistance * shadowDistance);
 
             if (node.IsLeaf)
             {
@@ -213,10 +216,10 @@ namespace VoxelEngine.Core.Streaming
                 }
 
                 // 2. SPLIT CHECK
-                // Only split if in frustum and close enough
+                // [FIX] Allow splitting if in shadow range, even if off-screen, for high-detail shadows
                 if (node.Depth < maxDepth && distance < (node.Size * splitFactor))
                 {
-                    if (inFrustum)
+                    if (inFrustum || inShadowRange)
                     {
                         SplitNode(node);
                     }
@@ -227,7 +230,8 @@ namespace VoxelEngine.Core.Streaming
                 // --- MERGE CHECK ---
                 // 1. Normal distance-based merge
                 // 2. AGGRESSIVE MERGE: If a high-LOD node exits the frustum, immediately merge it.
-                bool shouldMerge = distance > (node.Size * mergeFactor) || !inFrustum;
+                // [FIX] Do NOT merge if still in shadow range
+                bool shouldMerge = distance > (node.Size * mergeFactor) || (!inFrustum && !inShadowRange);
                 
                 if (shouldMerge)
                 {

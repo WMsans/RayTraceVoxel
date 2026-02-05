@@ -44,6 +44,7 @@ namespace VoxelEngine.Core.Rendering
             [Header("Culling")]
             public bool useCameraFarPlane = false; 
             public bool cullFrustum = true;
+            public float shadowDistance = 256.0f;
 
             [Header("Dithering")]
             public Texture2D blueNoiseTexture;
@@ -226,7 +227,7 @@ namespace VoxelEngine.Core.Rendering
                 {
                     Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
                     Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
-                    VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes);
+                    VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes, cameraData.camera.transform.position, _settings.shadowDistance);
                 }
                 else
                 {

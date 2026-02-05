@@ -189,7 +189,7 @@ namespace VoxelEngine.Core.Streaming
             vol.OnPullFromPool(position, size, generateEmpty);
             
             _activeVolumes.Add(vol);
-            UpdateChunkBuffer(null);
+            UpdateChunkBuffer(null, default, 0f);
             return vol;
         }
 
@@ -221,25 +221,37 @@ namespace VoxelEngine.Core.Streaming
 
                 vol.transform.SetParent(poolContainer); 
                 _pool.Enqueue(vol);
-                UpdateChunkBuffer(null);
+                UpdateChunkBuffer(null, default, 0f);
             }
         }
 
-        public void UpdateVisibility(Plane[] cullingPlanes)
+        public void UpdateVisibility(Plane[] cullingPlanes, Vector3 viewerPos = default, float shadowDistance = 0f)
         {
-            UpdateChunkBuffer(cullingPlanes);
+            UpdateChunkBuffer(cullingPlanes, viewerPos, shadowDistance);
         }
 
-        private void UpdateChunkBuffer(Plane[] cullingPlanes)
+        private void UpdateChunkBuffer(Plane[] cullingPlanes, Vector3 viewerPos, float shadowDistance)
         {
             _visibleVolumes.Clear();
             int writeIndex = 0;
+            float shadowDistSqr = shadowDistance * shadowDistance;
+
             for (int i = 0; i < _activeVolumes.Count; i++)
             {
                 var vol = _activeVolumes[i];
                 if (cullingPlanes != null)
                 {
-                    if (!GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds)) continue; 
+                    bool inFrustum = GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds);
+                    bool inShadowRange = false;
+
+                    if (!inFrustum && shadowDistance > 0)
+                    {
+                        // Efficient AABB-Sphere distance check
+                        Vector3 closest = vol.WorldBounds.ClosestPoint(viewerPos);
+                        inShadowRange = (closest - viewerPos).sqrMagnitude < shadowDistSqr;
+                    }
+
+                    if (!inFrustum && !inShadowRange) continue; 
                 }
 
                 _visibleVolumes.Add(vol);
