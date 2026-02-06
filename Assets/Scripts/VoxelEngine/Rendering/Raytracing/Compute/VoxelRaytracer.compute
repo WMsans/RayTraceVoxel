@@ -826,7 +826,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
  // Calculate NdotL for shadow bias and lighting check
         float NdotL = dot(hit.normal, L);
  // Adaptive shadow bias: larger at grazing angles to prevent self-shadowing
-        float shadowBias = lerp(0.1, 5, saturate(NdotL));
+        float shadowBias = lerp(0.1, 5, saturate(NdotL)) * 4;
         // [FIX] Changed float shadow to float lightAtten (1.0 or 0.0)
         float lightAtten = 1.0;
         

@@ -43,8 +43,6 @@ namespace VoxelEngine.Core.Rendering
             [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
             [Range(0.0f, 1.0f)] public float outlineStrength = 0.5f;
             public Color outlineColor = Color.black;
-            public Color highlightColor = Color.white;
-            [Range(0.0f, 1.0f)] public float highlightStrength = 0.5f;
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -121,6 +119,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
             private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
             private static readonly int _VoxelDepthTextureParams = Shader.PropertyToID("_VoxelDepthTexture");
+            private static readonly int _VoxelNormalTextureParams = Shader.PropertyToID("_VoxelNormalTexture");
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
@@ -157,9 +156,6 @@ namespace VoxelEngine.Core.Rendering
             // Outline IDs
             private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
             private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
-            private static readonly int _HighlightColorParams = Shader.PropertyToID("_HighlightColor");
-            private static readonly int _HighlightStrengthParams = Shader.PropertyToID("_HighlightStrength");
-            private static readonly int _VoxelNormalTextureParams = Shader.PropertyToID("_VoxelNormalTexture");
 
             // Debug IDs
             private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
@@ -240,6 +236,7 @@ namespace VoxelEngine.Core.Rendering
             private class CompositePassData { 
                 public TextureHandle source; 
                 public TextureHandle depthSource; 
+                public TextureHandle normalSource; 
                 public Material material; 
                 public bool useFSR; 
                 public float sharpness;
@@ -249,12 +246,7 @@ namespace VoxelEngine.Core.Rendering
                 public float outlineThickness;
                 public float outlineStrength;
                 public Color outlineColor;
-                public Vector4 mainLightColor; // ADDED
-                
-                // Highlight Data
-                public TextureHandle normalTexture;
-                public Color highlightColor;
-                public float highlightStrength;
+                public Vector4 mainLightColor; 
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
             private class TAAPassData { public TextureHandle source; public TextureHandle history; public TextureHandle motion; public TextureHandle destination; public Material material; public float blend; }
@@ -428,6 +420,7 @@ namespace VoxelEngine.Core.Rendering
                 {
                     compData.source = compositeSource; 
                     compData.depthSource = lowResDepth;
+                    compData.normalSource = lowResNormals; // <--- ASSIGN NORMALS HERE
                     compData.material = _compositeMaterial;
                     compData.useFSR = (_settings.upscalingMode == UpscalingMode.SpatialFSR);
                     compData.sharpness = _settings.sharpness;
@@ -437,17 +430,11 @@ namespace VoxelEngine.Core.Rendering
                     compData.outlineColor = _settings.outlineColor;
                     compData.outlineThickness = _settings.outlineThickness;
                     compData.outlineStrength = _settings.outlineStrength;
-                    // REMOVED: compData.outlineThreshold = _settings.outlineThreshold;
-                    compData.mainLightColor = mainCol; // ADDED (mainCol is available from SetupLights called earlier)
+                    compData.mainLightColor = mainCol;
                     
-                    // Populate Highlight Data
-                    compData.normalTexture = lowResNormals;
-                    compData.highlightColor = _settings.highlightColor;
-                    compData.highlightStrength = _settings.highlightStrength;
-
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
-                    builder.UseTexture(compData.normalTexture, AccessFlags.Read);
+                    builder.UseTexture(compData.normalSource, AccessFlags.Read); // <--- DECLARE READ ACCESS
                     
                     builder.SetRenderAttachment(compositeOutput, 0, AccessFlags.Write);
                     builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.Write);
@@ -457,6 +444,10 @@ namespace VoxelEngine.Core.Rendering
                         if (useFXAA) { context.cmd.ClearRenderTarget(false, true, Color.clear); }
                         
                         cData.material.SetTexture(_VoxelDepthTextureParams, cData.depthSource);
+                        
+                        // Pass the normal texture to the shader
+                        cData.material.SetTexture(_VoxelNormalTextureParams, cData.normalSource); // <--- BIND TEXTURE
+
                         cData.material.SetFloat(_SharpnessParams, cData.sharpness);
                         
                         if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR"); 
@@ -467,17 +458,9 @@ namespace VoxelEngine.Core.Rendering
                         {
                             cData.material.EnableKeyword("_OUTLINE_ON");
                             
-                            // ADDED: Pass Main Light Color
                             cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
                             cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
-
-                            // UPDATED: Pass thickness in X, strength in Y
                             cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
-
-                            // Set Highlight Params
-                            cData.material.SetTexture(_VoxelNormalTextureParams, cData.normalTexture);
-                            cData.material.SetColor(_HighlightColorParams, cData.highlightColor);
-                            cData.material.SetFloat(_HighlightStrengthParams, cData.highlightStrength);
                         }
                         else 
                         {
