@@ -24,6 +24,9 @@ MonoBehaviour:
     textureScale: 0.05
     iterations: 64
     marchSteps: 32
+    enableAtmosphere: 1
+    atmosphereColor: {r: 0.55, g: 0.7, b: 0.9, a: 1}
+    atmosphereDensity: 0.0002
     celSteps: 4
     shadowBrightness: 0.3
     upscalingMode: 0

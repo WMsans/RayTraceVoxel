@@ -32,6 +32,11 @@ namespace VoxelEngine.Core.Rendering
             public int iterations = 128;
             public int marchSteps = 64;
 
+            [Header("Atmosphere")]
+            public bool enableAtmosphere = true;
+            public Color atmosphereColor = new Color(0.55f, 0.7f, 0.9f); // Sky-like blue tint
+            [Range(0.0f, 0.1f)] public float atmosphereDensity = 0.005f; // Low density for "short hike" feel
+
             [Header("Cel Shading")]
             [Range(1, 10)] 
             public int celSteps = 3;
@@ -54,10 +59,10 @@ namespace VoxelEngine.Core.Rendering
             public Color outlineColor = Color.black;
 
             [Header("Normal Highlight")]
-            [Range(0.0f, 1.0f)] public float normalHighlightStrength = 0.5f; // New Control
-            [Range(0.0f, 2.0f)] public float normalThreshold = 0.6f;        // New Control
-            [Range(0.0f, 500.0f)] public float normalFadeDistance = 50.0f;  // [NEW] Controls where the highlight fades out
-            public Color normalHighlightColor = Color.white;                // New Control
+            [Range(0.0f, 1.0f)] public float normalHighlightStrength = 0.5f; 
+            [Range(0.0f, 2.0f)] public float normalThreshold = 0.6f;        
+            [Range(0.0f, 500.0f)] public float normalFadeDistance = 50.0f;
+            public Color normalHighlightColor = Color.white;                
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -138,6 +143,10 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
             private static readonly int _CelShadeParams = Shader.PropertyToID("_CelShadeParams"); 
+            // [ATMOSPHERE]
+            private static readonly int _AtmosphereParams = Shader.PropertyToID("_AtmosphereParams");
+            private static readonly int _AtmosphereColor = Shader.PropertyToID("_AtmosphereColor");
+
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
             private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
@@ -172,8 +181,8 @@ namespace VoxelEngine.Core.Rendering
             // Outline IDs
             private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
             private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
-            private static readonly int _NormalOutlineParamsID = Shader.PropertyToID("_NormalOutlineParams"); // New ID
-            private static readonly int _NormalOutlineColorParams = Shader.PropertyToID("_NormalOutlineColor"); // New ID
+            private static readonly int _NormalOutlineParamsID = Shader.PropertyToID("_NormalOutlineParams"); 
+            private static readonly int _NormalOutlineColorParams = Shader.PropertyToID("_NormalOutlineColor"); 
 
             // Debug IDs
             private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
@@ -250,6 +259,9 @@ namespace VoxelEngine.Core.Rendering
                 public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle targetNormals; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
                 public float debugNormals; public float debugBricks;
                 public Vector4 celShadeParams;
+                // [ATMOSPHERE]
+                public Vector4 atmosphereParams; 
+                public Vector4 atmosphereColor;
             }
             private class CompositePassData { 
                 public TextureHandle source; 
@@ -269,7 +281,7 @@ namespace VoxelEngine.Core.Rendering
                 // Normal Highlight Data
                 public float normalStrength;
                 public float normalThreshold;
-                public float normalFadeDistance; // [NEW]
+                public float normalFadeDistance; 
                 public Color normalColor;
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
@@ -384,6 +396,9 @@ namespace VoxelEngine.Core.Rendering
                     data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
                     data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
                     data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
+                    // [ATMOSPHERE]
+                    data.atmosphereParams = new Vector4(_settings.enableAtmosphere ? _settings.atmosphereDensity : 0.0f, 0, 0, 0);
+                    data.atmosphereColor = _settings.atmosphereColor;
     
                     builder.UseTexture(data.targetColor, AccessFlags.Write); builder.UseTexture(data.targetDepth, AccessFlags.Write);
                     builder.UseTexture(data.targetNormals, AccessFlags.Write); builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
@@ -416,6 +431,10 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeFloatParam(cs, _DebugViewNormalsParams, pd.debugNormals);
                         cmd.SetComputeFloatParam(cs, _DebugViewBricksParams, pd.debugBricks);
                         cmd.SetComputeVectorParam(cs, _CelShadeParams, pd.celShadeParams);
+                        // [ATMOSPHERE]
+                        cmd.SetComputeVectorParam(cs, _AtmosphereParams, pd.atmosphereParams);
+                        cmd.SetComputeVectorParam(cs, _AtmosphereColor, pd.atmosphereColor);
+
                         int groupsX = Mathf.CeilToInt(pd.width / 8.0f); int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
                         cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);                    
                     });
@@ -456,7 +475,7 @@ namespace VoxelEngine.Core.Rendering
                     compData.normalColor = _settings.normalHighlightColor;
                     compData.normalStrength = _settings.normalHighlightStrength;
                     compData.normalThreshold = _settings.normalThreshold;
-                    compData.normalFadeDistance = _settings.normalFadeDistance; // [NEW]
+                    compData.normalFadeDistance = _settings.normalFadeDistance; 
 
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
