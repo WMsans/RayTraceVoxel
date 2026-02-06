@@ -30,6 +30,12 @@ namespace VoxelEngine.Core.Rendering
             public float renderScale = 1.0f;
             public int iterations = 128;
             public int marchSteps = 64;
+
+            [Header("Cel Shading")]
+            [Range(1, 10)] 
+            public int celSteps = 3;
+            [Range(0.0f, 1.0f)] 
+            public float shadowBrightness = 0.2f;
             
             [Header("Upscaling & Anti-Aliasing")]
             public UpscalingMode upscalingMode = UpscalingMode.SpatialFSR;
@@ -122,6 +128,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _VoxelNormalTextureParams = Shader.PropertyToID("_VoxelNormalTexture");
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
+            private static readonly int _CelShadeParams = Shader.PropertyToID("_CelShadeParams"); // NEW
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
             private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
@@ -232,6 +239,8 @@ namespace VoxelEngine.Core.Rendering
                 public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle targetNormals; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
                 // Debug fields
                 public float debugNormals; public float debugBricks;
+                // Cel Shading
+                public Vector4 celShadeParams;
             }
             private class CompositePassData { 
                 public TextureHandle source; 
@@ -354,14 +363,16 @@ namespace VoxelEngine.Core.Rendering
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
                     if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
-                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
+                                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
+                                    
+                                    // --- Debug Setup ---
+                                    data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
+                                    data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
                     
-                    // --- Debug Setup ---
-                    data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
-                    data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
-
-                    builder.UseTexture(data.targetColor, AccessFlags.Write);
-                    builder.UseTexture(data.targetDepth, AccessFlags.Write);
+                                    // --- Cel Shading Setup ---
+                                    data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
+                    
+                                    builder.UseTexture(data.targetColor, AccessFlags.Write);                    builder.UseTexture(data.targetDepth, AccessFlags.Write);
                     builder.UseTexture(data.targetNormals, AccessFlags.Write);
                     builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
                     builder.UseTexture(data.sourceDepth, AccessFlags.Read);
@@ -390,15 +401,17 @@ namespace VoxelEngine.Core.Rendering
                         if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _MaskTextureArrayParams, pd.maskArray);
                         cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, pd.cameraToWorld); cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, pd.cameraInverseProjection); cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, pd.viewProj); cmd.SetComputeMatrixParam(cs, _PrevViewProjMatrixParams, pd.prevViewProj);
                         cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, _SourceTexParams, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, _ResultNormalsParams, pd.targetNormals); cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
-                        cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor); cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
+                                            cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor); cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
+                                            
+                                            // --- Set Debug Params ---
+                                            cmd.SetComputeFloatParam(cs, _DebugViewNormalsParams, pd.debugNormals);
+                                            cmd.SetComputeFloatParam(cs, _DebugViewBricksParams, pd.debugBricks);
+                                            
+                                            // --- Set Cel Shading Params ---
+                                            cmd.SetComputeVectorParam(cs, _CelShadeParams, pd.celShadeParams);
                         
-                        // --- Set Debug Params ---
-                        cmd.SetComputeFloatParam(cs, _DebugViewNormalsParams, pd.debugNormals);
-                        cmd.SetComputeFloatParam(cs, _DebugViewBricksParams, pd.debugBricks);
-
-                        int groupsX = Mathf.CeilToInt(pd.width / 8.0f); int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
-                        cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);
-                    });
+                                            int groupsX = Mathf.CeilToInt(pd.width / 8.0f); int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
+                                            cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);                    });
                 }
                 
                 TextureHandle compositeSource = lowResResult; 

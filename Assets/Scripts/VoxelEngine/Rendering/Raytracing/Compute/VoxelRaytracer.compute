@@ -57,6 +57,7 @@ float4 _ZBufferParams;
  float4 _MainLightPosition;
 float4 _MainLightColor;
 float4 _RaytraceParams;
+float4 _CelShadeParams; // x: steps, y: minBrightness/darkness, z: unused
 
 float _DebugNormalDelta;
 float _DebugViewNormals;
@@ -690,50 +691,58 @@ bool TraceShadow(float3 rayOrigin, float3 rayDir, float maxDist)
     return false;
  }
 
-float3 LightingDirect(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic, float attenuation) 
-{ 
+float3 LightingDirect(float3 albedo, float3 N, float3 V, float3 L, float3 lightColor, float roughness, float metallic, float attenuation)
+{
     roughness = max(roughness, 0.05);
- float3 H = normalize(V + L); 
-    
+    float3 H = normalize(V + L);
+
     // [CEL SHADING] 1. Stepped Diffuse (NdotL)
-    // Instead of a smooth dot product, we quantize it into bands.
-    // [FIX] Apply shadow attenuation directly to the dot product. 
-    // This ensures cast shadows map to the lowest band (0.1), matching self-shadows.
+    // _CelShadeParams.x = steps (e.g., 3.0)
+    // _CelShadeParams.y = minBrightness (e.g., 0.1)
+
     float NdotL_Raw = max(dot(N, L), 0.0) * attenuation;
-    
-    // Example: 3 discrete bands (Shadow, Mid-tone, Highlight)
-    // Using smoothstep creates a tiny soft edge to prevent aliasing artifacts
-    float band1 = smoothstep(0.0, 0.05, NdotL_Raw);
- // Shadow to Mid transition
-    float band2 = smoothstep(0.5, 0.55, NdotL_Raw);
- // Mid to Highlight transition
-    float steppedNdotL = 0.1 + (0.4 * band1) + (0.5 * band2);
- float3 F0 = float3(0.04, 0.04, 0.04);
+
+    // Parametric Banding Logic
+    float steps = max(1.0, _CelShadeParams.x);
+    float minBrightness = _CelShadeParams.y;
+
+    float t = NdotL_Raw * steps;
+    float stepIndex = floor(t);
+    float fraction = t - stepIndex;
+
+    // Soften the edge slightly to avoid aliasing artifacts, relative to step size
+    float smoothFraction = smoothstep(0.0, 0.05 * steps, fraction);
+    float rawLevel = (stepIndex + smoothFraction) / steps;
+
+    // Remap [0, 1] to [minBrightness, 1]
+    float steppedNdotL = lerp(minBrightness, 1.0, saturate(rawLevel));
+
+    float3 F0 = float3(0.04, 0.04, 0.04);
     F0 = lerp(F0, albedo, metallic); 
-    
+
     float NDF = DistributionGGX(N, H, roughness);
- float G = GeometrySmith(N, V, L, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
     float3 F = FresnelSchlick(max(dot(H, V), 0.0), F0);
- float3 numerator = NDF * G * F;
+    float3 numerator = NDF * G * F;
     float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL_Raw + 0.0001;
- float3 specular = numerator / denominator;
-    
+    float3 specular = numerator / denominator;
+
     // [CEL SHADING] 2. Stepped Specular
     // We threshold the specular intensity to create a sharp "anime-style" gleam
     float specLum = dot(specular, float3(0.2126, 0.7152, 0.0722));
- // The threshold adapts slightly to roughness
+    // The threshold adapts slightly to roughness
     float specThreshold = 0.5 - (roughness * 0.3);
- float steppedSpec = smoothstep(specThreshold, specThreshold + 0.05, specLum);
-    
+    float steppedSpec = smoothstep(specThreshold, specThreshold + 0.05, specLum);
+
     // Boost the stepped specular to make it pop
-    // [FIX] Multiply by attenuation to remove highlights in cast shadows
+    // Multiply by attenuation to remove highlights in cast shadows
     float3 finalSpecular = steppedSpec * lightColor * 5.0 * attenuation;
- float3 kS = F; 
+    float3 kS = F; 
     float3 kD = float3(1.0, 1.0, 1.0) - kS; 
     kD *= 1.0 - metallic;
- // Combine: Use steppedNdotL for the diffuse term, add sharp specular on top
+    // Combine: Use steppedNdotL for the diffuse term, add sharp specular on top
     return (kD * albedo / PI * steppedNdotL) * lightColor * 3.0 + finalSpecular;
- }
+}
 
 // -----------------------------------------------------------------------------
 // Kernel

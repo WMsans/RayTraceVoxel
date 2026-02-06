@@ -23,6 +23,8 @@ MonoBehaviour:
     renderScale: 0.1
     iterations: 64
     marchSteps: 32
+    celSteps: 4
+    shadowBrightness: 0.3
     upscalingMode: 0
     sharpness: 0.5
     enableFXAA: 0
@@ -30,10 +32,8 @@ MonoBehaviour:
     taaBlend: 0.9
     enableOutline: 1
     outlineThickness: 1
-    outlineStrength: 0.5
+    outlineStrength: 0.8
     outlineColor: {r: 0, g: 0.043137256, b: 0.16078432, a: 1}
-    highlightColor: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
-    highlightStrength: 0.5
     lodBias: 1
     useCameraFarPlane: 0
     cullFrustum: 1
