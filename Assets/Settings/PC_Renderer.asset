@@ -21,7 +21,7 @@ MonoBehaviour:
     injectionPoint: 400
     qualityLevel: 2
     renderScale: 0.1
-    textureScale: 5
+    textureScale: 0.08
     iterations: 64
     marchSteps: 32
     celSteps: 4
@@ -35,6 +35,9 @@ MonoBehaviour:
     outlineThickness: 1
     outlineStrength: 0.8
     outlineColor: {r: 0, g: 0.043137256, b: 0.16078432, a: 1}
+    normalHighlightStrength: 0.5
+    normalThreshold: 0.6
+    normalHighlightColor: {r: 1, g: 1, b: 1, a: 1}
     lodBias: 1
     useCameraFarPlane: 0
     cullFrustum: 1

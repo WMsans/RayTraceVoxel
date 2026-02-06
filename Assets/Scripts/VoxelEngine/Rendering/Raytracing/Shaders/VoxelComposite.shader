@@ -6,6 +6,8 @@ Shader "Hidden/VoxelComposite"
         _Sharpness ("Sharpness", Range(0, 1)) = 0.5
         _OutlineParams ("Outline Params", Vector) = (1, 0.5, 0, 0)
         _OutlineColor ("Outline Color", Color) = (0,0,0,1)
+        _NormalOutlineParams ("Normal Outline Params", Vector) = (0.6, 0.5, 0, 0)
+        _NormalOutlineColor ("Normal Outline Color", Color) = (1,1,1,1)
     }
     SubShader
     {
@@ -33,8 +35,10 @@ Shader "Hidden/VoxelComposite"
             
             float4 _BlitTexture_TexelSize;
             float _Sharpness;
-            float4 _OutlineParams; // x: thickness, y: strength
+            float4 _OutlineParams;        // x: thickness, y: strength
             float4 _OutlineColor;
+            float4 _NormalOutlineParams;  // x: threshold, y: strength
+            float4 _NormalOutlineColor;
 
             struct Varyings
             {
@@ -128,14 +132,12 @@ Shader "Hidden/VoxelComposite"
                 // 3. Apply Outline (Depth + Normal)
                 #if defined(_OUTLINE_ON)
                     float2 e = _BlitTexture_TexelSize.xy * _OutlineParams.x;
-
                     // --- A. Depth Based Highlighting ---
                     float depth = LinearEyeDepth(currentDepth, _ZBufferParams);
                     float du = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, -e.y)).r, _ZBufferParams);
                     float dr = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(e.x, 0)).r, _ZBufferParams);
                     float dd = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, e.y)).r, _ZBufferParams);
                     float dl = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(-e.x, 0)).r, _ZBufferParams);
-                    
                     float depth_diff = 0.0;
                     float invDepth = 1.0 / (depth + 1e-6);
                     depth_diff += clamp((du - depth) * invDepth, 0.0, 1.0);
@@ -147,14 +149,12 @@ Shader "Hidden/VoxelComposite"
                     // --- B. Normal Based Highlighting ---
                     // Unpack center normal: (0..1) -> (-1..1)
                     float3 normal = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv).xyz * 2.0 - 1.0;
-                    
                     float2 offsets[4] = {
                         float2(0, -e.y),
                         float2(0, e.y),
                         float2(e.x, 0),
                         float2(-e.x, 0)
                     };
-
                     float normal_sum = 0.0;
                     
                     // Now calculating the raw squared difference between normals.
@@ -169,14 +169,19 @@ Shader "Hidden/VoxelComposite"
                     }
 
                     float indicator = sqrt(normal_sum);
-                    float normalThreshold = 0.6; 
+                    float normalThreshold = _NormalOutlineParams.x; 
                     float normalEdge = step(normalThreshold, indicator);
 
                     // --- C. Combine ---
-                    float finalOutline = max(depthEdge, normalEdge);
-
-                    float3 outlineMix = lerp(col, _OutlineColor.rgb, _OutlineParams.y);
-                    col = lerp(col, outlineMix, finalOutline);
+                    // Apply Depth Outline
+                    float3 depthMix = lerp(col, _OutlineColor.rgb, _OutlineParams.y);
+                    col = lerp(col, depthMix, depthEdge);
+                    
+                    // Apply Normal Outline (Layered on top)
+                    float3 normalMix = lerp(col, _NormalOutlineColor.rgb, _NormalOutlineParams.y);
+                    
+                    // This prevents the normal highlight from appearing where the depth highlight is already drawn.
+                    col = lerp(col, normalMix, normalEdge * (1.0 - depthEdge));
 
                 #endif
 

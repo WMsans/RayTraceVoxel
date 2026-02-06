@@ -28,7 +28,7 @@ namespace VoxelEngine.Core.Rendering
             public QualityLevel qualityLevel = QualityLevel.High;
             [Range(0.1f, 1.0f)]
             public float renderScale = 1.0f;
-            [Range(0.01f, 10.0f)] public float textureScale = 1.0f; // NEW: Texture Scale Parameter
+            [Range(0.01f, 10.0f)] public float textureScale = 1.0f;
             public int iterations = 128;
             public int marchSteps = 64;
 
@@ -48,8 +48,15 @@ namespace VoxelEngine.Core.Rendering
             [Header("Outline")]
             public bool enableOutline = false;
             [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
+            
+            [Header("Depth Outline")]
             [Range(0.0f, 1.0f)] public float outlineStrength = 0.5f;
             public Color outlineColor = Color.black;
+
+            [Header("Normal Highlight")]
+            [Range(0.0f, 1.0f)] public float normalHighlightStrength = 0.5f; // New Control
+            [Range(0.0f, 2.0f)] public float normalThreshold = 0.6f;        // New Control
+            public Color normalHighlightColor = Color.white;                // New Control
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -129,7 +136,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _VoxelNormalTextureParams = Shader.PropertyToID("_VoxelNormalTexture");
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
-            private static readonly int _CelShadeParams = Shader.PropertyToID("_CelShadeParams"); // NEW
+            private static readonly int _CelShadeParams = Shader.PropertyToID("_CelShadeParams"); 
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
             private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
@@ -164,6 +171,8 @@ namespace VoxelEngine.Core.Rendering
             // Outline IDs
             private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
             private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
+            private static readonly int _NormalOutlineParamsID = Shader.PropertyToID("_NormalOutlineParams"); // New ID
+            private static readonly int _NormalOutlineColorParams = Shader.PropertyToID("_NormalOutlineColor"); // New ID
 
             // Debug IDs
             private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
@@ -238,9 +247,7 @@ namespace VoxelEngine.Core.Rendering
             // --- Pass Data Classes ---
             private class PassData {
                 public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle targetNormals; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
-                // Debug fields
                 public float debugNormals; public float debugBricks;
-                // Cel Shading
                 public Vector4 celShadeParams;
             }
             private class CompositePassData { 
@@ -257,6 +264,11 @@ namespace VoxelEngine.Core.Rendering
                 public float outlineStrength;
                 public Color outlineColor;
                 public Vector4 mainLightColor; 
+                
+                // Normal Highlight Data
+                public float normalStrength;
+                public float normalThreshold;
+                public Color normalColor;
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
             private class TAAPassData { public TextureHandle source; public TextureHandle history; public TextureHandle motion; public TextureHandle destination; public Material material; public float blend; }
@@ -267,7 +279,7 @@ namespace VoxelEngine.Core.Rendering
                 if (VoxelVolumePool.Instance == null) return;
                 var cameraData = frameData.Get<UniversalCameraData>();
 
-                // [Update Culling Logic - Same as original]
+                // [Culling Logic]
                 if (_settings.cullFrustum) {
                     Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
                     Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
@@ -364,24 +376,16 @@ namespace VoxelEngine.Core.Rendering
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
                     if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
-                                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; 
-                                    
-                                    data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, _settings.textureScale); 
-                                    
-                                    data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
-                                    
-                                    // --- Debug Setup ---
-                                    data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
-                                    data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
-                    
-                                    // --- Cel Shading Setup ---
-                                    data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
-                    
-                                    builder.UseTexture(data.targetColor, AccessFlags.Write);                    builder.UseTexture(data.targetDepth, AccessFlags.Write);
-                    builder.UseTexture(data.targetNormals, AccessFlags.Write);
-                    builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
-                    builder.UseTexture(data.sourceDepth, AccessFlags.Read);
-                    builder.UseTexture(data.sourceColor, AccessFlags.Read);
+                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; 
+                    data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, _settings.textureScale); 
+                    data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
+                    data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
+                    data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
+                    data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
+    
+                    builder.UseTexture(data.targetColor, AccessFlags.Write); builder.UseTexture(data.targetDepth, AccessFlags.Write);
+                    builder.UseTexture(data.targetNormals, AccessFlags.Write); builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
+                    builder.UseTexture(data.sourceDepth, AccessFlags.Read); builder.UseTexture(data.sourceColor, AccessFlags.Read);
                     if (data.albedoArray.IsValid()) builder.UseTexture(data.albedoArray, AccessFlags.Read);
                     if (data.normalArray.IsValid()) builder.UseTexture(data.normalArray, AccessFlags.Read);
                     if (data.maskArray.IsValid()) builder.UseTexture(data.maskArray, AccessFlags.Read);
@@ -406,17 +410,13 @@ namespace VoxelEngine.Core.Rendering
                         if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _MaskTextureArrayParams, pd.maskArray);
                         cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, pd.cameraToWorld); cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, pd.cameraInverseProjection); cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, pd.viewProj); cmd.SetComputeMatrixParam(cs, _PrevViewProjMatrixParams, pd.prevViewProj);
                         cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, _SourceTexParams, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, _ResultNormalsParams, pd.targetNormals); cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
-                                            cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor); cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
-                                            
-                                            // --- Set Debug Params ---
-                                            cmd.SetComputeFloatParam(cs, _DebugViewNormalsParams, pd.debugNormals);
-                                            cmd.SetComputeFloatParam(cs, _DebugViewBricksParams, pd.debugBricks);
-                                            
-                                            // --- Set Cel Shading Params ---
-                                            cmd.SetComputeVectorParam(cs, _CelShadeParams, pd.celShadeParams);
-                        
-                                            int groupsX = Mathf.CeilToInt(pd.width / 8.0f); int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
-                                            cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);                    });
+                        cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor); cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
+                        cmd.SetComputeFloatParam(cs, _DebugViewNormalsParams, pd.debugNormals);
+                        cmd.SetComputeFloatParam(cs, _DebugViewBricksParams, pd.debugBricks);
+                        cmd.SetComputeVectorParam(cs, _CelShadeParams, pd.celShadeParams);
+                        int groupsX = Mathf.CeilToInt(pd.width / 8.0f); int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
+                        cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);                    
+                    });
                 }
                 
                 TextureHandle compositeSource = lowResResult; 
@@ -438,7 +438,7 @@ namespace VoxelEngine.Core.Rendering
                 {
                     compData.source = compositeSource; 
                     compData.depthSource = lowResDepth;
-                    compData.normalSource = lowResNormals; // <--- ASSIGN NORMALS HERE
+                    compData.normalSource = lowResNormals; 
                     compData.material = _compositeMaterial;
                     compData.useFSR = (_settings.upscalingMode == UpscalingMode.SpatialFSR);
                     compData.sharpness = _settings.sharpness;
@@ -450,9 +450,14 @@ namespace VoxelEngine.Core.Rendering
                     compData.outlineStrength = _settings.outlineStrength;
                     compData.mainLightColor = mainCol;
                     
+                    // Populate Normal Highlight Data
+                    compData.normalColor = _settings.normalHighlightColor;
+                    compData.normalStrength = _settings.normalHighlightStrength;
+                    compData.normalThreshold = _settings.normalThreshold;
+
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
-                    builder.UseTexture(compData.normalSource, AccessFlags.Read); // <--- DECLARE READ ACCESS
+                    builder.UseTexture(compData.normalSource, AccessFlags.Read);
                     
                     builder.SetRenderAttachment(compositeOutput, 0, AccessFlags.Write);
                     builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.Write);
@@ -462,23 +467,25 @@ namespace VoxelEngine.Core.Rendering
                         if (useFXAA) { context.cmd.ClearRenderTarget(false, true, Color.clear); }
                         
                         cData.material.SetTexture(_VoxelDepthTextureParams, cData.depthSource);
-                        
-                        // Pass the normal texture to the shader
-                        cData.material.SetTexture(_VoxelNormalTextureParams, cData.normalSource); // <--- BIND TEXTURE
-
+                        cData.material.SetTexture(_VoxelNormalTextureParams, cData.normalSource);
                         cData.material.SetFloat(_SharpnessParams, cData.sharpness);
                         
                         if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR"); 
                         else cData.material.DisableKeyword("_UPSCALING_FSR");
 
-                        // Outline Keyword & Params
                         if (cData.enableOutline) 
                         {
                             cData.material.EnableKeyword("_OUTLINE_ON");
                             
                             cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
+                            
+                            // Depth Outline Props
                             cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
                             cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
+
+                            // Normal Highlight Props
+                            cData.material.SetColor(_NormalOutlineColorParams, cData.normalColor);
+                            cData.material.SetVector(_NormalOutlineParamsID, new Vector4(cData.normalThreshold, cData.normalStrength, 0, 0));
                         }
                         else 
                         {
@@ -490,31 +497,18 @@ namespace VoxelEngine.Core.Rendering
                 }
 
                 // --- 4. Grass Pass (Rasterization) ---
-                // Grass is drawn AFTER Composite has populated the Depth Buffer.
-                // Grass is drawn BEFORE FXAA so it gets anti-aliased.
                 if (VoxelGrassRenderer.ActiveRenderers.Count > 0 || VoxelLeafRenderer.ActiveLeafRenderers.Count > 0)
                 {
                     using (var builder = renderGraph.AddRasterRenderPass<GrassPassData>("Voxel Vegetation", out var grassData))
                     {
                         grassData.colorTarget = compositeOutput;
                         grassData.depthTarget = resourceData.activeDepthTexture;
-
-                        // Bind targets
                         builder.SetRenderAttachment(grassData.colorTarget, 0, AccessFlags.Write);
                         builder.SetRenderAttachmentDepth(grassData.depthTarget, AccessFlags.ReadWrite);
-
                         builder.SetRenderFunc((GrassPassData gData, RasterGraphContext context) =>
                         {
-                            // Draw Grass
-                            foreach (var renderer in VoxelGrassRenderer.ActiveRenderers)
-                            {
-                                renderer.Draw(context.cmd);
-                            }
-                            // Draw Leaves
-                            foreach (var renderer in VoxelLeafRenderer.ActiveLeafRenderers)
-                            {
-                                renderer.Draw(context.cmd);
-                            }
+                            foreach (var renderer in VoxelGrassRenderer.ActiveRenderers) renderer.Draw(context.cmd);
+                            foreach (var renderer in VoxelLeafRenderer.ActiveLeafRenderers) renderer.Draw(context.cmd);
                         });
                     }
                 }
@@ -528,7 +522,6 @@ namespace VoxelEngine.Core.Rendering
                         fxaaData.material = _fxaaMaterial;
                         builder.UseTexture(fxaaData.source, AccessFlags.Read);
                         builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
-                        // No depth write needed for FXAA
                         builder.SetRenderFunc((FXAAPassData fData, RasterGraphContext context) => { Blitter.BlitTexture(context.cmd, fData.source, new Vector4(1, 1, 0, 0), fData.material, 0); });
                     }
                 }
