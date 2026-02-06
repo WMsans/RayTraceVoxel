@@ -34,8 +34,8 @@ namespace VoxelEngine.Core.Rendering
 
             [Header("Atmosphere")]
             public bool enableAtmosphere = true;
-            public Color atmosphereColor = new Color(0.55f, 0.7f, 0.9f); // Sky-like blue tint
-            [Range(0.0f, 0.1f)] public float atmosphereDensity = 0.005f; // Low density for "short hike" feel
+            public Color atmosphereColor = new Color(0.55f, 0.7f, 0.9f);
+            [Range(0.0f, 0.1f)] public float atmosphereDensity = 0.005f;
 
             [Header("Cel Shading")]
             [Range(1, 10)] 
@@ -143,7 +143,6 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
             private static readonly int _CelShadeParams = Shader.PropertyToID("_CelShadeParams"); 
-            // [ATMOSPHERE]
             private static readonly int _AtmosphereParams = Shader.PropertyToID("_AtmosphereParams");
             private static readonly int _AtmosphereColor = Shader.PropertyToID("_AtmosphereColor");
 
@@ -177,6 +176,9 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _SharpnessParams = Shader.PropertyToID("_Sharpness");
             private static readonly int _HistoryTexParams = Shader.PropertyToID("_HistoryTex");
             private static readonly int _BlendParams = Shader.PropertyToID("_Blend");
+
+            // [SHADOWS] New ID for shadow map
+            private static readonly int _MainLightShadowmapID = Shader.PropertyToID("_MainLightShadowmapTexture");
 
             // Outline IDs
             private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
@@ -259,7 +261,6 @@ namespace VoxelEngine.Core.Rendering
                 public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle targetNormals; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
                 public float debugNormals; public float debugBricks;
                 public Vector4 celShadeParams;
-                // [ATMOSPHERE]
                 public Vector4 atmosphereParams; 
                 public Vector4 atmosphereColor;
             }
@@ -270,15 +271,11 @@ namespace VoxelEngine.Core.Rendering
                 public Material material; 
                 public bool useFSR; 
                 public float sharpness;
-                
-                // Outline Data
                 public bool enableOutline;
                 public float outlineThickness;
                 public float outlineStrength;
                 public Color outlineColor;
                 public Vector4 mainLightColor; 
-                
-                // Normal Highlight Data
                 public float normalStrength;
                 public float normalThreshold;
                 public float normalFadeDistance; 
@@ -293,7 +290,6 @@ namespace VoxelEngine.Core.Rendering
                 if (VoxelVolumePool.Instance == null) return;
                 var cameraData = frameData.Get<UniversalCameraData>();
 
-                // [Culling Logic]
                 if (_settings.cullFrustum) {
                     Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
                     Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
@@ -307,7 +303,6 @@ namespace VoxelEngine.Core.Rendering
                 var lightData = frameData.Get<UniversalLightData>();
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
-                // Resolution Logic
                 float currentScale = 1.0f;
                 int iterations = 128;
                 int marchSteps = 64;
@@ -319,7 +314,6 @@ namespace VoxelEngine.Core.Rendering
                 int scaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * currentScale));
                 int scaledHeight = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.height * currentScale));
 
-                // Create Textures
                 TextureDesc colorDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat, enableRandomWrite = true, name = "VoxelRaytraceResult_LowRes" };
                 TextureHandle lowResResult = renderGraph.CreateTexture(colorDesc);
                 TextureDesc depthDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat, enableRandomWrite = true, name = "VoxelRaytraceDepth_LowRes" };
@@ -329,7 +323,6 @@ namespace VoxelEngine.Core.Rendering
                 TextureDesc mvDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16_SFloat, enableRandomWrite = true, name = "VoxelMotionVectors" };
                 TextureHandle motionVectorTex = renderGraph.CreateTexture(mvDesc);
 
-                // Jitter & Matrices Setup
                 int frameIndex = Time.frameCount % 16;
                 float jitterX = (Halton(frameIndex + 1, 2) - 0.5f);
                 float jitterY = (Halton(frameIndex + 1, 3) - 0.5f);
@@ -343,7 +336,6 @@ namespace VoxelEngine.Core.Rendering
                 if (!_prevMatrices.TryGetValue(cam, out Matrix4x4 prevViewProj)) prevViewProj = viewProj;
                 _prevMatrices[cam] = viewProj;
 
-                // TAA History Setup
                 TextureHandle historyRead = TextureHandle.nullHandle;
                 TextureHandle historyWrite = TextureHandle.nullHandle;
                 if (useTAA) {
@@ -359,7 +351,6 @@ namespace VoxelEngine.Core.Rendering
                     hist.currentIndex = (hist.currentIndex + 1) % 2;
                 }
 
-                // Final Output Setup
                 TextureHandle compositeOutput;
                 bool useFXAA = _settings.enableFXAA && _fxaaMaterial != null;
                 if (useFXAA) {
@@ -396,7 +387,6 @@ namespace VoxelEngine.Core.Rendering
                     data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
                     data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
                     data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
-                    // [ATMOSPHERE]
                     data.atmosphereParams = new Vector4(_settings.enableAtmosphere ? _settings.atmosphereDensity : 0.0f, 0, 0, 0);
                     data.atmosphereColor = _settings.atmosphereColor;
     
@@ -431,7 +421,6 @@ namespace VoxelEngine.Core.Rendering
                         cmd.SetComputeFloatParam(cs, _DebugViewNormalsParams, pd.debugNormals);
                         cmd.SetComputeFloatParam(cs, _DebugViewBricksParams, pd.debugBricks);
                         cmd.SetComputeVectorParam(cs, _CelShadeParams, pd.celShadeParams);
-                        // [ATMOSPHERE]
                         cmd.SetComputeVectorParam(cs, _AtmosphereParams, pd.atmosphereParams);
                         cmd.SetComputeVectorParam(cs, _AtmosphereColor, pd.atmosphereColor);
 
@@ -442,7 +431,6 @@ namespace VoxelEngine.Core.Rendering
                 
                 TextureHandle compositeSource = lowResResult; 
 
-                // --- 2. TAA Pass ---
                 if (useTAA)
                 {
                     using (var builder = renderGraph.AddRasterRenderPass<TAAPassData>("Voxel TAA", out var taaData))
@@ -454,7 +442,6 @@ namespace VoxelEngine.Core.Rendering
                     compositeSource = historyWrite;
                 }
 
-                // --- 3. Composite (Upscale) Pass & Depth Write & OUTLINE ---
                 using (var builder = renderGraph.AddRasterRenderPass<CompositePassData>("Composite & Upscale", out var compData))
                 {
                     compData.source = compositeSource; 
@@ -464,14 +451,12 @@ namespace VoxelEngine.Core.Rendering
                     compData.useFSR = (_settings.upscalingMode == UpscalingMode.SpatialFSR);
                     compData.sharpness = _settings.sharpness;
                     
-                    // Populate Outline Data
                     compData.enableOutline = _settings.enableOutline;
                     compData.outlineColor = _settings.outlineColor;
                     compData.outlineThickness = _settings.outlineThickness;
                     compData.outlineStrength = _settings.outlineStrength;
                     compData.mainLightColor = mainCol;
                     
-                    // Populate Normal Highlight Data
                     compData.normalColor = _settings.normalHighlightColor;
                     compData.normalStrength = _settings.normalHighlightStrength;
                     compData.normalThreshold = _settings.normalThreshold;
@@ -501,11 +486,9 @@ namespace VoxelEngine.Core.Rendering
                             
                             cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
                             
-                            // Depth Outline Props
                             cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
                             cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
 
-                            // Normal Highlight Props
                             cData.material.SetColor(_NormalOutlineColorParams, cData.normalColor);
                             cData.material.SetVector(_NormalOutlineParamsID, new Vector4(cData.normalThreshold, cData.normalStrength, cData.normalFadeDistance, 0));
                         }
@@ -518,7 +501,6 @@ namespace VoxelEngine.Core.Rendering
                     });
                 }
 
-                // --- 4. Grass Pass (Rasterization) ---
                 if (VoxelGrassRenderer.ActiveRenderers.Count > 0 || VoxelLeafRenderer.ActiveLeafRenderers.Count > 0)
                 {
                     using (var builder = renderGraph.AddRasterRenderPass<GrassPassData>("Voxel Vegetation", out var grassData))
@@ -535,7 +517,6 @@ namespace VoxelEngine.Core.Rendering
                     }
                 }
 
-                // --- 5. FXAA Pass ---
                 if (useFXAA)
                     {
                     using (var builder = renderGraph.AddRasterRenderPass<FXAAPassData>("FXAA Pass", out var fxaaData))

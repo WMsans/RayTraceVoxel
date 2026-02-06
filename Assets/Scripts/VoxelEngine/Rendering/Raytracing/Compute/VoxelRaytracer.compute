@@ -43,6 +43,17 @@ SamplerState sampler_LinearRepeat
     AddressV = Wrap;
 };
 
+// [SHADOWS] Unity Shadow Assets
+// Bound by VoxelRaytracerFeature via cmd.SetComputeTextureParam
+Texture2D<float> _MainLightShadowmapTexture;
+
+// Globals set by URP MainLightShadowCasterPass
+float4x4 _MainLightWorldToShadow[4];
+float4 _CascadeShadowSplitSpheres0;
+float4 _CascadeShadowSplitSpheres1;
+float4 _CascadeShadowSplitSpheres2;
+float4 _CascadeShadowSplitSpheres3;
+
 RWTexture2D<float4> _Result;
 RWTexture2D<float> _ResultDepth;
 RWTexture2D<float4> _ResultNormals;
@@ -60,7 +71,7 @@ float4 _RaytraceParams;
 float4 _CelShadeParams; // x: steps, y: minBrightness/darkness, z: unused
 
 // [ATMOSPHERE]
-float4 _AtmosphereParams; // x: density, y: unused
+float4 _AtmosphereParams; // x: density
 float4 _AtmosphereColor;
 
 float _DebugNormalDelta;
@@ -188,6 +199,44 @@ float3 GetRandomColor(uint seed)
 // -----------------------------------------------------------------------------
 // Lighting Functions
 // -----------------------------------------------------------------------------
+
+// [SHADOWS] New function to sample Unity's Global Shadow Map
+float GetUnityShadow(float3 positionWS)
+{
+    float3 fromCam = positionWS - _CameraToWorld._m03_m13_m23;
+    float distSq = dot(fromCam, fromCam);
+    
+    int cascadeIndex = 0;
+    // Check splits (w is radius squared)
+    if(distSq > _CascadeShadowSplitSpheres0.w) cascadeIndex = 1;
+    if(distSq > _CascadeShadowSplitSpheres1.w) cascadeIndex = 2;
+    if(distSq > _CascadeShadowSplitSpheres2.w) cascadeIndex = 3;
+    
+    // Project World Position to Shadow Map Texture Space
+    float4 shadowCoord = mul(_MainLightWorldToShadow[cascadeIndex], float4(positionWS, 1.0));
+    // Perspective division (usually 1.0 for Directional, but important for correctness)
+    shadowCoord.xyz /= shadowCoord.w;
+    
+    // Check bounds
+    if (shadowCoord.x < 0 || shadowCoord.x > 1 || shadowCoord.y < 0 || shadowCoord.y > 1) 
+        return 1.0;
+        
+    // Sample Shadow Map (using Point Sampler)
+    float shadowMapDepth = _MainLightShadowmapTexture.SampleLevel(sampler_CameraDepthTexture, shadowCoord.xy, 0).r;
+    
+    // Bias to prevent self-shadowing artifacts
+    float bias = 0.005;
+
+    // Compare Depth
+    // UNITY_REVERSED_Z is standard in URP for modern platforms (1 = Near, 0 = Far)
+#if UNITY_REVERSED_Z
+    if(shadowCoord.z < shadowMapDepth - bias) return 0.0; // Occluded
+#else
+    if(shadowCoord.z > shadowMapDepth + bias) return 0.0;
+#endif
+
+    return 1.0;
+}
 
 float DistributionGGX(float3 N, float3 H, float roughness) 
 { 
@@ -348,7 +397,6 @@ struct HitInfo
     uint brickId; 
     int chunkId;
 };
-
 HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxDist, float tStart)
 {
     float tCurrent = tStart;
@@ -468,7 +516,7 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
 HitInfo TraceScene(float3 rayOrigin, float3 rayDir, float maxDist)
 {
     float closestT = maxDist;
-    HitInfo bestHit = (HitInfo)0; 
+    HitInfo bestHit = (HitInfo)0;
     bestHit.hit = false;
     bestHit.chunkId = -1;
 
@@ -516,7 +564,7 @@ HitInfo TraceScene(float3 rayOrigin, float3 rayDir, float maxDist)
         }
         else 
         {
-          float tCurrent = max(0.0, tScene.x);
+           float tCurrent = max(0.0, tScene.x);
             float tMaxLimit = min(closestT, tScene.y);
             float3 cellSize = (_TLASBoundsMax - _TLASBoundsMin) / float(_TLASResolution);
             float3 invDir = 1.0 / (rayDir + sign(rayDir) * 1e-6);
@@ -551,8 +599,8 @@ HitInfo TraceScene(float3 rayOrigin, float3 rayDir, float maxDist)
                         {
                             if (tBox.y > tCurrent)
                             {
-                             float3 localOrigin = mul(chunk.worldToLocal, float4(rayOrigin, 1.0)).xyz;
-                                float3 localDir = normalize(mul((float3x3)chunk.worldToLocal, rayDir));
+                              float3 localOrigin = mul(chunk.worldToLocal, float4(rayOrigin, 1.0)).xyz;
+                              float3 localDir = normalize(mul((float3x3)chunk.worldToLocal, rayDir));
                                 float boundsSz = 64.0;
                                 float2 tLocalBox = IntersectBox(localOrigin, localDir, float3(0,0,0), float3(boundsSz, boundsSz, boundsSz));
                                 if (tLocalBox.x < tLocalBox.y && tLocalBox.y > 0)
@@ -576,7 +624,7 @@ HitInfo TraceScene(float3 rayOrigin, float3 rayDir, float maxDist)
                                     }
                                 }
                             }
-                     }
+                          }
                     }
                 }
                 
@@ -811,6 +859,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float NdotL = dot(hit.normal, L);
         float shadowBias = lerp(0.1, 5, saturate(NdotL)) * 4;
         float lightAtten = 1.0;
+        
+        // [SHADOWS] Voxel-to-Voxel Shadow (Existing)
         if (NdotL > 0.001)
         {
             float3 shadowOrigin = hit.pos + hit.normal * shadowBias + L * 0.01;
@@ -824,10 +874,15 @@ void CSMain (uint3 id : SV_DispatchThreadID)
             lightAtten = 0.0;
         }
 
+        // [SHADOWS] Apply Unity Mesh Shadow (New)
+        if (lightAtten > 0.0) // Only sample if not already occluded by a voxel
+        {
+            lightAtten *= GetUnityShadow(hit.pos + hit.normal * 0.1); 
+        }
+
         float3 direct = LightingDirect(albedo, hit.normal, V, L, _MainLightColor.rgb, roughness, metallic, lightAtten);
         float3 ambient = albedo * ao * 0.15 * GetSkyColor(hit.normal);
         resultColor += throughput * (direct + ambient);
-
         // Debug views (only on first hit)
         if (bounce == 0)
         {
@@ -860,10 +915,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     if (anyPrimaryHit)
     {
         // [ATMOSPHERE] Apply Atmosphere Color to geometry
-        // Calculate true distance from camera (removing dither offset error)
         float dist = length(primaryHit.pos - _CameraToWorld._m03_m13_m23);
-        // Exponential fog: 1.0 - exp(-dist * density)
-        // This gives a smooth transition ("hike" feel) compared to linear.
         float fogFactor = 1.0 - exp(-dist * _AtmosphereParams.x);
         resultColor = lerp(resultColor, _AtmosphereColor.rgb, fogFactor);
 
