@@ -9,6 +9,7 @@ Shader "Hidden/VoxelComposite"
         _NormalOutlineParams ("Normal Outline Params", Vector) = (0.6, 0.5, 0, 0)
         _NormalOutlineColor ("Normal Outline Color", Color) = (1,1,1,1)
     }
+ 
     SubShader
     {
         Tags { "RenderType"="Overlay" "RenderPipeline" = "UniversalPipeline" }
@@ -35,9 +36,9 @@ Shader "Hidden/VoxelComposite"
             
             float4 _BlitTexture_TexelSize;
             float _Sharpness;
-            float4 _OutlineParams;        // x: thickness, y: strength
+            float4 _OutlineParams; // x: thickness, y: strength
             float4 _OutlineColor;
-            float4 _NormalOutlineParams;  // x: threshold, y: strength
+            float4 _NormalOutlineParams; // x: threshold, y: strength
             float4 _NormalOutlineColor;
 
             struct Varyings
@@ -149,6 +150,10 @@ Shader "Hidden/VoxelComposite"
                     // --- B. Normal Based Highlighting ---
                     // Unpack center normal: (0..1) -> (-1..1)
                     float3 normal = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv).xyz * 2.0 - 1.0;
+                    
+                    // [FIX] Reuse depth samples to ensure normal outline aligns with foreground
+                    float neighborDepths[4] = { du, dd, dr, dl };
+
                     float2 offsets[4] = {
                         float2(0, -e.y),
                         float2(0, e.y),
@@ -163,9 +168,29 @@ Shader "Hidden/VoxelComposite"
                     {
                         float3 n = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv + offsets[i]).xyz * 2.0 - 1.0;
                         float3 normal_diff = normal - n;
+                        float diffSq = dot(normal_diff, normal_diff);
                         
-                        // Accumulate squared difference
-                        normal_sum += dot(normal_diff, normal_diff);
+                        // [Fix] 1-Pixel Thickness Logic
+                        // To avoid double-thick lines, we only draw the edge if WE own it.
+                        // Ownership is determined by depth (Foreground owns the edge).
+                        
+                        float d_neighbor = neighborDepths[i];
+                        float d_diff = d_neighbor - depth; // Positive if neighbor is background
+                        
+                        // Condition 1: Silhouette (Neighbor is deeper/background). 
+                        // We are foreground, so we draw the line.
+                        bool isForeground = (d_diff > 0.001); 
+
+                        // Condition 2: Crease (Depths are roughly equal).
+                        // Use a directional bias (check only Up and Right neighbors) to keep it 1 pixel.
+                        // i=1 is (0, e.y), i=2 is (e.x, 0).
+                        bool isCrease = (abs(d_diff) <= 0.001);
+                        bool biasPass = (i == 1 || i == 2);
+
+                        if (isForeground || (isCrease && biasPass))
+                        {
+                            normal_sum += diffSq;
+                        }
                     }
 
                     float indicator = sqrt(normal_sum);
@@ -179,7 +204,6 @@ Shader "Hidden/VoxelComposite"
                     
                     // Apply Normal Outline (Layered on top)
                     float3 normalMix = lerp(col, _NormalOutlineColor.rgb, _NormalOutlineParams.y);
-                    
                     // This prevents the normal highlight from appearing where the depth highlight is already drawn.
                     col = lerp(col, normalMix, normalEdge * (1.0 - depthEdge));
 
