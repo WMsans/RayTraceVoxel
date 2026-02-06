@@ -26,9 +26,10 @@ Shader "Hidden/VoxelComposite"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
             
-            TEXTURE2D(_BlitTexture);          SAMPLER(sampler_BlitTexture);
-            TEXTURE2D(_VoxelDepthTexture);    // SamplerState included in Unity Core
-            TEXTURE2D(_VoxelNormalTexture);   // <--- ADD Normal Texture Definition
+            TEXTURE2D(_BlitTexture);
+            SAMPLER(sampler_BlitTexture);
+            TEXTURE2D(_VoxelDepthTexture);
+            TEXTURE2D(_VoxelNormalTexture);
             
             float4 _BlitTexture_TexelSize;
             float _Sharpness;
@@ -76,7 +77,8 @@ Shader "Hidden/VoxelComposite"
                 float3 colBilinear = lerp(lerp(cF, cG, pp.x), lerp(cJ, cK, pp.x), pp.y);
                 float3 colSharp = 0;
                 {
-                    float3 minColor = FsrMin3(cF, cG, cJ); minColor = min(minColor, cK);
+                    float3 minColor = FsrMin3(cF, cG, cJ);
+                    minColor = min(minColor, cK);
                     float3 maxColor = FsrMax3(cF, cG, cJ); maxColor = max(maxColor, cK);
                     colSharp = SAMPLE_TEXTURE2D_LOD(_BlitTexture, sampler_BlitTexture, uv, 0).rgb;
                     colSharp = clamp(colSharp, minColor, maxColor);
@@ -108,7 +110,6 @@ Shader "Hidden/VoxelComposite"
             FragOutput Frag(Varyings input)
             {
                 FragOutput output;
-                
                 // 1. Fetch Depth
                 float rawDepth = SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv).r;
                 float currentDepth = rawDepth;
@@ -127,7 +128,7 @@ Shader "Hidden/VoxelComposite"
                 // 3. Apply Outline (Depth + Normal)
                 #if defined(_OUTLINE_ON)
                     float2 e = _BlitTexture_TexelSize.xy * _OutlineParams.x;
-                    
+
                     // --- A. Depth Based Highlighting ---
                     float depth = LinearEyeDepth(currentDepth, _ZBufferParams);
                     float du = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, -e.y)).r, _ZBufferParams);
@@ -141,14 +142,12 @@ Shader "Hidden/VoxelComposite"
                     depth_diff += clamp((dd - depth) * invDepth, 0.0, 1.0);
                     depth_diff += clamp((dr - depth) * invDepth, 0.0, 1.0);
                     depth_diff += clamp((dl - depth) * invDepth, 0.0, 1.0);
-                    
                     float depthEdge = smoothstep(0.2, 0.3, depth_diff);
 
                     // --- B. Normal Based Highlighting ---
                     // Unpack center normal: (0..1) -> (-1..1)
                     float3 normal = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv).xyz * 2.0 - 1.0;
                     
-                    // Define neighbor offsets (Up, Down, Left, Right)
                     float2 offsets[4] = {
                         float2(0, -e.y),
                         float2(0, e.y),
@@ -157,28 +156,23 @@ Shader "Hidden/VoxelComposite"
                     };
 
                     float normal_sum = 0.0;
-                    float3 normal_edge_bias = float3(1, 1, 1); // Bias from your reference
-
+                    
+                    // Now calculating the raw squared difference between normals.
                     [unroll]
                     for (int i = 0; i < 4; i++) 
                     {
                         float3 n = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv + offsets[i]).xyz * 2.0 - 1.0;
                         float3 normal_diff = normal - n;
                         
-                        // Edge pixels yield to normal closest to bias direction (from reference)
-                        float normal_bias_diff = dot(normal_diff, normal_edge_bias);
-                        float normal_indicator = smoothstep(-0.01, 0.01, normal_bias_diff);
-                        
-                        normal_sum += dot(normal_diff, normal_diff) * normal_indicator;
+                        // Accumulate squared difference
+                        normal_sum += dot(normal_diff, normal_diff);
                     }
 
                     float indicator = sqrt(normal_sum);
-                    float normalThreshold = 0.6; // Matches your reference
+                    float normalThreshold = 0.6; 
                     float normalEdge = step(normalThreshold, indicator);
 
                     // --- C. Combine ---
-                    // Reference logic: ALBEDO = mix(original, edge_mix, (depth_edge > 0.0 ? depth_edge : normal_edge));
-                    // Here we combine both factors.
                     float finalOutline = max(depthEdge, normalEdge);
 
                     float3 outlineMix = lerp(col, _OutlineColor.rgb, _OutlineParams.y);
