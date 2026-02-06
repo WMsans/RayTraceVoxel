@@ -21,6 +21,7 @@ MonoBehaviour:
     injectionPoint: 400
     qualityLevel: 2
     renderScale: 0.1
+    textureScale: 5
     iterations: 64
     marchSteps: 32
     celSteps: 4

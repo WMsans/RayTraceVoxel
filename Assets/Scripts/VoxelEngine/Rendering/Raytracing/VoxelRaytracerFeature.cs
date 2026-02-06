@@ -28,6 +28,7 @@ namespace VoxelEngine.Core.Rendering
             public QualityLevel qualityLevel = QualityLevel.High;
             [Range(0.1f, 1.0f)]
             public float renderScale = 1.0f;
+            [Range(0.01f, 10.0f)] public float textureScale = 1.0f; // NEW: Texture Scale Parameter
             public int iterations = 128;
             public int marchSteps = 64;
 
@@ -363,7 +364,11 @@ namespace VoxelEngine.Core.Rendering
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
                     if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
-                                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
+                                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; 
+                                    
+                                    data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, _settings.textureScale); 
+                                    
+                                    data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
                                     
                                     // --- Debug Setup ---
                                     data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
