@@ -651,6 +651,8 @@ MonoBehaviour:
   batchSize: 10
   stride: 4
   maxVertices: 65536
+  viewer: {fileID: 587925452}
+  baseChunkSize: 32
 --- !u!1 &888823811
 GameObject:
   m_ObjectHideFlags: 0

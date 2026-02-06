@@ -20,17 +20,25 @@ namespace VoxelEngine.Physics
         public float updateFrequency = 10.0f;
         [Tooltip("Max volumes to dispatch per update step.")]
         public int batchSize = 32;
-        [Tooltip("Sampling stride. Higher means lower resolution mesh.")]
+        [Tooltip("Base sampling stride for the highest detail (Leaf) chunks.")]
         public int stride = 4;
         [Tooltip("Max vertices limit for buffer.")]
         public int maxVertices = 65536;
 
-        private HashSet<VoxelVolume> _dirtyQueue = new HashSet<VoxelVolume>();
+        [Header("LOD & Priority")]
+        [Tooltip("The viewer (usually Main Camera) used for priority sorting.")]
+        public Transform viewer;
+        [Tooltip("The size of the smallest chunk (Leaf Node). Used to calculate LOD ratios.")]
+        public float baseChunkSize = 32.0f;
+
+        // Use a List for sorting and a HashSet for O(1) lookups
+        private List<VoxelVolume> _dirtyList = new List<VoxelVolume>();
+        private HashSet<VoxelVolume> _dirtySet = new HashSet<VoxelVolume>();
+        
         private float _timer;
         private ComputeBuffer _edgeTableBuffer;
         private ComputeBuffer _triTableBuffer;
         
-        // Structure for readback context
         private struct PhysicsRequest
         {
             public VoxelVolume volume;
@@ -38,7 +46,6 @@ namespace VoxelEngine.Physics
             public ComputeBuffer countBuffer;
         }
         
-        // Matches shader definition
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         public struct PhysicsTriangle
         {
@@ -72,18 +79,20 @@ namespace VoxelEngine.Physics
         public void Enqueue(VoxelVolume volume)
         {
             if (volume == null) return;
-            if (!_dirtyQueue.Contains(volume))
+            if (!_dirtySet.Contains(volume))
             {
-                _dirtyQueue.Add(volume);
+                _dirtySet.Add(volume);
+                _dirtyList.Add(volume);
             }
         }
 
         public void Remove(VoxelVolume volume)
         {
             if (volume == null) return;
-            if (_dirtyQueue.Contains(volume))
+            if (_dirtySet.Contains(volume))
             {
-                _dirtyQueue.Remove(volume);
+                _dirtySet.Remove(volume);
+                _dirtyList.Remove(volume);
             }
         }
 
@@ -95,14 +104,13 @@ namespace VoxelEngine.Physics
                 volume.meshCol.enabled = false;
             }
 
-            // Also disable any BoxCollider added by StructuralCleaner
             BoxCollider bc = volume.GetComponent<BoxCollider>();
             if (bc != null) bc.enabled = false;
         }
 
         private void Update()
         {
-            if (_dirtyQueue.Count == 0) return;
+            if (_dirtyList.Count == 0) return;
 
             _timer += Time.deltaTime;
             if (_timer >= (1.0f / updateFrequency))
@@ -114,34 +122,68 @@ namespace VoxelEngine.Physics
 
         private void ProcessBatch()
         {
-            int processed = 0;
-            List<VoxelVolume> toRemove = new List<VoxelVolume>();
-
-            foreach (var vol in _dirtyQueue)
+            // 1. Clean up nulls or inactive volumes first
+            for (int i = _dirtyList.Count - 1; i >= 0; i--)
             {
-                if (processed >= batchSize) break;
-                
-                // Validate
-                if (vol == null || !vol.isActiveAndEnabled || !vol.IsReady)
+                if (_dirtyList[i] == null || !_dirtyList[i].isActiveAndEnabled)
                 {
-                    toRemove.Add(vol);
-                    continue;
+                    _dirtySet.Remove(_dirtyList[i]);
+                    _dirtyList.RemoveAt(i);
                 }
-
-                DispatchPhysics(vol);
-                toRemove.Add(vol);
-                processed++;
             }
 
-            foreach (var vol in toRemove)
+            if (_dirtyList.Count == 0) return;
+
+            // 2. Sort by distance to viewer (Closest First)
+            if (viewer != null)
             {
-                _dirtyQueue.Remove(vol);
+                Vector3 viewPos = viewer.position;
+                _dirtyList.Sort((a, b) => 
+                {
+                    float distA = (a.transform.position - viewPos).sqrMagnitude;
+                    float distB = (b.transform.position - viewPos).sqrMagnitude;
+                    return distA.CompareTo(distB);
+                });
             }
+
+            // 3. Process the top N (closest) items
+            int count = Mathf.Min(batchSize, _dirtyList.Count);
+            
+            for (int i = 0; i < count; i++)
+            {
+                VoxelVolume vol = _dirtyList[i];
+                
+                // Double check validity (though we just cleaned)
+                if (vol != null && vol.IsReady)
+                {
+                    DispatchPhysics(vol);
+                }
+                
+                // Remove from Set immediately so it can be re-queued if needed
+                _dirtySet.Remove(vol);
+            }
+
+            // Remove processed range from List
+            _dirtyList.RemoveRange(0, count);
         }
 
         private void DispatchPhysics(VoxelVolume volume)
         {
             if (physicsShader == null) return;
+
+            // --- Dynamic LoD Calculation ---
+            // Calculate effective stride based on chunk size relative to base size.
+            // Larger chunks (farther away) get a higher stride, reducing resolution.
+            // Formula: Stride scales linearly with WorldSize. 
+            // Result: Vertex count per chunk remains roughly constant regardless of size.
+            
+            int useStride = stride;
+            if (volume.WorldSize > baseChunkSize * 1.1f) // 1.1f epsilon
+            {
+                float ratio = volume.WorldSize / baseChunkSize;
+                useStride = Mathf.RoundToInt(stride * ratio);
+                useStride = Mathf.Max(stride, useStride); // Ensure we don't go below base
+            }
 
             int maxTriangles = maxVertices / 3;
             ComputeBuffer vertexOutput = new ComputeBuffer(maxTriangles, 36, ComputeBufferType.Append);
@@ -156,9 +198,12 @@ namespace VoxelEngine.Physics
                 vertexOutput, 
                 countBuffer, 
                 volume.Resolution, 
-                stride, 
-                volume.WorldOrigin, 
-                volume.WorldSize,
+                useStride, // Use the dynamic stride
+                volume.WorldOrigin,
+                // [FIX] Pass baseChunkSize instead of volume.WorldSize.
+                // This generates the mesh in unscaled space (e.g. 0-32), allowing
+                // the VoxelVolume Transform to handle the scaling (e.g. x2 to reach 64).
+                baseChunkSize,
                 _edgeTableBuffer,
                 _triTableBuffer
             );
@@ -206,7 +251,6 @@ namespace VoxelEngine.Physics
 
             var inputTris = request.GetData<PhysicsTriangle>();
             
-            // --- Burst Job for Welding ---
             var outputVerts = new NativeList<Vector3>(triangleCount * 3, Allocator.TempJob);
             var outputIndices = new NativeList<int>(triangleCount * 3, Allocator.TempJob);
 
@@ -220,31 +264,16 @@ namespace VoxelEngine.Physics
 
             job.Schedule().Complete();
 
-            // --- Build Mesh ---
             Mesh mesh = new Mesh();
             mesh.name = "VoxelPhysicsMesh_" + context.volume.name;
             
-            // Use IndexFormat.UInt32 if needed
             if (outputVerts.Length > 65535)
                 mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
-
-            // Direct assignment avoids some copies, but SetVertices(List) is standard.
-            // Sadly Mesh.SetVertices doesn't take NativeList directly in older Unity versions, 
-            // but newer ones (2019.3+) do. Assuming support or fallback.
-            // If SetVertices(NativeArray) is not available, we have to copy.
-            // Using SetVertexBufferData is complex for generic mesh.
-            // Let's rely on implicit conversion or ToArray() for robustness if needed, 
-            // but for performance: mesh.SetVertices(outputVerts.AsArray());
             
             mesh.SetVertices(outputVerts.AsArray());
             mesh.SetIndices(outputIndices.AsArray(), MeshTopology.Triangles, 0);
             
-            // Optional: Recalculate Normals/Bounds if needed for physics? 
-            // Physics usually needs geometry. Colliders don't strictly need normals unless for queries.
-            // But let's RecalculateBounds.
             mesh.RecalculateBounds();
-            
-            // Skip Optimize() for speed. Physics cooking is the main cost anyway.
             mesh.UploadMeshData(true);
 
             AssignMeshToCollider(context.volume, mesh);
@@ -257,17 +286,9 @@ namespace VoxelEngine.Physics
         {
             if (volume == null) return;
             volume.meshCol.enabled = true;
-            
-            // For debug visualization
             if (volume.meshFil != null) volume.meshFil.sharedMesh = mesh;
-
             volume.meshCol.sharedMesh = mesh;
-
-            // Phase 4: Convex Collider for Dynamic Debris
-            if (volume.IsTransient)
-            {
-                volume.meshCol.convex = true;
-            }
+            if (volume.IsTransient) volume.meshCol.convex = true;
         }
 
         [BurstCompile]
@@ -280,10 +301,7 @@ namespace VoxelEngine.Physics
 
             public void Execute()
             {
-                // Heuristic size: count * 1.5 vertices roughly? 
-                // Or just use count * 3 capacity to be safe.
                 var map = new NativeHashMap<float3, int>(TriangleCount * 3, Allocator.Temp);
-
                 for (int i = 0; i < TriangleCount; i++)
                 {
                     PhysicsTriangle t = InputTriangles[i];
@@ -291,13 +309,11 @@ namespace VoxelEngine.Physics
                     ProcessVertex(t.v2, ref map);
                     ProcessVertex(t.v3, ref map);
                 }
-                
                 map.Dispose();
             }
 
             private void ProcessVertex(float3 v, ref NativeHashMap<float3, int> map)
             {
-                // We use float3 as key.
                 if (map.TryGetValue(v, out int index))
                 {
                     OutputIndices.Add(index);
