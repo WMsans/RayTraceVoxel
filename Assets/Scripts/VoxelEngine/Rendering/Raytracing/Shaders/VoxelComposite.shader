@@ -6,7 +6,7 @@ Shader "Hidden/VoxelComposite"
         _Sharpness ("Sharpness", Range(0, 1)) = 0.5
         _OutlineParams ("Outline Params", Vector) = (1, 0.5, 0, 0)
         _OutlineColor ("Outline Color", Color) = (0,0,0,1)
-        _NormalOutlineParams ("Normal Outline Params", Vector) = (0.6, 0.5, 0, 0)
+        _NormalOutlineParams ("Normal Outline Params", Vector) = (0.6, 0.5, 50.0, 0)
         _NormalOutlineColor ("Normal Outline Color", Color) = (1,1,1,1)
     }
  
@@ -36,11 +36,12 @@ Shader "Hidden/VoxelComposite"
             
             float4 _BlitTexture_TexelSize;
             float _Sharpness;
-            float4 _OutlineParams; // x: thickness, y: strength
+            float4 _OutlineParams;
+            // x: thickness, y: strength
             float4 _OutlineColor;
-            float4 _NormalOutlineParams; // x: threshold, y: strength
+            float4 _NormalOutlineParams;
+            // x: threshold, y: strength, z: maxDistance
             float4 _NormalOutlineColor;
-
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
@@ -62,9 +63,12 @@ Shader "Hidden/VoxelComposite"
             }
 
             // --- FSR 1.0 CORE HELPERS ---
-            float3 FsrMin3(float3 a, float3 b, float3 c) { return min(a, min(b, c)); }
-            float3 FsrMax3(float3 a, float3 b, float3 c) { return max(a, max(b, c)); }
-            float FsrLuma(float3 rgb) { return dot(rgb, float3(0.5, 0.5, 0.5)); } 
+            float3 FsrMin3(float3 a, float3 b, float3 c) { return min(a, min(b, c));
+            }
+            float3 FsrMax3(float3 a, float3 b, float3 c) { return max(a, max(b, c));
+            }
+            float FsrLuma(float3 rgb) { return dot(rgb, float3(0.5, 0.5, 0.5));
+            } 
 
             float3 FsrEasu(float2 uv)
             {
@@ -150,10 +154,7 @@ Shader "Hidden/VoxelComposite"
                     // --- B. Normal Based Highlighting ---
                     // Unpack center normal: (0..1) -> (-1..1)
                     float3 normal = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv).xyz * 2.0 - 1.0;
-                    
-                    // [FIX] Reuse depth samples to ensure normal outline aligns with foreground
                     float neighborDepths[4] = { du, dd, dr, dl };
-
                     float2 offsets[4] = {
                         float2(0, -e.y),
                         float2(0, e.y),
@@ -169,24 +170,22 @@ Shader "Hidden/VoxelComposite"
                         float3 n = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv + offsets[i]).xyz * 2.0 - 1.0;
                         float3 normal_diff = normal - n;
                         float diffSq = dot(normal_diff, normal_diff);
-                        
                         // [Fix] 1-Pixel Thickness Logic
                         // To avoid double-thick lines, we only draw the edge if WE own it.
                         // Ownership is determined by depth (Foreground owns the edge).
                         
                         float d_neighbor = neighborDepths[i];
-                        float d_diff = d_neighbor - depth; // Positive if neighbor is background
+                        float d_diff = d_neighbor - depth;
+                        // Positive if neighbor is background
                         
-                        // Condition 1: Silhouette (Neighbor is deeper/background). 
+                        // Condition 1: Silhouette (Neighbor is deeper/background).
                         // We are foreground, so we draw the line.
-                        bool isForeground = (d_diff > 0.001); 
-
+                        bool isForeground = (d_diff > 0.001);
                         // Condition 2: Crease (Depths are roughly equal).
                         // Use a directional bias (check only Up and Right neighbors) to keep it 1 pixel.
                         // i=1 is (0, e.y), i=2 is (e.x, 0).
                         bool isCrease = (abs(d_diff) <= 0.001);
                         bool biasPass = (i == 1 || i == 2);
-
                         if (isForeground || (isCrease && biasPass))
                         {
                             normal_sum += diffSq;
@@ -194,8 +193,16 @@ Shader "Hidden/VoxelComposite"
                     }
 
                     float indicator = sqrt(normal_sum);
-                    float normalThreshold = _NormalOutlineParams.x; 
-                    float normalEdge = step(normalThreshold, indicator);
+                    float normalThreshold = _NormalOutlineParams.x;
+                    float maxDistance = max(0.01, _NormalOutlineParams.z);
+                    
+                    // [FIX] Scale threshold with distance. 
+                    // As we get further away, the normal noise increases, so we increase the threshold 
+                    // to avoid highlighting every voxel face.
+                    float distFactor = saturate(depth / maxDistance);
+                    float dynThreshold = lerp(normalThreshold, 5.0, distFactor);
+                    
+                    float normalEdge = step(dynThreshold, indicator);
 
                     // --- C. Combine ---
                     // Apply Depth Outline

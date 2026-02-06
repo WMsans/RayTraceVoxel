@@ -56,6 +56,7 @@ namespace VoxelEngine.Core.Rendering
             [Header("Normal Highlight")]
             [Range(0.0f, 1.0f)] public float normalHighlightStrength = 0.5f; // New Control
             [Range(0.0f, 2.0f)] public float normalThreshold = 0.6f;        // New Control
+            [Range(0.0f, 500.0f)] public float normalFadeDistance = 50.0f;  // [NEW] Controls where the highlight fades out
             public Color normalHighlightColor = Color.white;                // New Control
             
             [Header("LOD Settings")]
@@ -268,6 +269,7 @@ namespace VoxelEngine.Core.Rendering
                 // Normal Highlight Data
                 public float normalStrength;
                 public float normalThreshold;
+                public float normalFadeDistance; // [NEW]
                 public Color normalColor;
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
@@ -454,6 +456,7 @@ namespace VoxelEngine.Core.Rendering
                     compData.normalColor = _settings.normalHighlightColor;
                     compData.normalStrength = _settings.normalHighlightStrength;
                     compData.normalThreshold = _settings.normalThreshold;
+                    compData.normalFadeDistance = _settings.normalFadeDistance; // [NEW]
 
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
@@ -485,7 +488,7 @@ namespace VoxelEngine.Core.Rendering
 
                             // Normal Highlight Props
                             cData.material.SetColor(_NormalOutlineColorParams, cData.normalColor);
-                            cData.material.SetVector(_NormalOutlineParamsID, new Vector4(cData.normalThreshold, cData.normalStrength, 0, 0));
+                            cData.material.SetVector(_NormalOutlineParamsID, new Vector4(cData.normalThreshold, cData.normalStrength, cData.normalFadeDistance, 0));
                         }
                         else 
                         {
