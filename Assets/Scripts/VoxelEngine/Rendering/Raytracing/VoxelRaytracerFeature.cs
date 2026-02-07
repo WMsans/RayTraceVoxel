@@ -75,7 +75,8 @@ namespace VoxelEngine.Core.Rendering
             [Header("Culling")]
             public bool useCameraFarPlane = false; 
             public bool cullFrustum = true;
-            public float shadowDistance = 256.0f;
+            [Tooltip("Distance at which Voxel Volumes (and Grass) are culled.")]
+            public float shadowDistance = 1500.0f; // [FIX] Increased from 256.0f
 
             [Header("Dithering")]
             public Texture2D blueNoiseTexture;
@@ -134,6 +135,7 @@ namespace VoxelEngine.Core.Rendering
             private Material _compositeMaterial;
             private Material _fxaaMaterial;
             private Material _taaMaterial;
+            private Material _copyMaterial; // Helper for depth copy
 
             // Shader IDs
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
@@ -193,6 +195,9 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _MainLightDirectionID = Shader.PropertyToID("_MainLightDirection");
             private static readonly int _OutlineShadowStrengthID = Shader.PropertyToID("_OutlineShadowStrength");
 
+            // Grass Occlusion
+            private static readonly int _VoxelDepthCopyParams = Shader.PropertyToID("_VoxelDepthCopy");
+
             // Debug IDs
             private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
             private static readonly int _DebugViewBricksParams = Shader.PropertyToID("_DebugViewBricks");
@@ -215,6 +220,7 @@ namespace VoxelEngine.Core.Rendering
                 _settings = settings;
                 _shader = settings.raytraceShader;
                 renderPassEvent = settings.injectionPoint;
+                _copyMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/Universal Render Pipeline/Blit"));
             }
             
             public void UpdateSettings(Settings newSettings) { _settings = newSettings; }
@@ -231,6 +237,8 @@ namespace VoxelEngine.Core.Rendering
                 _normalHandle?.Release(); 
                 _maskHandle?.Release();
                 _blueNoiseHandle?.Release();
+                CoreUtils.Destroy(_copyMaterial);
+
                 if (VoxelRaytracerFeature.RaycastHitBuffer != null)
                 {
                     VoxelRaytracerFeature.RaycastHitBuffer.Release();
@@ -284,7 +292,7 @@ namespace VoxelEngine.Core.Rendering
                 public float outlineShadowStrength; // [NEW]
                 public Color outlineColor;
                 public Vector4 mainLightColor; 
-                public Vector4 mainLightDirection; // [NEW]
+                public Vector4 mainLightDirection; // [NEW] mainPos is direction from SetupLights
                 public float normalStrength;
                 public float normalThreshold;
                 public float normalFadeDistance; 
@@ -292,7 +300,16 @@ namespace VoxelEngine.Core.Rendering
             }
             private class FXAAPassData { public TextureHandle source; public Material material; }
             private class TAAPassData { public TextureHandle source; public TextureHandle history; public TextureHandle motion; public TextureHandle destination; public Material material; public float blend; }
-            private class GrassPassData { public TextureHandle colorTarget; public TextureHandle depthTarget; }
+            // Modified Grass Data: now supports MRT and depth reading
+            private class GrassPassData { 
+                public TextureHandle colorTarget; 
+                public TextureHandle depthTarget; // R32 Voxel Depth
+                public TextureHandle normalTarget; 
+                public TextureHandle depthCopy;   // Copy of R32 Voxel Depth for occlusion read
+                public TextureHandle tempDepthBuffer; // For grass self-sorting
+            }
+            private class LeafPassData { public TextureHandle colorTarget; public TextureHandle depthTarget; }
+            private class CopyPassData { public TextureHandle source; public TextureHandle dest; public Material material; }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
@@ -440,6 +457,64 @@ namespace VoxelEngine.Core.Rendering
                 
                 TextureHandle compositeSource = lowResResult; 
 
+                // --- NEW: Voxel Vegetation Pass (Grass with Outlines) ---
+                // We perform this BEFORE Composition/TAA so the grass depth and normals contribute to the outlines.
+                if (VoxelGrassRenderer.ActiveRenderers.Count > 0)
+                {
+                    // 1. Copy Voxel Depth to a temp texture. 
+                    // Grass needs to READ the voxel depth to occlude itself, but also needs to WRITE to the depth texture for outlines.
+                    // We cannot read/write the same texture in the same draw call easily.
+                    TextureDesc copyDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat, name = "VoxelDepthCopy" };
+                    TextureHandle voxelDepthCopy = renderGraph.CreateTexture(copyDesc);
+                    
+                    using(var builder = renderGraph.AddRasterRenderPass<CopyPassData>("Copy Voxel Depth", out var copyData))
+                    {
+                        copyData.source = lowResDepth;
+                        copyData.dest = voxelDepthCopy;
+                        copyData.material = _copyMaterial;
+                        builder.UseTexture(copyData.source, AccessFlags.Read);
+                        builder.SetRenderAttachment(copyData.dest, 0, AccessFlags.Write);
+                        builder.SetRenderFunc((CopyPassData cData, RasterGraphContext context) => {
+                            Blitter.BlitTexture(context.cmd, cData.source, new Vector4(1,1,0,0), cData.material, 0);
+                        });
+                    }
+
+                    // 2. Render Grass with MRT (Color, Depth, Normal)
+                    using (var builder = renderGraph.AddRasterRenderPass<GrassPassData>("Voxel Grass", out var grassData))
+                    {
+                        // [FIX] Allow global state modification so we can set the global texture
+                        builder.AllowGlobalStateModification(true);
+
+                        grassData.colorTarget = lowResResult;
+                        grassData.depthTarget = lowResDepth;
+                        grassData.normalTarget = lowResNormals;
+                        grassData.depthCopy = voxelDepthCopy;
+                        
+                        // Create a temporary hardware depth buffer for grass to self-sort
+                        TextureDesc tempDepthDesc = new TextureDesc(scaledWidth, scaledHeight) { depthBufferBits = DepthBits.Depth32, name = "GrassTempZ" };
+                        grassData.tempDepthBuffer = renderGraph.CreateTexture(tempDepthDesc);
+
+                        builder.SetRenderAttachment(grassData.colorTarget, 0, AccessFlags.Write);
+                        builder.SetRenderAttachment(grassData.depthTarget, 1, AccessFlags.Write);
+                        builder.SetRenderAttachment(grassData.normalTarget, 2, AccessFlags.Write);
+                        builder.SetRenderAttachmentDepth(grassData.tempDepthBuffer, AccessFlags.Write);
+                        
+                        builder.UseTexture(grassData.depthCopy, AccessFlags.Read);
+
+                        builder.SetRenderFunc((GrassPassData gData, RasterGraphContext context) =>
+                        {
+                            // Clear temp depth for self-sorting
+                            context.cmd.ClearRenderTarget(true, false, Color.black); 
+                            
+                            // Bind the Copy for reading in the shader
+                            context.cmd.SetGlobalTexture(_VoxelDepthCopyParams, gData.depthCopy);
+                            
+                            foreach (var renderer in VoxelGrassRenderer.ActiveRenderers) 
+                                renderer.Draw(context.cmd);
+                        });
+                    }
+                }
+
                 if (useTAA)
                 {
                     using (var builder = renderGraph.AddRasterRenderPass<TAAPassData>("Voxel TAA", out var taaData))
@@ -465,6 +540,7 @@ namespace VoxelEngine.Core.Rendering
                     compData.outlineThickness = _settings.outlineThickness;
                     compData.outlineStrength = _settings.outlineStrength;
                     compData.outlineShadowStrength = _settings.outlineShadowStrength; // [NEW]
+                    compData.outlineColor = _settings.outlineColor;
                     compData.mainLightColor = mainCol;
                     compData.mainLightDirection = mainPos; // [NEW] mainPos is direction from SetupLights
                     
@@ -514,17 +590,19 @@ namespace VoxelEngine.Core.Rendering
                     });
                 }
 
-                if (VoxelGrassRenderer.ActiveRenderers.Count > 0 || VoxelLeafRenderer.ActiveLeafRenderers.Count > 0)
+                // Render Leaves (Remaining Vegetation)
+                // Leaves are kept here to preserve behavior (no outlines for leaves requested yet), 
+                // and to avoid issues if Leaf.shader isn't updated for MRT.
+                if (VoxelLeafRenderer.ActiveLeafRenderers.Count > 0)
                 {
-                    using (var builder = renderGraph.AddRasterRenderPass<GrassPassData>("Voxel Vegetation", out var grassData))
+                    using (var builder = renderGraph.AddRasterRenderPass<LeafPassData>("Voxel Leaves", out var leafData))
                     {
-                        grassData.colorTarget = compositeOutput;
-                        grassData.depthTarget = resourceData.activeDepthTexture;
-                        builder.SetRenderAttachment(grassData.colorTarget, 0, AccessFlags.Write);
-                        builder.SetRenderAttachmentDepth(grassData.depthTarget, AccessFlags.ReadWrite);
-                        builder.SetRenderFunc((GrassPassData gData, RasterGraphContext context) =>
+                        leafData.colorTarget = compositeOutput;
+                        leafData.depthTarget = resourceData.activeDepthTexture;
+                        builder.SetRenderAttachment(leafData.colorTarget, 0, AccessFlags.Write);
+                        builder.SetRenderAttachmentDepth(leafData.depthTarget, AccessFlags.ReadWrite);
+                        builder.SetRenderFunc((LeafPassData lData, RasterGraphContext context) =>
                         {
-                            foreach (var renderer in VoxelGrassRenderer.ActiveRenderers) renderer.Draw(context.cmd);
                             foreach (var renderer in VoxelLeafRenderer.ActiveLeafRenderers) renderer.Draw(context.cmd);
                         });
                     }

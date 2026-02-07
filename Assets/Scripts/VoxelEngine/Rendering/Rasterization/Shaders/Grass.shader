@@ -11,7 +11,8 @@ Shader "VoxelEngine/Grass"
         _ShadowBrightness("Shadow Brightness", Float) = 0.2
         
         [Header(Wind)]
-        _WindTex("Wind Noise (Grayscale)", 2D) = "white" {}
+  
+       _WindTex("Wind Noise (Grayscale)", 2D) = "white" {}
         _WindSpeed("Wind Speed", Float) = 1.0
         _WindStrength("Wind Strength", Float) = 0.5
         _WindFrequency("Wind Frequency", Float) = 0.1
@@ -20,7 +21,8 @@ Shader "VoxelEngine/Grass"
         [Header(Geometry)]
         _BladeHeight("Blade Height Scale", Float) = 1.0
         _BladeWidth("Blade Width Scale", Float) = 1.0
-        _Cutoff("Alpha Cutoff", Range(0,1)) = 0.5
+   
+      _Cutoff("Alpha Cutoff", Range(0,1)) = 0.5
     }
 
     SubShader
@@ -32,7 +34,8 @@ Shader "VoxelEngine/Grass"
         Pass
         {
             Name "ForwardLit"
-            Tags { "LightMode" = "UniversalForward" }
+            Tags { "LightMode" = 
+ "UniversalForward" }
 
             HLSLPROGRAM
             #pragma target 4.5
@@ -41,7 +44,8 @@ Shader "VoxelEngine/Grass"
             #pragma multi_compile_instancing
             #pragma instancing_options procedural:setup
             
-            // Shadow Support
+      
+       // Shadow Support
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
             #pragma multi_compile _ _SHADOWS_SOFT
@@ -50,9 +54,10 @@ Shader "VoxelEngine/Grass"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 
             struct GrassInstance
-            {
+        
+     {
                 float3 position;
-                float rotation;
+ float rotation;
                 uint packedData; 
             };
 
@@ -60,7 +65,7 @@ Shader "VoxelEngine/Grass"
 
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseColor;
-                float4 _TipColor;
+ float4 _TipColor;
                 float4 _WindTex_ST;
                 float _WindSpeed;
                 float _WindStrength;
@@ -69,32 +74,44 @@ Shader "VoxelEngine/Grass"
                 float _BladeHeight;
                 float _BladeWidth;
                 float _Cutoff;
-                
-                // Cel Shading
+ // Cel Shading
                 float _CelSteps;
-                float _ShadowBrightness;
+ float _ShadowBrightness;
             CBUFFER_END
 
             TEXTURE2D(_WindTex);
             SAMPLER(sampler_WindTex);
+ // [NEW] Texture for manual occlusion
+            TEXTURE2D(_VoxelDepthCopy);
+            // SAMPLER(sampler_Point);
+ 
 
             struct Attributes
             {
                 float4 positionOS : POSITION;
-                float2 uv : TEXCOORD0;
+ float2 uv : TEXCOORD0;
                 float3 normalOS : NORMAL; // Mesh now has UP normals
                 uint instanceID : SV_InstanceID;
-            };
+ };
 
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
-                float2 uv : TEXCOORD0;
+ float2 uv : TEXCOORD0;
                 float3 color : TEXCOORD1;
                 float3 normalWS : NORMAL;
                 float3 positionWS : TEXCOORD3;
-                float4 rootShadowCoord : TEXCOORD4; // Shadow coord for the root position
-                float3 terrainNormal : TEXCOORD5;   // Normal of the terrain for back-side shading
+                float4 rootShadowCoord : TEXCOORD4;
+ // Shadow coord for the root position
+                float3 terrainNormal : TEXCOORD5;
+ // Normal of the terrain for back-side shading
+            };
+ // [NEW] Output structure for MRT
+            struct FragOutput
+            {
+                half4 color : SV_Target0;
+ float depth : SV_Target1;
+                half4 normal : SV_Target2;
             };
 
             void setup() {}
@@ -102,125 +119,142 @@ Shader "VoxelEngine/Grass"
             Varyings vert(Attributes input)
             {
                 Varyings output;
-                UNITY_SETUP_INSTANCE_ID(input);
+ UNITY_SETUP_INSTANCE_ID(input);
 
                 float3 posWS = input.positionOS.xyz;
                 float3 instancePos = float3(0,0,0);
                 float rotation = 0;
                 float heightScale = 1.0;
-                float colorVariation = 0.5;
+ float colorVariation = 0.5;
                 float3 terrainNormal = float3(0,1,0);
 
                 #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
                     GrassInstance inst = _GrassInstanceBuffer[input.instanceID];
-                    instancePos = inst.position;
+ instancePos = inst.position;
                     rotation = inst.rotation;
                     
                     uint p = inst.packedData;
-                    
-                    // Unpack Data:
+ // Unpack Data:
                     // Bits 00-15: Normal (XZ packed)
                     // Bits 16-23: Height
                     // Bits 24-31: Color Var
                     
-                    uint packedNormal = p & 0xFFFF;
-                    uint h = (p >> 16) & 0xFF;
+      
+               uint packedNormal = p & 0xFFFF;
+ uint h = (p >> 16) & 0xFF;
                     uint c = (p >> 24) & 0xFF;
-
-                    heightScale = h / 255.0 * 2.0 + 0.5; // Map 0..1 to 0.5..2.5
+ heightScale = h / 255.0 * 2.0 + 0.5; // Map 0..1 to 0.5..2.5
                     colorVariation = c / 255.0;
-
-                    // Unpack Normal
+ // Unpack Normal
                     float nx = (packedNormal & 0xFF) / 255.0 * 2.0 - 1.0;
-                    float nz = ((packedNormal >> 8) & 0xFF) / 255.0 * 2.0 - 1.0;
-                    // Reconstruct Y (assuming it's upward facing)
+ float nz = ((packedNormal >> 8) & 0xFF) / 255.0 * 2.0 - 1.0;
+ // Reconstruct Y (assuming it's upward facing)
                     float ny = sqrt(saturate(1.0 - nx*nx - nz*nz));
-                    terrainNormal = normalize(float3(nx, ny, nz));
+ terrainNormal = normalize(float3(nx, ny, nz));
                 #endif
 
                 // Dimensions
                 posWS.xz *= _BladeWidth;
-                posWS.y *= _BladeHeight * heightScale;
+ posWS.y *= _BladeHeight * heightScale;
 
                 // Rotation
                 float s, c_rot;
-                sincos(rotation, s, c_rot);
+ sincos(rotation, s, c_rot);
                 float3 rotPos;
                 rotPos.x = posWS.x * c_rot + posWS.z * s;
                 rotPos.y = posWS.y;
-                rotPos.z = posWS.x * -s + posWS.z * c_rot;
+ rotPos.z = posWS.x * -s + posWS.z * c_rot;
                 posWS = rotPos;
 
                 float3 worldPos = instancePos + posWS;
-
-                // --- Improved Wind ---
+ // --- Improved Wind ---
                 float2 windUV = (instancePos.xz * _WindFrequency) + (_Time.y * _WindSpeed * _WindDirection.xy);
-                float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
+ float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
                 windNoise = (windNoise * 2.0 - 1.0);
-                
-                // Curve factor: input.uv.y is 0 at bottom, 1 at top.
+ // Curve factor: input.uv.y is 0 at bottom, 1 at top.
                 float bendFactor = pow(input.uv.y, 2.0);
-                
-                // Displacement
+ // Displacement
                 worldPos.xz += windNoise * _WindStrength * bendFactor * _WindDirection.xy;
-                worldPos.y -= abs(windNoise) * _WindStrength * 0.3 * bendFactor;
+ worldPos.y -= abs(windNoise) * _WindStrength * 0.3 * bendFactor;
 
                 // --- Output ---
                 output.positionCS = TransformWorldToHClip(worldPos);
-                output.uv = input.uv;
+ output.uv = input.uv;
                 output.positionWS = worldPos;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS); // Grass blade normal (mostly UP)
-                output.terrainNormal = terrainNormal; // Pass terrain normal for lighting
+                output.terrainNormal = terrainNormal;
+ // Pass terrain normal for lighting
 
                 // Shadow Coord based on ROOT position
                 // This ensures the whole blade gets the same shadow value as the ground it stands on.
-                output.rootShadowCoord = TransformWorldToShadowCoord(instancePos);
+ output.rootShadowCoord = TransformWorldToShadowCoord(instancePos);
 
                 // Pre-calc Gradient Color
                 float3 localBase = lerp(_BaseColor.rgb * 0.5, _BaseColor.rgb, colorVariation);
-                localBase *= 0.5; // Darken root (AO)
+ localBase *= 0.5; // Darken root (AO)
                 output.color = lerp(localBase, _TipColor.rgb, input.uv.y);
-
-                return output;
+ return output;
             }
 
-            half4 frag(Varyings input) : SV_Target
+            FragOutput frag(Varyings input)
             {
+                // [NEW] Occlusion Test against Voxel Depth
+                float2 screenUV = input.positionCS.xy / _ScaledScreenParams.xy;
+ // Get the voxel depth (from the Copy texture we made)
+                // [FIX] Use sampler_PointClamp for correct point sampling without defining a custom sampler
+                float voxelDepth = SAMPLE_TEXTURE2D(_VoxelDepthCopy, sampler_PointClamp, screenUV).r;
+                
+                // [FIX] Correct depth calculation. 
+                // SV_POSITION.z is already the correct window-space depth (0..1). 
+                // Dividing by w here produces an incorrect value.
+                float myDepth = input.positionCS.z;
+
+                // Handle Reversed-Z (DX11, Metal, Consoles) vs Standard-Z (OpenGL)
+                #if UNITY_REVERSED_Z
+                    // 1.0 is Near, 0.0 is Far.
+ // Smaller value = Further away.
+                    // If myDepth < voxelDepth, I am further away than the voxel. Discard.
+ // But wait, voxelDepth might be 0.0 (Far Plane/Sky).
+                    if (voxelDepth > 0.0 && myDepth < voxelDepth) discard;
+ #else
+                    // 0.0 is Near, 1.0 is Far.
+ // Larger value = Further away.
+                    if (voxelDepth < 1.0 && myDepth > voxelDepth) discard;
+ #endif
+
                 // 1. Get Main Light using ROOT shadow coordinates
                 Light mainLight = GetMainLight(input.rootShadowCoord);
-                
-                // 2. Cel Shading Logic (Matching Voxel Raytracer)
+ // 2. Cel Shading Logic (Matching Voxel Raytracer)
                 // Use Terrain Normal for NdotL to ensure back-side of hill is dark
                 float NdotL_Raw = dot(input.terrainNormal, mainLight.direction);
-                
-                // Attenuate NdotL by shadow (If root is in shadow, shadowAttenuation is 0)
+ // Attenuate NdotL by shadow (If root is in shadow, shadowAttenuation is 0)
                 // We multiply NdotL by shadow BEFORE stepping to ensure shadowed areas fall into the darkest band.
-                float shadow = mainLight.shadowAttenuation;
+ float shadow = mainLight.shadowAttenuation;
                 float litVal = max(NdotL_Raw, 0.0) * shadow;
 
                 float steps = max(1.0, _CelSteps);
                 float minBrightness = _ShadowBrightness;
-                
-                // Calculate Steps
+ // Calculate Steps
                 float t = litVal * steps;
-                float stepIndex = floor(t);
+ float stepIndex = floor(t);
                 float fraction = t - stepIndex;
                 float smoothFraction = smoothstep(0.0, 0.05 * steps, fraction);
-                float rawLevel = (stepIndex + smoothFraction) / steps;
+ float rawLevel = (stepIndex + smoothFraction) / steps;
                 
                 // Final Stepped Diffuse
                 float celDiffuse = lerp(minBrightness, 1.0, saturate(rawLevel));
-
-                // 3. Final Color
+ // 3. Final Color
                 float3 lighting = celDiffuse * mainLight.color;
-                
-                // Add fake ambient
+ // Add fake ambient
                 float3 ambient = float3(0.2, 0.25, 0.3) * 0.5;
-                
-                float3 finalColor = input.color * (lighting + ambient);
+ float3 finalColor = input.color * (lighting + ambient);
 
-                return half4(finalColor, 1.0);
-            }
+                FragOutput o;
+                o.color = half4(finalColor, 1.0);
+                o.depth = myDepth;
+ o.normal = half4(normalize(input.normalWS) * 0.5 + 0.5, 1.0);
+                return o;
+ }
             ENDHLSL
         }
     }
