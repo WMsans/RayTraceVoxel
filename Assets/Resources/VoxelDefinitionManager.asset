@@ -81,10 +81,10 @@ MonoBehaviour:
     renderType: 1
   - sideAlbedoIndex: 8
     sideNormalIndex: 8
-    sideMaskIndex: 8
+    sideMaskIndex: 0
     topAlbedoIndex: 8
     topNormalIndex: 8
-    topMaskIndex: 8
+    topMaskIndex: 0
     sideMetallic: 0
     topMetallic: 0
     renderType: 1

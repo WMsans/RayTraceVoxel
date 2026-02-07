@@ -22,8 +22,8 @@ MonoBehaviour:
     qualityLevel: 0
     renderScale: 0.1
     textureScale: 0.05
-    iterations: 64
-    marchSteps: 32
+    iterations: 128
+    marchSteps: 64
     enableAtmosphere: 1
     atmosphereColor: {r: 0.55, g: 0.7, b: 0.9, a: 1}
     atmosphereDensity: 0.0002
