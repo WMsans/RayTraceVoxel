@@ -8,6 +8,8 @@ Shader "Hidden/VoxelComposite"
         _OutlineColor ("Outline Color", Color) = (0,0,0,1)
         _NormalOutlineParams ("Normal Outline Params", Vector) = (0.6, 0.5, 50.0, 0)
         _NormalOutlineColor ("Normal Outline Color", Color) = (1,1,1,1)
+        _MainLightDirection ("Main Light Direction", Vector) = (0,1,0,0)
+        _OutlineShadowStrength ("Outline Shadow Strength", Float) = 0.5
     }
  
     SubShader
@@ -42,6 +44,10 @@ Shader "Hidden/VoxelComposite"
             float4 _NormalOutlineParams;
             // x: threshold, y: strength, z: maxDistance
             float4 _NormalOutlineColor;
+            
+            float4 _MainLightDirection;
+            float _OutlineShadowStrength;
+
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
@@ -137,6 +143,24 @@ Shader "Hidden/VoxelComposite"
                 // 3. Apply Outline (Depth + Normal)
                 #if defined(_OUTLINE_ON)
                     float2 e = _BlitTexture_TexelSize.xy * _OutlineParams.x;
+                    
+                    // --- Sample Normal for Light Calculation ---
+                    float3 normal = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv).xyz * 2.0 - 1.0;
+                    
+                    // --- Calculate Light Factor ---
+                    // MainLightDirection (passed from C#) is the ray direction (points FROM light TO world).
+                    // We need vector TO light for NdotL, so negate it.
+                    float3 lightDir = normalize(-_MainLightDirection.xyz);
+                    float NdotL = saturate(dot(normal, lightDir));
+                    
+                    // Interpolate between (1.0 - Strength) and 1.0
+                    // If Strength is 0, factor is always 1 (no change).
+                    // If Strength is 1, shadow factor is 0 (black outlines in shadow).
+                    float lightFactor = lerp(1.0 - _OutlineShadowStrength, 1.0, NdotL);
+                    
+                    float3 finalDepthOutlineCol = _OutlineColor.rgb * lightFactor;
+                    float3 finalNormalOutlineCol = _NormalOutlineColor.rgb * lightFactor;
+
                     // --- A. Depth Based Highlighting ---
                     float depth = LinearEyeDepth(currentDepth, _ZBufferParams);
                     float du = LinearEyeDepth(SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_BlitTexture, input.uv + float2(0, -e.y)).r, _ZBufferParams);
@@ -152,8 +176,6 @@ Shader "Hidden/VoxelComposite"
                     float depthEdge = smoothstep(0.2, 0.3, depth_diff);
 
                     // --- B. Normal Based Highlighting ---
-                    // Unpack center normal: (0..1) -> (-1..1)
-                    float3 normal = SAMPLE_TEXTURE2D(_VoxelNormalTexture, sampler_BlitTexture, input.uv).xyz * 2.0 - 1.0;
                     float neighborDepths[4] = { du, dd, dr, dl };
                     float2 offsets[4] = {
                         float2(0, -e.y),
@@ -163,7 +185,6 @@ Shader "Hidden/VoxelComposite"
                     };
                     float normal_sum = 0.0;
                     
-                    // Now calculating the raw squared difference between normals.
                     [unroll]
                     for (int i = 0; i < 4; i++) 
                     {
@@ -171,19 +192,14 @@ Shader "Hidden/VoxelComposite"
                         float3 normal_diff = normal - n;
                         float diffSq = dot(normal_diff, normal_diff);
                         // [Fix] 1-Pixel Thickness Logic
-                        // To avoid double-thick lines, we only draw the edge if WE own it.
-                        // Ownership is determined by depth (Foreground owns the edge).
                         
                         float d_neighbor = neighborDepths[i];
                         float d_diff = d_neighbor - depth;
                         // Positive if neighbor is background
                         
                         // Condition 1: Silhouette (Neighbor is deeper/background).
-                        // We are foreground, so we draw the line.
                         bool isForeground = (d_diff > 0.001);
                         // Condition 2: Crease (Depths are roughly equal).
-                        // Use a directional bias (check only Up and Right neighbors) to keep it 1 pixel.
-                        // i=1 is (0, e.y), i=2 is (e.x, 0).
                         bool isCrease = (abs(d_diff) <= 0.001);
                         bool biasPass = (i == 1 || i == 2);
                         if (isForeground || (isCrease && biasPass))
@@ -196,9 +212,6 @@ Shader "Hidden/VoxelComposite"
                     float normalThreshold = _NormalOutlineParams.x;
                     float maxDistance = max(0.01, _NormalOutlineParams.z);
                     
-                    // [FIX] Scale threshold with distance. 
-                    // As we get further away, the normal noise increases, so we increase the threshold 
-                    // to avoid highlighting every voxel face.
                     float distFactor = saturate(depth / maxDistance);
                     float dynThreshold = lerp(normalThreshold, 5.0, distFactor);
                     
@@ -206,12 +219,11 @@ Shader "Hidden/VoxelComposite"
 
                     // --- C. Combine ---
                     // Apply Depth Outline
-                    float3 depthMix = lerp(col, _OutlineColor.rgb, _OutlineParams.y);
+                    float3 depthMix = lerp(col, finalDepthOutlineCol, _OutlineParams.y);
                     col = lerp(col, depthMix, depthEdge);
                     
                     // Apply Normal Outline (Layered on top)
-                    float3 normalMix = lerp(col, _NormalOutlineColor.rgb, _NormalOutlineParams.y);
-                    // This prevents the normal highlight from appearing where the depth highlight is already drawn.
+                    float3 normalMix = lerp(col, finalNormalOutlineCol, _NormalOutlineParams.y);
                     col = lerp(col, normalMix, normalEdge * (1.0 - depthEdge));
 
                 #endif

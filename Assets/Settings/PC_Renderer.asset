@@ -36,8 +36,9 @@ MonoBehaviour:
     taaBlend: 0.9
     enableOutline: 1
     outlineThickness: 1
+    outlineShadowStrength: 0.7
     outlineStrength: 0.8
-    outlineColor: {r: 0, g: 0.043137256, b: 0.16078432, a: 1}
+    outlineColor: {r: 0, g: 0.14085364, b: 0.525, a: 1}
     normalHighlightStrength: 0.2
     normalThreshold: 0.3
     normalFadeDistance: 300

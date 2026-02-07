@@ -54,6 +54,10 @@ namespace VoxelEngine.Core.Rendering
             public bool enableOutline = false;
             [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
             
+            [Header("Outline Lighting")]
+            [Tooltip("Controls how much the outline darkens in shadow/backface. 0 = No Change, 1 = Fully Dark.")]
+            [Range(0.0f, 1.0f)] public float outlineShadowStrength = 0.5f;
+            
             [Header("Depth Outline")]
             [Range(0.0f, 1.0f)] public float outlineStrength = 0.5f;
             public Color outlineColor = Color.black;
@@ -185,6 +189,9 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
             private static readonly int _NormalOutlineParamsID = Shader.PropertyToID("_NormalOutlineParams"); 
             private static readonly int _NormalOutlineColorParams = Shader.PropertyToID("_NormalOutlineColor"); 
+            // [NEW] Outline Light Direction
+            private static readonly int _MainLightDirectionID = Shader.PropertyToID("_MainLightDirection");
+            private static readonly int _OutlineShadowStrengthID = Shader.PropertyToID("_OutlineShadowStrength");
 
             // Debug IDs
             private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
@@ -274,8 +281,10 @@ namespace VoxelEngine.Core.Rendering
                 public bool enableOutline;
                 public float outlineThickness;
                 public float outlineStrength;
+                public float outlineShadowStrength; // [NEW]
                 public Color outlineColor;
                 public Vector4 mainLightColor; 
+                public Vector4 mainLightDirection; // [NEW]
                 public float normalStrength;
                 public float normalThreshold;
                 public float normalFadeDistance; 
@@ -455,7 +464,9 @@ namespace VoxelEngine.Core.Rendering
                     compData.outlineColor = _settings.outlineColor;
                     compData.outlineThickness = _settings.outlineThickness;
                     compData.outlineStrength = _settings.outlineStrength;
+                    compData.outlineShadowStrength = _settings.outlineShadowStrength; // [NEW]
                     compData.mainLightColor = mainCol;
+                    compData.mainLightDirection = mainPos; // [NEW] mainPos is direction from SetupLights
                     
                     compData.normalColor = _settings.normalHighlightColor;
                     compData.normalStrength = _settings.normalHighlightStrength;
@@ -485,9 +496,11 @@ namespace VoxelEngine.Core.Rendering
                             cData.material.EnableKeyword("_OUTLINE_ON");
                             
                             cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
+                            cData.material.SetVector(_MainLightDirectionID, cData.mainLightDirection); // [NEW]
                             
                             cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
                             cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
+                            cData.material.SetFloat(_OutlineShadowStrengthID, cData.outlineShadowStrength); // [NEW]
 
                             cData.material.SetColor(_NormalOutlineColorParams, cData.normalColor);
                             cData.material.SetVector(_NormalOutlineParamsID, new Vector4(cData.normalThreshold, cData.normalStrength, cData.normalFadeDistance, 0));
