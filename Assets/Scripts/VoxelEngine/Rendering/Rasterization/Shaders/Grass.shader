@@ -162,8 +162,11 @@ Shader "VoxelEngine/Grass"
 
             half4 frag(Varyings input) : SV_Target
             {
-                // Light Data
-                Light mainLight = GetMainLight(input.shadowCoord);
+                // FIX: Calculate shadow coordinate per-pixel to handle Cascade transitions correctly
+                float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
+
+                // Light Data (Use the new shadowCoord)
+                Light mainLight = GetMainLight(shadowCoord);
                 
                 // Half-Lambert Lighting (Softer, better for foliage)
                 float NdotL = dot(input.normalWS, mainLight.direction) * 0.5 + 0.5;
