@@ -15,7 +15,7 @@ Shader "VoxelEngine/VoxelShadowCaster"
 
             ZWrite On
             ZTest LEqual
-            // [IMPORTANT] Cull Front means we render backfaces. 
+            // [IMPORTANT] Cull Front means we render backfaces.
             // This effectively casts shadows from the "underside" of the terrain, 
             // preventing the surface itself from occluding the Voxel Raytracer.
             Cull Front 
@@ -35,7 +35,6 @@ Shader "VoxelEngine/VoxelShadowCaster"
                 float3 normalOS     : NORMAL;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
-
             struct Varyings
             {
                 float4 positionCS   : SV_POSITION;
@@ -43,7 +42,6 @@ Shader "VoxelEngine/VoxelShadowCaster"
             };
 
             float3 _LightDirection;
-
             Varyings vert(Attributes input)
             {
                 Varyings output;
@@ -52,6 +50,12 @@ Shader "VoxelEngine/VoxelShadowCaster"
 
                 float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
                 float3 normalWS = TransformObjectToWorldNormal(input.normalOS);
+
+                // [FIX] Shrink the shadow mesh slightly.
+                // By moving vertices inward along the normal, we ensure the shadow-casting surface 
+                // is slightly "inside" the real surface. This guarantees the raytraced surface 
+                // (which is at the original position) is never considered "behind" the shadow caster.
+                positionWS -= normalWS * 0.5; 
 
                 // Apply Normal Bias to prevent shadow acne
                 float4 positionCS = TransformWorldToHClip(ApplyShadowBias(positionWS, normalWS, _LightDirection));

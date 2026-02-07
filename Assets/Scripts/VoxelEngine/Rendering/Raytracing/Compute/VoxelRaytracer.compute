@@ -857,7 +857,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         float3 V = -rayDir;
         float3 L = normalize(_MainLightPosition.xyz);
         float NdotL = dot(hit.normal, L);
-        float shadowBias = lerp(0.1, 5, saturate(NdotL)) * 4;
+        float shadowBias = lerp(0.1, 5, saturate(NdotL));
         float lightAtten = 1.0;
         
         // [SHADOWS] Voxel-to-Voxel Shadow (Existing)
