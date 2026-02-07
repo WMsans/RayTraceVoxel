@@ -6,6 +6,7 @@
 #include "./Generators/Spheres.hlsl"
 #include "./Generators/SineFloor.hlsl"
 #include "./Generators/Trees.hlsl"
+#include "./Generators/OakTrees.hlsl"
 
 // --- Global Dynamic SDF Resources ---
 // These are bound by VoxelVolume or DynamicSDFManager
@@ -81,10 +82,13 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
     
     // --- 1. Base Stage (Terrain) ---
     Stage_Terrain(ctx);
-    
+
     // --- 2. Trees Stage (Minecraft-like) ---
-    Stage_Trees(ctx);
+    // Stage_Trees(ctx);     // Existing Sequoias/Big Trees
     
+    // [ADD THIS LINE]
+    Stage_OakTrees(ctx);  // New Dense Oak Layer
+
     // --- 3. Dynamic Objects Stage ---
     ApplyDynamicObjects(ctx, worldPos, activeObjects, activeCount);
 
