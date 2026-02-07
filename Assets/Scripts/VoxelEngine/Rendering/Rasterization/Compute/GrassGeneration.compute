@@ -47,10 +47,9 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
     // We use the same indexing logic as SVOBuilder to map (x,y,z) brick coord to Node Index
     // Level 4 is the Leaf Level.
     uint nodeIndex = GetNodeIndex(4, id);
-    
+
     // Read Node from Global Buffer
     SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
-    
     uint payloadIndex, matID;
     UnpackNode(node, payloadIndex, matID);
 
@@ -62,9 +61,10 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
     uint brickPtr = payload.brickDataIndex;
 
     // 4. Iterate Voxels within the Brick
-    // Bricks are 6x6x6 (including padding). We only iterate the logical 4x4x4 center.
+    // Bricks are 6x6x6 (including padding).
+    // We only iterate the logical 4x4x4 center.
     // Logical range: [1..4] inclusive
-    
+
     float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickOriginLocal = id * BRICK_SIZE;
 
@@ -76,9 +76,8 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
             {
                 // Calculate Index in BrickDataBuffer
                 uint voxelIdx = _BrickOffset + brickPtr + 
-                               (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
-                               (y * BRICK_STORAGE_SIZE) + x;
-                
+                            (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
+                            (y * BRICK_STORAGE_SIZE) + x;
                 uint packedData = _BrickDataBuffer[voxelIdx];
                 
                 // Unpack Voxel
@@ -93,7 +92,7 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
                 if (mat != _TargetMaterialId) continue;
 
                 // B. Surface Check
-                // SDF is stored in Voxel Units. 
+                // SDF is stored in Voxel Units.
                 // We want points very close to the zero-crossing.
                 if (abs(sdf) > _SdfThreshold) continue;
 
@@ -106,14 +105,14 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
                 // Calculate Voxel Center Position (Local to Chunk, in Voxel Units)
                 // Subtract Padding (1) to get logical coordinate 0..3
                 int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
-                
+
                 // Base position (Voxel Center)
-                float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset + 0.5; 
-                
+                float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset + 0.5;
+
                 // Position Refinement: Project to exact surface
                 // P_surf = P_center - Normal * SDF
                 float3 surfacePosLocal = voxelPosLocal - normal * sdf;
-                
+
                 // Transform to World Space
                 float3 worldPos = _ChunkWorldOrigin + surfacePosLocal * scale;
 
@@ -121,7 +120,7 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
                 float3 jitterSeed = brickOriginLocal + (float3)voxelOffset;
                 float jitterX = (Random(jitterSeed) * 2.0 - 1.0) * 0.35; // +/- 35% of voxel size
                 float jitterZ = (Random(jitterSeed + float3(7.1, 3.3, 1.9)) * 2.0 - 1.0) * 0.35;
-
+                
                 worldPos.x += jitterX * scale;
                 worldPos.z += jitterZ * scale;
 
@@ -130,9 +129,26 @@ void GenerateGrass(uint3 id : SV_DispatchThreadID)
                 instance.position = worldPos;
                 instance.rotation = Random(worldPos) * 6.28318; // 0..2PI
                 
-                // Pack auxiliary data (e.g., height variation based on noise)
-                uint var = (uint)(Random(worldPos + float3(1,1,1)) * 255.0);
-                instance.packedData = (var << 16) | 0xFFFF; // Placeholder
+                // --- Pack Data for Shader ---
+                // We need to pack the Normal, Height, and Color Variation into 32 bits.
+                // Layout:
+                // Bits 00-15: Normal (XZ packed into 8 bits each)
+                // Bits 16-23: Height Scale (8 bits)
+                // Bits 24-31: Color Variation (8 bits)
+                
+                // 1. Pack Normal (XZ only, assuming Y+ due to threshold check)
+                // Map [-1, 1] -> [0, 255]
+                uint nx = (uint)(clamp(normal.x * 0.5 + 0.5, 0.0, 1.0) * 255.0);
+                uint nz = (uint)(clamp(normal.z * 0.5 + 0.5, 0.0, 1.0) * 255.0);
+                uint packedNormal = nx | (nz << 8);
+
+                // 2. Pack Height (Random 0.5 to 1.0 remapped to 0-255)
+                uint h = (uint)((Random(worldPos + float3(0,1,0)) * 0.5 + 0.5) * 255.0);
+
+                // 3. Pack Color Variation
+                uint c = (uint)(Random(worldPos + float3(1,1,1)) * 255.0);
+
+                instance.packedData = packedNormal | (h << 16) | (c << 24);
 
                 _GrassAppendBuffer.Append(instance);
             }

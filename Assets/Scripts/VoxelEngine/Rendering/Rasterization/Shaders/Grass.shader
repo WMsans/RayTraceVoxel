@@ -5,7 +5,10 @@ Shader "VoxelEngine/Grass"
         [Header(Shading)]
         _BaseColor("Base Color (Root)", Color) = (0.1, 0.3, 0.1, 1)
         _TipColor("Tip Color (Top)", Color) = (0.4, 0.6, 0.2, 1)
-        _SpecularColor("Specular Color", Color) = (0.2, 0.5, 0.2, 1)
+
+        [Header(Cel Shading)]
+        _CelSteps("Cel Steps", Float) = 3
+        _ShadowBrightness("Shadow Brightness", Float) = 0.2
         
         [Header(Wind)]
         _WindTex("Wind Noise (Grayscale)", 2D) = "white" {}
@@ -58,7 +61,6 @@ Shader "VoxelEngine/Grass"
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseColor;
                 float4 _TipColor;
-                float4 _SpecularColor;
                 float4 _WindTex_ST;
                 float _WindSpeed;
                 float _WindStrength;
@@ -67,6 +69,10 @@ Shader "VoxelEngine/Grass"
                 float _BladeHeight;
                 float _BladeWidth;
                 float _Cutoff;
+                
+                // Cel Shading
+                float _CelSteps;
+                float _ShadowBrightness;
             CBUFFER_END
 
             TEXTURE2D(_WindTex);
@@ -87,7 +93,8 @@ Shader "VoxelEngine/Grass"
                 float3 color : TEXCOORD1;
                 float3 normalWS : NORMAL;
                 float3 positionWS : TEXCOORD3;
-                float4 shadowCoord : TEXCOORD4;
+                float4 rootShadowCoord : TEXCOORD4; // Shadow coord for the root position
+                float3 terrainNormal : TEXCOORD5;   // Normal of the terrain for back-side shading
             };
 
             void setup() {}
@@ -102,6 +109,7 @@ Shader "VoxelEngine/Grass"
                 float rotation = 0;
                 float heightScale = 1.0;
                 float colorVariation = 0.5;
+                float3 terrainNormal = float3(0,1,0);
 
                 #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
                     GrassInstance inst = _GrassInstanceBuffer[input.instanceID];
@@ -109,8 +117,25 @@ Shader "VoxelEngine/Grass"
                     rotation = inst.rotation;
                     
                     uint p = inst.packedData;
-                    heightScale = ((p >> 8) & 0xFF) / 255.0 * 2.0 + 0.5; 
-                    colorVariation = ((p >> 16) & 0xFFFF) / 65535.0; 
+                    
+                    // Unpack Data:
+                    // Bits 00-15: Normal (XZ packed)
+                    // Bits 16-23: Height
+                    // Bits 24-31: Color Var
+                    
+                    uint packedNormal = p & 0xFFFF;
+                    uint h = (p >> 16) & 0xFF;
+                    uint c = (p >> 24) & 0xFF;
+
+                    heightScale = h / 255.0 * 2.0 + 0.5; // Map 0..1 to 0.5..2.5
+                    colorVariation = c / 255.0;
+
+                    // Unpack Normal
+                    float nx = (packedNormal & 0xFF) / 255.0 * 2.0 - 1.0;
+                    float nz = ((packedNormal >> 8) & 0xFF) / 255.0 * 2.0 - 1.0;
+                    // Reconstruct Y (assuming it's upward facing)
+                    float ny = sqrt(saturate(1.0 - nx*nx - nz*nz));
+                    terrainNormal = normalize(float3(nx, ny, nz));
                 #endif
 
                 // Dimensions
@@ -118,12 +143,12 @@ Shader "VoxelEngine/Grass"
                 posWS.y *= _BladeHeight * heightScale;
 
                 // Rotation
-                float s, c;
-                sincos(rotation, s, c);
+                float s, c_rot;
+                sincos(rotation, s, c_rot);
                 float3 rotPos;
-                rotPos.x = posWS.x * c + posWS.z * s;
+                rotPos.x = posWS.x * c_rot + posWS.z * s;
                 rotPos.y = posWS.y;
-                rotPos.z = posWS.x * -s + posWS.z * c;
+                rotPos.z = posWS.x * -s + posWS.z * c_rot;
                 posWS = rotPos;
 
                 float3 worldPos = instancePos + posWS;
@@ -134,27 +159,26 @@ Shader "VoxelEngine/Grass"
                 windNoise = (windNoise * 2.0 - 1.0);
                 
                 // Curve factor: input.uv.y is 0 at bottom, 1 at top.
-                // Pow(2) creates a nice parabolic bend.
                 float bendFactor = pow(input.uv.y, 2.0);
                 
                 // Displacement
                 worldPos.xz += windNoise * _WindStrength * bendFactor * _WindDirection.xy;
-                // Height reduction (keep length consistent-ish)
                 worldPos.y -= abs(windNoise) * _WindStrength * 0.3 * bendFactor;
 
                 // --- Output ---
                 output.positionCS = TransformWorldToHClip(worldPos);
                 output.uv = input.uv;
                 output.positionWS = worldPos;
-                output.normalWS = TransformObjectToWorldNormal(input.normalOS); // Uses (0,1,0) mostly
+                output.normalWS = TransformObjectToWorldNormal(input.normalOS); // Grass blade normal (mostly UP)
+                output.terrainNormal = terrainNormal; // Pass terrain normal for lighting
 
-                // Shadow Coord
-                output.shadowCoord = TransformWorldToShadowCoord(worldPos);
+                // Shadow Coord based on ROOT position
+                // This ensures the whole blade gets the same shadow value as the ground it stands on.
+                output.rootShadowCoord = TransformWorldToShadowCoord(instancePos);
 
                 // Pre-calc Gradient Color
                 float3 localBase = lerp(_BaseColor.rgb * 0.5, _BaseColor.rgb, colorVariation);
-                // Darken root (Ambient Occlusion effect)
-                localBase *= 0.5; 
+                localBase *= 0.5; // Darken root (AO)
                 output.color = lerp(localBase, _TipColor.rgb, input.uv.y);
 
                 return output;
@@ -162,25 +186,38 @@ Shader "VoxelEngine/Grass"
 
             half4 frag(Varyings input) : SV_Target
             {
-                // FIX: Calculate shadow coordinate per-pixel to handle Cascade transitions correctly
-                float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
-
-                // Light Data (Use the new shadowCoord)
-                Light mainLight = GetMainLight(shadowCoord);
+                // 1. Get Main Light using ROOT shadow coordinates
+                Light mainLight = GetMainLight(input.rootShadowCoord);
                 
-                // Half-Lambert Lighting (Softer, better for foliage)
-                float NdotL = dot(input.normalWS, mainLight.direction) * 0.5 + 0.5;
+                // 2. Cel Shading Logic (Matching Voxel Raytracer)
+                // Use Terrain Normal for NdotL to ensure back-side of hill is dark
+                float NdotL_Raw = dot(input.terrainNormal, mainLight.direction);
                 
-                // Shadows
+                // Attenuate NdotL by shadow (If root is in shadow, shadowAttenuation is 0)
+                // We multiply NdotL by shadow BEFORE stepping to ensure shadowed areas fall into the darkest band.
                 float shadow = mainLight.shadowAttenuation;
-                
-                // Final Diffuse
-                float3 lighting = NdotL * mainLight.color * shadow;
-                
-                // Simple Ambient (Fake)
-                lighting += float3(0.2, 0.25, 0.3) * 0.5; 
+                float litVal = max(NdotL_Raw, 0.0) * shadow;
 
-                float3 finalColor = input.color * lighting;
+                float steps = max(1.0, _CelSteps);
+                float minBrightness = _ShadowBrightness;
+                
+                // Calculate Steps
+                float t = litVal * steps;
+                float stepIndex = floor(t);
+                float fraction = t - stepIndex;
+                float smoothFraction = smoothstep(0.0, 0.05 * steps, fraction);
+                float rawLevel = (stepIndex + smoothFraction) / steps;
+                
+                // Final Stepped Diffuse
+                float celDiffuse = lerp(minBrightness, 1.0, saturate(rawLevel));
+
+                // 3. Final Color
+                float3 lighting = celDiffuse * mainLight.color;
+                
+                // Add fake ambient
+                float3 ambient = float3(0.2, 0.25, 0.3) * 0.5;
+                
+                float3 finalColor = input.color * (lighting + ambient);
 
                 return half4(finalColor, 1.0);
             }
