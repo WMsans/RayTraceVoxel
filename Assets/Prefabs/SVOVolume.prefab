@@ -190,7 +190,7 @@ MonoBehaviour:
   baseColor: {r: 0.30980393, g: 0.54509807, b: 0.07450981, a: 1}
   tipColor: {r: 0.4603114, g: 0.70199996, b: 0.19445395, a: 1}
   celSteps: 4
-  shadowBrightness: 0.3
+  shadowBrightness: 0.1
   windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
   windSpeed: 0.02
   windStrength: 2
@@ -214,8 +214,10 @@ MonoBehaviour:
   targetMaterialId: 6
   sdfThreshold: 0.8
   leafScale: 1
-  innerColor: {r: 0.05, g: 0.2, b: 0.05, a: 1}
-  outerColor: {r: 0.1, g: 0.4, b: 0.1, a: 1}
+  innerColor: {r: 0.418528, g: 0.638, b: 0.19905598, a: 1}
+  outerColor: {r: 0.63588, g: 0.84, b: 0.43176, a: 1}
+  celSteps: 4
+  shadowBrightness: 0.1
   windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}
   windSpeed: 0.02
   windStrength: 2

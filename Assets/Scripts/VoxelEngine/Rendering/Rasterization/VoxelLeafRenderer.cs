@@ -24,6 +24,9 @@ namespace VoxelEngine.Core.Rendering
         public float leafScale = 0.8f;
         public Color innerColor = new Color(0.05f, 0.2f, 0.05f);
         public Color outerColor = new Color(0.1f, 0.4f, 0.1f);
+        [Header("Cel Shading")]
+        [Range(1, 10)] public int celSteps = 3;
+        [Range(0.0f, 1.0f)] public float shadowBrightness = 0.2f;
 
         [Header("Wind Settings")]
         public Texture2D windTexture;
@@ -186,6 +189,9 @@ namespace VoxelEngine.Core.Rendering
             
             _material.SetFloat("_BladeHeight", leafScale); 
             
+            _material.SetFloat("_CelSteps", celSteps);
+            _material.SetFloat("_ShadowBrightness", shadowBrightness);
+
             _material.SetFloat("_WindSpeed", windSpeed);
             _material.SetFloat("_WindStrength", windStrength);
             if (windTexture != null) _material.SetTexture("_WindTex", windTexture);
