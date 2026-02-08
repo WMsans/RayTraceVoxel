@@ -46,7 +46,13 @@ namespace VoxelEngine.Core.Rendering
             [Header("God Rays")]
             public bool enableGodRays = true;
             public Shader godRayShader;
-            [Range(0.0f, 1.0f)] public float sunThreshold = 0.95f; 
+            
+            [Tooltip("Threshold when the sun is directly overhead (Noon). Controls the size of the sun disk source.")]
+            [Range(0.0f, 1.0f)] public float noonSunThreshold = 0.95f; 
+            
+            [Tooltip("Threshold when the sun is at the horizon (Dawn/Dusk).")]
+            [Range(0.0f, 1.0f)] public float dawnSunThreshold = 0.99f;
+
             [Range(0.0f, 5.0f)] public float rayDensity = 1.0f;
             [Range(0.0f, 1.0f)] public float rayDecay = 0.95f;
             [Range(0.0f, 1.0f)] public float rayWeight = 0.1f;
@@ -546,12 +552,17 @@ namespace VoxelEngine.Core.Rendering
                 // --- 3. God Rays Pass ---
                 if (_settings.enableGodRays && _godRayMaterial != null)
                 {
-                    // [FIX] Simplified Sun Position Calculation
                     // mainPos comes from SetupLights and is the vector POINTING TO the sun (e.g., Up)
                     Vector3 vectorToSun = new Vector3(mainPos.x, mainPos.y, mainPos.z).normalized;
                     
                     // If vectorToSun is zero (no light), default to Up
                     if (vectorToSun == Vector3.zero) vectorToSun = Vector3.up;
+
+                    // Calculate sun height (0 at horizon/dawn/dusk, 1 at noon)
+                    float sunHeight = Mathf.Clamp01(Vector3.Dot(vectorToSun, Vector3.up));
+                    
+                    // Smoothly interpolate threshold between Dawn and Noon settings
+                    float dynamicSunThreshold = Mathf.SmoothStep(_settings.dawnSunThreshold, _settings.noonSunThreshold, sunHeight);
 
                     Vector3 cameraPos = cameraData.camera.transform.position;
                     // Place the virtual sun far away in the direction of the light
@@ -570,7 +581,6 @@ namespace VoxelEngine.Core.Rendering
                     // Pass 0: Occluders
                     using (var builder = renderGraph.AddRasterRenderPass<GodRayPassData>("God Rays Occluders", out var grData))
                     {
-                        // [FIX] Enable Global State Modification so SetGlobalTexture works
                         builder.AllowGlobalStateModification(true);
 
                         grData.sourceDepth = lowResDepth;
@@ -578,7 +588,7 @@ namespace VoxelEngine.Core.Rendering
                         grData.material = _godRayMaterial;
                         grData.lightPosScreen = new Vector3(viewportPos.x, viewportPos.y, isVisible);
                         grData.lightColor = _settings.lightSourceColor;
-                        grData.sunThreshold = _settings.sunThreshold;
+                        grData.sunThreshold = dynamicSunThreshold;
 
                         builder.UseTexture(grData.sourceDepth, AccessFlags.Read);
                         builder.SetRenderAttachment(grData.occluderTex, 0, AccessFlags.Write);
