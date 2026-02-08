@@ -36,7 +36,7 @@ MonoBehaviour:
     rayDecay: 0.95
     rayWeight: 0.1
     rayExposure: 1
-    raySamples: 32
+    raySamples: 16
     lightSourceColor: {r: 1, g: 0.95, b: 0.8, a: 1}
     upscalingMode: 0
     sharpness: 0.5

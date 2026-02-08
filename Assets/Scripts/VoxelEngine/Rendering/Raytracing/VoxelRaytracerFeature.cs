@@ -546,11 +546,19 @@ namespace VoxelEngine.Core.Rendering
                 // --- 3. God Rays Pass ---
                 if (_settings.enableGodRays && _godRayMaterial != null)
                 {
-                    Vector3 sunDirection = -new Vector3(mainPos.x, mainPos.y, mainPos.z);
+                    // [FIX] Simplified Sun Position Calculation
+                    // mainPos comes from SetupLights and is the vector POINTING TO the sun (e.g., Up)
+                    Vector3 vectorToSun = new Vector3(mainPos.x, mainPos.y, mainPos.z).normalized;
+                    
+                    // If vectorToSun is zero (no light), default to Up
+                    if (vectorToSun == Vector3.zero) vectorToSun = Vector3.up;
+
                     Vector3 cameraPos = cameraData.camera.transform.position;
-                    Vector3 sunWorldPos = cameraPos - sunDirection * 10000.0f; 
+                    // Place the virtual sun far away in the direction of the light
+                    Vector3 sunWorldPos = cameraPos + vectorToSun * 10000.0f; 
                     Vector3 viewportPos = cameraData.camera.WorldToViewportPoint(sunWorldPos);
 
+                    // Check if sun is in front of camera
                     float isVisible = (viewportPos.z > 0) ? 1.0f : 0.0f;
 
                     TextureDesc occDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm, name = "GodRays_Occluders" };

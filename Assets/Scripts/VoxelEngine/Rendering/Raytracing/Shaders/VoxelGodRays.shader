@@ -64,22 +64,29 @@ Shader "Hidden/VoxelGodRays"
             {
                 // 1. Sample Depth
                 float rawDepth = SAMPLE_TEXTURE2D(_VoxelDepthTexture, sampler_VoxelDepthTexture, input.uv).r;
+                
+                // [FIX] Use Linear01Depth to reliably detect sky/background
                 float linearDepth = Linear01Depth(rawDepth, _ZBufferParams);
+                bool isSky = linearDepth > 0.9;
 
                 // 2. Identify Objects vs Sky
-                if (linearDepth < 0.999)
+                if (!isSky)
                 {
-                    return float4(0, 0, 0, 1);
+                    // It's an object (voxel/geometry), so it occludes the light (return black)
+                    return float4(0, 0, 0, 0);
                 }
 
-                // 3. Sky Rendering
+                // 3. Sun/Sky Rendering
+                // We only want the sun disk itself to emit god rays, not the whole sky.
                 float dist = distance(input.uv, _LightPosition.xy);
+                
+                // Note: _SunThreshold should be high (e.g., 0.95)
                 if (dist > (1.0 - _SunThreshold)) 
                 {
-                   return float4(0,0,0,1);
+                   return float4(0, 0, 0, 0);
                 }
 
-                return _LightColor;
+                return float4(_LightColor.rgb, 0.0);
             }
             ENDHLSL
         }
@@ -90,13 +97,14 @@ Shader "Hidden/VoxelGodRays"
             Name "RadialBlur"
             
             HLSLPROGRAM
+            // *** FIX BELOW: Combined #pragma vertex Vert onto one line ***
             #pragma vertex Vert
             #pragma fragment FragBlur
 
             float4 FragBlur(Varyings input) : SV_Target
             {
-                if (_LightPosition.z < 0.5) return float4(0,0,0,1);
-
+                if (_LightPosition.z < 0.5) return float4(0,0,0,0);
+                
                 float2 uv = input.uv;
                 float2 lightPos = _LightPosition.xy;
                 
@@ -105,7 +113,7 @@ Shader "Hidden/VoxelGodRays"
                 
                 float3 color = 0;
                 float illuminationDecay = 1.0;
-                
+
                 for (int i = 0; i < _Samples; i++)
                 {
                     uv -= deltaTextCoord;
@@ -116,12 +124,12 @@ Shader "Hidden/VoxelGodRays"
                     illuminationDecay *= _Decay;
                 }
                 
-                return float4(color * _Exposure, 1.0);
+                return float4(color * _Exposure, 0.0);
             }
             ENDHLSL
         }
 
-        // --- PASS 2: Additive Blend ---
+        // --- PASS 2: Additive Blend --- 
         Pass
         {
             Name "AdditiveBlend"

@@ -780,16 +780,20 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     _Result.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) return;
 
-        if (_ChunkCount == 0) 
-        {
-            float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
-            float2 sampleUV = uv * 0.5 + 0.5;
-            _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
-            _ResultDepth[id.xy] = 0.0;
-            _ResultNormals[id.xy] = float4(0.5, 0.5, 0.5, 0.0);
-            _MotionVectorTexture[id.xy] = 0;
-            return;
-        }
+    if (_ChunkCount == 0) 
+    {
+        float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
+        float2 sampleUV = uv * 0.5 + 0.5;
+        _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
+        
+        // [FIX] Sample Camera Depth instead of hardcoding 0.0
+        float d = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, sampleUV, 0);
+        _ResultDepth[id.xy] = d;
+        
+        _ResultNormals[id.xy] = float4(0.5, 0.5, 0.5, 0.0);
+        _MotionVectorTexture[id.xy] = 0;
+        return;
+    }
     float2 jitter = _RaytraceParams.yz;
     float2 uv = (id.xy + 0.5 + jitter) / float2(width, height) * 2.0 - 1.0;
     float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
@@ -812,7 +816,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     {
         float2 sampleUV = (id.xy + 0.5) / float2(width, height);
         _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
-        _ResultDepth[id.xy] = 0; 
+        
+        _ResultDepth[id.xy] = depthVal; 
+        
         return;
     }
 
@@ -933,7 +939,9 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     else
     {
         _Result[id.xy] = float4(resultColor, 1.0);
-        _ResultDepth[id.xy] = 0.0;
+        
+        _ResultDepth[id.xy] = depthVal;
+        
         _ResultNormals[id.xy] = float4(0.5, 0.5, 0.5, 0.0);
         
         float3 farPos = rayOrigin + rayDir * 1000.0;
