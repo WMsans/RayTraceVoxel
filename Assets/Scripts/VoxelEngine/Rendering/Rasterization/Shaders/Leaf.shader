@@ -94,6 +94,14 @@ Shader "VoxelEngine/Leaf"
                 float3 terrainNormal : TEXCOORD5;
             };
 
+            // [NEW] Output structure for MRT (Matches Grass.shader)
+            struct FragOutput
+            {
+                half4 color : SV_Target0;
+                float depth : SV_Target1;
+                half4 normal : SV_Target2;
+            };
+
             void setup() {}
 
             Varyings vert(Attributes input)
@@ -128,7 +136,6 @@ Shader "VoxelEngine/Leaf"
 
                 // 1. Scale
                 posWS *= _BladeHeight * (0.5 + sizeScale);
-
                 // 2. Local Spin
                 float s, c;
                 sincos(spinRotation, s, c);
@@ -153,9 +160,8 @@ Shader "VoxelEngine/Leaf"
                 float2 windUV = (instancePos.xz * _WindFrequency) + (_Time.y * _WindSpeed);
                 float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
                 windNoise = (windNoise * 2.0 - 1.0);
-                
                 float flutter = windNoise * _WindStrength * input.uv.y;
-                worldPos += surfaceNormal * flutter * 0.2; 
+                worldPos += surfaceNormal * flutter * 0.2;
                 worldPos += right * flutter * 0.5;
 
                 // --- Outputs ---
@@ -163,12 +169,11 @@ Shader "VoxelEngine/Leaf"
                 output.uv = input.uv;
                 output.positionWS = worldPos;
                 
-                // Approximate normal in WS (rotate object normal by alignment basis)
-                // Note: alignedPos calculation effectively used [right, up, forward] as rotation matrix columns
+                // Approximate normal in WS
                 float3 normalWS = right * input.normalOS.x + up * input.normalOS.y + forward * input.normalOS.z;
                 output.normalWS = normalize(normalWS);
                 
-                output.terrainNormal = surfaceNormal; // For back-lighting
+                output.terrainNormal = surfaceNormal; 
 
                 // Shadow Coord based on ROOT position for stability
                 output.rootShadowCoord = TransformWorldToShadowCoord(instancePos);
@@ -181,13 +186,12 @@ Shader "VoxelEngine/Leaf"
                 return output;
             }
 
-            half4 frag(Varyings input) : SV_Target
+            FragOutput frag(Varyings input)
             {
                 // [Occlusion Test against Voxel Depth]
                 float2 screenUV = input.positionCS.xy / _ScaledScreenParams.xy;
                 // Use sampler_PointClamp (provided by URP Core) for depth sampling
                 float voxelDepth = SAMPLE_TEXTURE2D(_VoxelDepthCopy, sampler_PointClamp, screenUV).r;
-                
                 float myDepth = input.positionCS.z;
 
                 #if UNITY_REVERSED_Z
@@ -208,13 +212,11 @@ Shader "VoxelEngine/Leaf"
 
                 float steps = max(1.0, _CelSteps);
                 float minBrightness = _ShadowBrightness;
-                
                 float t = litVal * steps;
                 float stepIndex = floor(t);
                 float fraction = t - stepIndex;
                 float smoothFraction = smoothstep(0.0, 0.05 * steps, fraction);
                 float rawLevel = (stepIndex + smoothFraction) / steps;
-                
                 float celDiffuse = lerp(minBrightness, 1.0, saturate(rawLevel));
 
                 // 3. Final Color
@@ -223,7 +225,12 @@ Shader "VoxelEngine/Leaf"
                 
                 float3 finalColor = input.color * (lighting + ambient);
 
-                return half4(finalColor, 1.0);
+                // [NEW] Output MRT
+                FragOutput o;
+                o.color = half4(finalColor, 1.0);
+                o.depth = myDepth;
+                o.normal = half4(normalize(input.normalWS) * 0.5 + 0.5, 1.0);
+                return o;
             }
             ENDHLSL
         }
