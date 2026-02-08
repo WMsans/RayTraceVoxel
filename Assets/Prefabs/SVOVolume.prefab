@@ -203,7 +203,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 7120167303073674635}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 9e4f1ea28eba66146a0b9b4fa5773f6e, type: 3}
   m_Name: 
@@ -213,7 +213,7 @@ MonoBehaviour:
   maxInstances: 50000
   targetMaterialId: 6
   sdfThreshold: 0.8
-  leafScale: 20
+  leafScale: 1
   innerColor: {r: 0.05, g: 0.2, b: 0.05, a: 1}
   outerColor: {r: 0.1, g: 0.4, b: 0.1, a: 1}
   windTexture: {fileID: 2800000, guid: d82edffd491400b42becf674eb7299a5, type: 3}

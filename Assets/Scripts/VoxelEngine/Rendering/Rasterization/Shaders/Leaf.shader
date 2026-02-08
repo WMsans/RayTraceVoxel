@@ -40,7 +40,7 @@ Shader "VoxelEngine/Leaf"
             struct LeafInstance
             {
                 float3 position;
-                float rotation;
+                uint packedNormal;
                 uint packedData;
             };
 
@@ -83,46 +83,68 @@ Shader "VoxelEngine/Leaf"
 
                 float3 posWS = input.positionOS.xyz;
                 float3 instancePos = float3(0, 0, 0);
-                float rotation = 0;
                 float sizeScale = 1.0;
                 float colorVariation = 0.5;
+                float3 surfaceNormal = float3(0, 1, 0);
+                float spinRotation = 0;
 
                 #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
                     LeafInstance inst = _LeafInstanceBuffer[input.instanceID];
                     instancePos = inst.position;
-                    rotation = inst.rotation;
 
+                    // Unpack Normal & Spin
+                    uint pn = inst.packedNormal;
+                    surfaceNormal.x = (float)(pn & 0xFF) / 255.0 * 2.0 - 1.0;
+                    surfaceNormal.y = (float)((pn >> 8) & 0xFF) / 255.0 * 2.0 - 1.0;
+                    surfaceNormal.z = (float)((pn >> 16) & 0xFF) / 255.0 * 2.0 - 1.0;
+                    surfaceNormal = normalize(surfaceNormal);
+                    
+                    spinRotation = (float)((pn >> 24) & 0xFF) / 255.0 * 6.28318; // 0 to 2PI
+
+                    // Unpack Data
                     uint p = inst.packedData;
-                    // Size stored in bits 8-15
                     sizeScale = ((p >> 8) & 0xFF) / 255.0;
-                    // Color variation in bits 16-31
                     colorVariation = ((p >> 16) & 0xFFFF) / 65535.0;
                 #endif
 
-                // Scale geometry
-                posWS *= _BladeHeight * (0.5 + sizeScale); // Randomize size
+                // 1. Scale
+                posWS *= _BladeHeight * (0.5 + sizeScale);
 
-                // Rotate (Y-Axis)
+                // 2. Local Spin (Rotate around Y-axis of the mesh BEFORE aligning to normal)
+                // Since the mesh is built along Y, this spins the leaf "in place"
                 float s, c;
-                sincos(rotation, s, c);
-                float3 rotPos;
-                rotPos.x = posWS.x * c + posWS.z * s;
-                rotPos.y = posWS.y;
-                rotPos.z = posWS.x * -s + posWS.z * c;
-                posWS = rotPos;
+                sincos(spinRotation, s, c);
+                float3 spunPos;
+                spunPos.x = posWS.x * c + posWS.z * s;
+                spunPos.y = posWS.y;
+                spunPos.z = posWS.x * -s + posWS.z * c;
+                posWS = spunPos;
+
+                // 3. Align to Surface Normal
+                // We want the mesh's UP (0,1,0) to point towards surfaceNormal.
+                // We construct a rotation matrix from Basis Vectors.
+                float3 up = surfaceNormal;
+                // Safe "Right" vector (handle up pointing roughly Y)
+                float3 helper = abs(up.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0);
+                float3 right = normalize(cross(up, helper));
+                float3 forward = cross(right, up);
+                
+                // Rotate
+                // Basis Matrix multiplication: Col0*x + Col1*y + Col2*z
+                float3 alignedPos = right * posWS.x + up * posWS.y + forward * posWS.z;
+                posWS = alignedPos;
 
                 float3 worldPos = instancePos + posWS;
 
-                // Wind (Fluttering effect)
+                // 4. Wind
                 float2 windUV = (instancePos.xz * _WindFrequency) + (_Time.y * _WindSpeed);
                 float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
                 windNoise = (windNoise * 2.0 - 1.0);
                 
-                // Leaves flutter more at the tips (UV.y)
+                // Flutter intensity based on leaf tip (UV.y)
                 float flutter = windNoise * _WindStrength * input.uv.y;
-                worldPos.x += flutter;
-                worldPos.z += flutter * 0.5;
-                worldPos.y += flutter * 0.2;
+                worldPos += surfaceNormal * flutter * 0.2; // Move in/out
+                worldPos += right * flutter * 0.5;         // Move side-to-side
 
                 output.positionCS = TransformWorldToHClip(worldPos);
                 output.uv = input.uv;

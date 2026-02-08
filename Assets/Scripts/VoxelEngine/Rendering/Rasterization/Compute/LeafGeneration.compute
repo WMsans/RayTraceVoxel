@@ -5,14 +5,13 @@
 StructuredBuffer<SVONode> _NodeBuffer;
 StructuredBuffer<VoxelPayload> _PayloadBuffer;
 StructuredBuffer<uint> _BrickDataBuffer;
-StructuredBuffer<uint> _PageTableBuffer; // New
+StructuredBuffer<uint> _PageTableBuffer;
 
 // --- Outputs ---
-// We reuse the GrassInstance struct layout: Position (12), Rotation (4), PackedData (4)
 struct LeafInstance {
     float3 position;
-    float rotation;
-    uint packedData;
+    uint packedNormal; // [Spin 8] [Nz 8] [Ny 8] [Nx 8]
+    uint packedData;   // [Color 16] [Size 8] [Unused 8]
 };
 
 AppendStructuredBuffer<LeafInstance> _LeafAppendBuffer;
@@ -25,8 +24,8 @@ uint _NodeOffset;
 uint _PayloadOffset;
 uint _BrickOffset;
 
-uint _TargetMaterialId; // Default: 6
-float _SdfThreshold;    // Surface closeness (e.g. 0.5)
+uint _TargetMaterialId; 
+float _SdfThreshold;   
 
 float Random(float3 p) {
     return frac(sin(dot(p, float3(12.9898, 78.233, 45.5432))) * 43758.5453);
@@ -65,7 +64,7 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
                 uint voxelIdx = _BrickOffset + brickPtr + 
                                (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
                                (y * BRICK_STORAGE_SIZE) + x;
-                
+
                 uint packedData = _BrickDataBuffer[voxelIdx];
                 
                 float sdf;
@@ -74,10 +73,7 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
                 UnpackVoxelData(packedData, sdf, normal, mat);
 
                 // --- Filtering ---
-                // Only spawn on Leaf material
                 if (mat != _TargetMaterialId) continue;
-                
-                // Only spawn near the surface (SDF zero crossing)
                 if (abs(sdf) > _SdfThreshold) continue;
 
                 // --- Generation ---
@@ -88,27 +84,33 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
                 float3 surfacePosLocal = voxelPosLocal - normal * sdf;
                 float3 worldPos = _ChunkWorldOrigin + surfacePosLocal * scale;
 
-                // Jitter (3D jitter for leaves to fluff them up)
+                // Jitter
                 float3 jitterSeed = brickOriginLocal + (float3)voxelOffset;
                 float3 jitter = float3(
                     Random(jitterSeed),
                     Random(jitterSeed + float3(4.2, 9.1, 1.3)),
                     Random(jitterSeed + float3(1.5, 6.7, 2.4))
                 ) * 2.0 - 1.0;
-                
+
                 worldPos += jitter * 0.4 * scale; 
 
                 LeafInstance instance;
                 instance.position = worldPos;
-                instance.rotation = Random(worldPos) * 6.28318;
                 
-                // Packed Data:
-                // Bits 0-7: Height Scale (Randomize size)
-                // Bits 8-15: Unused
-                // Bits 16-31: Color Variation
-                uint size = (uint)((Random(worldPos + float3(0,1,0)) * 0.5 + 0.5) * 255.0); // 0.5 to 1.0 scale
+                // Pack Normal and Spin
+                // Map Normal [-1, 1] -> [0, 255]
+                uint nx = (uint)(clamp(normal.x * 0.5 + 0.5, 0.0, 1.0) * 255.0);
+                uint ny = (uint)(clamp(normal.y * 0.5 + 0.5, 0.0, 1.0) * 255.0);
+                uint nz = (uint)(clamp(normal.z * 0.5 + 0.5, 0.0, 1.0) * 255.0);
+                
+                // Random Spin (0-255 representing 0-360 degrees)
+                uint spin = (uint)(Random(worldPos) * 255.0);
+                
+                instance.packedNormal = nx | (ny << 8) | (nz << 16) | (spin << 24);
+
+                // Pack Size and Color
+                uint size = (uint)((Random(worldPos + float3(0,1,0)) * 0.5 + 0.5) * 255.0);
                 uint colorVar = (uint)(Random(worldPos + float3(1,0,1)) * 65535.0);
-                
                 instance.packedData = (size << 8) | (colorVar << 16);
 
                 _LeafAppendBuffer.Append(instance);
