@@ -29,6 +29,15 @@ MonoBehaviour:
     atmosphereDensity: 0.0002
     celSteps: 4
     shadowBrightness: 0.1
+    enableGodRays: 1
+    godRayShader: {fileID: 4800000, guid: 58301be3dabf73942a8096c13db33c65, type: 3}
+    sunThreshold: 0.75
+    rayDensity: 1
+    rayDecay: 0.95
+    rayWeight: 0.1
+    rayExposure: 1
+    raySamples: 32
+    lightSourceColor: {r: 1, g: 0.95, b: 0.8, a: 1}
     upscalingMode: 0
     sharpness: 0.5
     enableFXAA: 0
