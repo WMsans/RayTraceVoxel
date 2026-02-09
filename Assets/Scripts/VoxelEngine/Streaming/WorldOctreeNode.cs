@@ -1,5 +1,6 @@
 using UnityEngine;
 using VoxelEngine.Core;
+using System;
 
 namespace VoxelEngine.Core.Streaming
 {
@@ -91,11 +92,15 @@ namespace VoxelEngine.Core.Streaming
             }
         }
 
-        public void RequestGeneration(MonoBehaviour runner)
+        public void RequestGeneration(MonoBehaviour runner, Action<bool> onComplete = null, bool forMerge = false)
         {
             if (State != NodeState.Uninitialized) return;
             
-            if (VoxelVolumePool.Instance == null) return;
+            if (VoxelVolumePool.Instance == null) 
+            {
+                onComplete?.Invoke(false);
+                return;
+            }
 
             State = NodeState.Pending;
             
@@ -109,14 +114,20 @@ namespace VoxelEngine.Core.Streaming
             // Audit the chunk using the Transient Pool
             VoxelVolumePool.Instance.AuditChunk(minCorner, Size, 64, (result) => 
             {
-                // --- CRITICAL FIX ---
                 // We check three things before accepting the volume:
                 // 1. _generationRequestId match: Ensures we haven't been reset/disabled since this request started.
                 // 2. State == Pending: Ensures no other logic has forcibly changed our state.
-                // 3. IsLeaf: Ensures we haven't split (Subdivided) into children while waiting.
+                // 3. Topology check: 
+                //    - If standard generation (!forMerge), we must still be a Leaf.
+                //    - If merging (forMerge), we are a Branch becoming a Leaf, so we ignore IsLeaf.
+                
                 bool isValid = (currentRequestId == _generationRequestId) 
-                               && (State == NodeState.Pending) 
-                               && IsLeaf;
+                               && (State == NodeState.Pending);
+                               
+                if (!forMerge)
+                {
+                    isValid = isValid && IsLeaf;
+                }
 
                 if (!isValid)
                 {
@@ -126,9 +137,9 @@ namespace VoxelEngine.Core.Streaming
                     {
                         VoxelVolumePool.Instance.ReturnVolume(result.volume);
                     }
+                    onComplete?.Invoke(false);
                     return;
                 }
-                // --------------------
 
                 switch (result.type)
                 {
@@ -150,8 +161,11 @@ namespace VoxelEngine.Core.Streaming
                         break;
                     case AuditResultType.Retry:
                         State = NodeState.Uninitialized; // Try again later
-                        break;
+                        onComplete?.Invoke(false);
+                        return;
                 }
+
+                onComplete?.Invoke(true);
             });
         }
 

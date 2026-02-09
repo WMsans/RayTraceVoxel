@@ -115,14 +115,6 @@ namespace VoxelEngine.Core.Streaming
             List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
             if (dirtyRegions == null || dirtyRegions.Count == 0) return;
 
-            // Simple brute force invalidation for now. 
-            // Ideally we traverse the octree to find intersecting leaves.
-            // Using Registry for simplicity but it only holds ACTIVE (Complex) volumes.
-            // Hidden "Empty" or "Solid" nodes might need to become Complex.
-            // For now, only updating active volumes.
-            // *Improvement*: You would want to recursively check the octree nodes against bounds
-            // and set State = Uninitialized to force re-audit.
-
             var activeVolumes = VoxelVolumeRegistry.Volumes;
             HashSet<VoxelVolume> volumesToUpdate = new HashSet<VoxelVolume>();
 
@@ -176,15 +168,11 @@ namespace VoxelEngine.Core.Streaming
                     // Visible: Ensure content is generated
                     if (node.ActiveVolume == null)
                     {
-                        // Use the new State flow
                         if (node.State == NodeState.Uninitialized)
                         {
                             node.RequestGeneration(this);
                         }
-                        // If State is Empty or Solid, we do nothing (invisible).
-                        // If State is Pending, we wait.
                         
-                        // Register for Physics if we just got a volume
                         if (node.ActiveVolume != null)
                         {
                             VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
@@ -192,8 +180,6 @@ namespace VoxelEngine.Core.Streaming
                     }
                     else if (node.State == NodeState.Active)
                     {
-                        // Ensure it's active in physics if we came back into view
-                        // The PhysicsManager handles deduplication
                         VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
                     }
                 }
@@ -215,14 +201,12 @@ namespace VoxelEngine.Core.Streaming
                     if (node.AreChildrenReady)
                     {
                         // Handoff Complete: Children are ready.
-                        // 1. Enable Child Visuals
                         foreach (var child in node.Children)
                         {
                             if (child.ActiveVolume != null)
                                 child.ActiveVolume.gameObject.SetActive(true);
                         }
 
-                        // 2. Disable Parent
                         if (VoxelPhysicsManager.Instance != null)
                         {
                             VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
@@ -269,21 +253,32 @@ namespace VoxelEngine.Core.Streaming
                     VoxelPhysicsManager.Instance.Enqueue(child.ActiveVolume);
                 }
             }
-            // MODIFIED: Do NOT disable the parent volume immediately. 
-            // We let it persist in the "Branch" state until children are ready (handled in UpdateNodeLOD).
-            // node.DisableVolume(); 
         }
 
         private void MergeNode(WorldOctreeNode node)
         {
-            node.RequestGeneration(this);
-            
-            if (node.ActiveVolume != null)
-            {
-                VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
-            }
+            // If we are already waiting for a merge generation, do nothing.
+            if (node.State == NodeState.Pending) return;
 
-            node.Merge();
+            // 1. Request the Parent content in the background
+            //    Pass forMerge: true so the node accepts the volume even though it has children (is a Branch).
+            node.RequestGeneration(this, (success) => 
+            {
+                if (success)
+                {
+                    // 2. Parent is Ready (Active/Solid/Empty).
+                    //    Now it is safe to remove the children.
+                    
+                    if (node.ActiveVolume != null)
+                    {
+                        VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
+                    }
+
+                    // 3. Clear Children
+                    //    This causes the visual swap: Parent is visible (handled by pool), Children are removed.
+                    node.Merge();
+                }
+            }, forMerge: true);
         }
 
         private void OnDestroy()
@@ -300,7 +295,6 @@ namespace VoxelEngine.Core.Streaming
             if (drawDebugGizmos)
             {
                 if (_rootNode != null) DrawNodeGizmos(_rootNode);
-                // ... dirty regions ...
             }
         }
 
@@ -308,7 +302,6 @@ namespace VoxelEngine.Core.Streaming
         {
             if (node.IsLeaf)
             {
-                // Color code by state
                 switch (node.State)
                 {
                     case NodeState.Active: Gizmos.color = Color.green; break;
