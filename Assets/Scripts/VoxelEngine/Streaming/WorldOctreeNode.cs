@@ -5,9 +5,11 @@ using System;
 namespace VoxelEngine.Core.Streaming
 {
     public enum NodeState { Uninitialized, Pending, Empty, Solid, Active }
+
     /// <summary>
     /// Represents a node in the infinite world octree (CPU-side).
     /// Manages spatial data and holds a reference to a physical VoxelVolume if active.
+    /// Includes robust state management for Async LOD transitions.
     /// </summary>
     public class WorldOctreeNode
     {
@@ -25,6 +27,12 @@ namespace VoxelEngine.Core.Streaming
 
         // --- Payload ---
         public VoxelVolume ActiveVolume { get; private set; }
+        
+        /// <summary>
+        /// The state of THIS node's volume. 
+        /// Note: A Branch node (with children) can still have a 'Pending' or 'Active' state 
+        /// if it is currently handling an LOD transition (Merging/Splitting).
+        /// </summary>
         public NodeState State { get; private set; } = NodeState.Uninitialized;
 
         // --- Safety ---
@@ -50,7 +58,15 @@ namespace VoxelEngine.Core.Streaming
 
         public void Subdivide()
         {
+            // If we are subdividing, we must abort any pending Merge operation on this node.
+            // This handles the "Merge -> Split" race condition.
+            if (State == NodeState.Pending)
+            {
+                CancelGeneration();
+            }
+
             if (!IsLeaf) return;
+
             Children = new WorldOctreeNode[8];
             float quarterSize = Size * 0.25f;
             float childSize = Size * 0.5f;
@@ -65,26 +81,49 @@ namespace VoxelEngine.Core.Streaming
         public void Merge()
         {
             if (IsLeaf) return;
+            
+            // recursively merge children
             foreach (var child in Children)
             {
                 child.Merge(); 
-                child.DisableVolume();
+                child.DisableVolume(); // Ensures children return their resources
             }
             Children = null;
         }
 
-        // --- Volume Management (UPDATED for Transient Auditor) ---
+        // --- Volume Management ---
+
+        /// <summary>
+        /// Cancels any pending generation request for this node.
+        /// Useful when interrupting a Merge to switch back to Splitting.
+        /// </summary>
+        public void CancelGeneration()
+        {
+            if (State == NodeState.Pending)
+            {
+                // Incrementing the ID ensures the in-flight callback will fail the "requestId match" check
+                _generationRequestId++;
+                State = NodeState.Uninitialized;
+            }
+        }
 
         public bool AreChildrenReady
         {
             get
             {
                 if (IsLeaf || Children == null) return true;
+
+                // RACE CONDITION FIX:
+                // If THIS node is 'Pending', it means we are actively generating our own mesh to Merge.
+                // In this state, we should strictly prioritize the Merge and NOT swap to children,
+                // even if the children happen to finish loading in the background.
+                // This prevents "Flickering" (Parent -> Children -> Parent) during rapid movement.
+                if (State == NodeState.Pending) return false;
                 
-                // If any child is Pending or Uninitialized, the group isn't ready.
-                // We accept Empty, Solid, and Active as "Ready" states.
+                // Otherwise, check if children are ready to be shown
                 for (int i = 0; i < Children.Length; i++)
                 {
+                    // Children must be in a final state (Active, Empty, or Solid) to be considered ready.
                     if (Children[i].State == NodeState.Pending || Children[i].State == NodeState.Uninitialized)
                         return false;
                 }
@@ -94,6 +133,7 @@ namespace VoxelEngine.Core.Streaming
 
         public void RequestGeneration(MonoBehaviour runner, Action<bool> onComplete = null, bool forMerge = false)
         {
+            // If we are already busy, do not restart unless explicitly cancelled.
             if (State != NodeState.Uninitialized) return;
             
             if (VoxelVolumePool.Instance == null) 
@@ -114,32 +154,44 @@ namespace VoxelEngine.Core.Streaming
             // Audit the chunk using the Transient Pool
             VoxelVolumePool.Instance.AuditChunk(minCorner, Size, 64, (result) => 
             {
-                // We check three things before accepting the volume:
-                // 1. _generationRequestId match: Ensures we haven't been reset/disabled since this request started.
-                // 2. State == Pending: Ensures no other logic has forcibly changed our state.
-                // 3. Topology check: 
-                //    - If standard generation (!forMerge), we must still be a Leaf.
-                //    - If merging (forMerge), we are a Branch becoming a Leaf, so we ignore IsLeaf.
-                
-                bool isValid = (currentRequestId == _generationRequestId) 
-                               && (State == NodeState.Pending);
-                               
-                if (!forMerge)
-                {
-                    isValid = isValid && IsLeaf;
-                }
+                // --- STATE & RACE CONDITION CHECKS ---
 
-                if (!isValid)
+                // 1. Request ID Match: Has CancelGeneration() or DisableVolume() been called?
+                if (currentRequestId != _generationRequestId)
                 {
-                    // If the node changed (e.g. split into higher LOD), we must NOT accept this lower LOD volume.
-                    // Return it to the pool immediately to prevent overlapping.
+                    // Obsolete request. Cleanup if we accidentally got a volume.
                     if (result.type == AuditResultType.Complex && result.volume != null)
-                    {
                         VoxelVolumePool.Instance.ReturnVolume(result.volume);
-                    }
+                    
                     onComplete?.Invoke(false);
                     return;
                 }
+
+                // 2. State Check: Are we still Pending? (Double check)
+                if (State != NodeState.Pending)
+                {
+                    if (result.type == AuditResultType.Complex && result.volume != null)
+                        VoxelVolumePool.Instance.ReturnVolume(result.volume);
+                        
+                    onComplete?.Invoke(false);
+                    return;
+                }
+
+                // 3. Topology Check:
+                // If this was a standard generation (!forMerge), we MUST be a Leaf.
+                // If we became a Branch (Subdivide called) while waiting, this mesh is invalid.
+                if (!forMerge && !IsLeaf)
+                {
+                    if (result.type == AuditResultType.Complex && result.volume != null)
+                        VoxelVolumePool.Instance.ReturnVolume(result.volume);
+
+                    // We don't change state here; Subdivide() handled the state change.
+                    // We just abort this specific callback.
+                    onComplete?.Invoke(false);
+                    return;
+                }
+
+                // --- APPLY RESULT ---
 
                 switch (result.type)
                 {
@@ -160,7 +212,7 @@ namespace VoxelEngine.Core.Streaming
                         }
                         break;
                     case AuditResultType.Retry:
-                        State = NodeState.Uninitialized; // Try again later
+                        State = NodeState.Uninitialized; // Reset to try again later
                         onComplete?.Invoke(false);
                         return;
                 }
@@ -171,8 +223,8 @@ namespace VoxelEngine.Core.Streaming
 
         public void DisableVolume()
         {
-            // Invalidate any generation requests currently in flight
-            _generationRequestId++;
+            // Cancel any pending operations immediately
+            CancelGeneration();
 
             if (ActiveVolume != null)
             {
