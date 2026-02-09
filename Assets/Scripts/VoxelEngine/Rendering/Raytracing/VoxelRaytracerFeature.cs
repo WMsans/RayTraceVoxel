@@ -13,6 +13,7 @@ namespace VoxelEngine.Core.Rendering
     {
         public enum QualityLevel { High, Low, Custom }
         public enum UpscalingMode { Bilinear, SpatialFSR }
+        public enum DebugMode { None, Normals, Bricks }
 
         [System.Serializable]
         public class Settings
@@ -27,8 +28,37 @@ namespace VoxelEngine.Core.Rendering
             public QualityLevel qualityLevel = QualityLevel.High;
             [Range(0.1f, 1.0f)]
             public float renderScale = 1.0f;
+            [Range(0.01f, 10.0f)] public float textureScale = 1.0f;
             public int iterations = 128;
             public int marchSteps = 64;
+
+            [Header("Atmosphere")]
+            public bool enableAtmosphere = true;
+            public Color atmosphereColor = new Color(0.55f, 0.7f, 0.9f);
+            [Range(0.0f, 0.1f)] public float atmosphereDensity = 0.005f;
+
+            [Header("Cel Shading")]
+            [Range(1, 10)] 
+            public int celSteps = 3;
+            [Range(0.0f, 1.0f)] 
+            public float shadowBrightness = 0.2f;
+
+            [Header("God Rays")]
+            public bool enableGodRays = true;
+            public Shader godRayShader;
+            
+            [Tooltip("Threshold when the sun is directly overhead (Noon). Controls the size of the sun disk source.")]
+            [Range(0.0f, 1.0f)] public float noonSunThreshold = 0.95f; 
+            
+            [Tooltip("Threshold when the sun is at the horizon (Dawn/Dusk).")]
+            [Range(0.0f, 1.0f)] public float dawnSunThreshold = 0.99f;
+
+            [Range(0.0f, 5.0f)] public float rayDensity = 1.0f;
+            [Range(0.0f, 1.0f)] public float rayDecay = 0.95f;
+            [Range(0.0f, 1.0f)] public float rayWeight = 0.1f;
+            [Range(0.0f, 5.0f)] public float rayExposure = 1.0f;
+            [Range(16, 128)] public int raySamples = 32;
+            public Color lightSourceColor = new Color(1.0f, 0.95f, 0.8f);
             
             [Header("Upscaling & Anti-Aliasing")]
             public UpscalingMode upscalingMode = UpscalingMode.SpatialFSR;
@@ -36,6 +66,23 @@ namespace VoxelEngine.Core.Rendering
             public bool enableFXAA = true;
             public bool enableTAA = true; 
             [Range(0.0f, 1.0f)] public float taaBlend = 0.93f; 
+
+            [Header("Outline")]
+            public bool enableOutline = false;
+            [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
+            
+            [Header("Outline Lighting")]
+            [Range(0.0f, 1.0f)] public float outlineShadowStrength = 0.5f;
+            
+            [Header("Depth Outline")]
+            [Range(0.0f, 1.0f)] public float outlineStrength = 0.5f;
+            public Color outlineColor = Color.black;
+
+            [Header("Normal Highlight")]
+            [Range(0.0f, 1.0f)] public float normalHighlightStrength = 0.5f; 
+            [Range(0.0f, 2.0f)] public float normalThreshold = 0.6f;        
+            [Range(0.0f, 500.0f)] public float normalFadeDistance = 50.0f;
+            public Color normalHighlightColor = Color.white;                
             
             [Header("LOD Settings")]
             [Range(1.0f, 200.0f)] 
@@ -44,9 +91,13 @@ namespace VoxelEngine.Core.Rendering
             [Header("Culling")]
             public bool useCameraFarPlane = false; 
             public bool cullFrustum = true;
+            public float shadowDistance = 1500.0f; 
 
             [Header("Dithering")]
             public Texture2D blueNoiseTexture;
+
+            [Header("Debug")]
+            public DebugMode debugMode = DebugMode.None;
         }
 
         public Settings settings = new Settings();
@@ -54,6 +105,7 @@ namespace VoxelEngine.Core.Rendering
         private Material _compositeMaterial;
         private Material _fxaaMaterial;
         private Material _taaMaterial;
+        private Material _godRayMaterial;
 
         public static Vector2 MousePosition;
         public static GraphicsBuffer RaycastHitBuffer;
@@ -72,6 +124,9 @@ namespace VoxelEngine.Core.Rendering
 
             if (settings.taaShader != null)
                 _taaMaterial = new Material(settings.taaShader);
+
+            if (settings.godRayShader != null)
+                _godRayMaterial = new Material(settings.godRayShader);
         }
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -80,7 +135,7 @@ namespace VoxelEngine.Core.Rendering
             if (VoxelVolumePool.Instance == null) return;
 
             _pass.UpdateSettings(settings);
-            _pass.Setup(_compositeMaterial, _fxaaMaterial, _taaMaterial);
+            _pass.Setup(_compositeMaterial, _fxaaMaterial, _taaMaterial, _godRayMaterial);
             renderer.EnqueuePass(_pass);
         }
 
@@ -89,6 +144,7 @@ namespace VoxelEngine.Core.Rendering
             CoreUtils.Destroy(_compositeMaterial);
             CoreUtils.Destroy(_fxaaMaterial);
             CoreUtils.Destroy(_taaMaterial);
+            CoreUtils.Destroy(_godRayMaterial);
             _pass?.Dispose();
         }
 
@@ -99,16 +155,24 @@ namespace VoxelEngine.Core.Rendering
             private Material _compositeMaterial;
             private Material _fxaaMaterial;
             private Material _taaMaterial;
+            private Material _godRayMaterial;
+            private Material _copyMaterial; 
 
             // Shader IDs
             private static readonly int _ResultParams = Shader.PropertyToID("_Result");
             private static readonly int _ResultDepthParams = Shader.PropertyToID("_ResultDepth");
+            private static readonly int _ResultNormalsParams = Shader.PropertyToID("_ResultNormals");
             private static readonly int _CameraToWorldParams = Shader.PropertyToID("_CameraToWorld");
             private static readonly int _CameraInverseProjectionParams = Shader.PropertyToID("_CameraInverseProjection");
             private static readonly int _CameraDepthTextureParams = Shader.PropertyToID("_CameraDepthTexture");
             private static readonly int _VoxelDepthTextureParams = Shader.PropertyToID("_VoxelDepthTexture");
+            private static readonly int _VoxelNormalTextureParams = Shader.PropertyToID("_VoxelNormalTexture");
             private static readonly int _ZBufferParamsID = Shader.PropertyToID("_ZBufferParams");
             private static readonly int _RaytraceParams = Shader.PropertyToID("_RaytraceParams");
+            private static readonly int _CelShadeParams = Shader.PropertyToID("_CelShadeParams"); 
+            private static readonly int _AtmosphereParams = Shader.PropertyToID("_AtmosphereParams");
+            private static readonly int _AtmosphereColor = Shader.PropertyToID("_AtmosphereColor");
+
             private static readonly int _GlobalNodeBufferParams = Shader.PropertyToID("_GlobalNodeBuffer");
             private static readonly int _GlobalPayloadBufferParams = Shader.PropertyToID("_GlobalPayloadBuffer");
             private static readonly int _GlobalBrickDataBufferParams = Shader.PropertyToID("_GlobalBrickDataBuffer");
@@ -140,6 +204,31 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _HistoryTexParams = Shader.PropertyToID("_HistoryTex");
             private static readonly int _BlendParams = Shader.PropertyToID("_Blend");
 
+            // Outline IDs
+            private static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
+            private static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");
+            private static readonly int _NormalOutlineParamsID = Shader.PropertyToID("_NormalOutlineParams"); 
+            private static readonly int _NormalOutlineColorParams = Shader.PropertyToID("_NormalOutlineColor"); 
+            private static readonly int _MainLightDirectionID = Shader.PropertyToID("_MainLightDirection");
+            private static readonly int _OutlineShadowStrengthID = Shader.PropertyToID("_OutlineShadowStrength");
+
+            // Vegetation Occlusion
+            private static readonly int _VoxelDepthCopyParams = Shader.PropertyToID("_VoxelDepthCopy");
+
+            // God Ray IDs
+            private static readonly int _LightPositionParams = Shader.PropertyToID("_LightPosition"); 
+            private static readonly int _SunThresholdParams = Shader.PropertyToID("_SunThreshold");
+            private static readonly int _DensityParams = Shader.PropertyToID("_Density");
+            private static readonly int _DecayParams = Shader.PropertyToID("_Decay");
+            private static readonly int _WeightParams = Shader.PropertyToID("_Weight");
+            private static readonly int _ExposureParams = Shader.PropertyToID("_Exposure");
+            private static readonly int _SamplesParams = Shader.PropertyToID("_Samples");
+            private static readonly int _LightColorGodRayParams = Shader.PropertyToID("_LightColor");
+
+            // Debug IDs
+            private static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
+            private static readonly int _DebugViewBricksParams = Shader.PropertyToID("_DebugViewBricks");
+
             private RTHandle _albedoHandle;
             private RTHandle _normalHandle;
             private RTHandle _maskHandle;
@@ -158,14 +247,16 @@ namespace VoxelEngine.Core.Rendering
                 _settings = settings;
                 _shader = settings.raytraceShader;
                 renderPassEvent = settings.injectionPoint;
+                _copyMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/Universal Render Pipeline/Blit"));
             }
-
+            
             public void UpdateSettings(Settings newSettings) { _settings = newSettings; }
-            public void Setup(Material composite, Material fxaa, Material taa) 
+            public void Setup(Material composite, Material fxaa, Material taa, Material godrays) 
             { 
                 _compositeMaterial = composite; 
                 _fxaaMaterial = fxaa;
                 _taaMaterial = taa;
+                _godRayMaterial = godrays;
             }
 
             public void Dispose()
@@ -174,6 +265,8 @@ namespace VoxelEngine.Core.Rendering
                 _normalHandle?.Release(); 
                 _maskHandle?.Release();
                 _blueNoiseHandle?.Release();
+                CoreUtils.Destroy(_compositeMaterial);
+
                 if (VoxelRaytracerFeature.RaycastHitBuffer != null)
                 {
                     VoxelRaytracerFeature.RaycastHitBuffer.Release();
@@ -206,40 +299,79 @@ namespace VoxelEngine.Core.Rendering
                 return result;
             }
 
-            // --- Pass Data Classes ---
             private class PassData {
-                public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
+                public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle targetNormals; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
+                public float debugNormals; public float debugBricks;
+                public Vector4 celShadeParams;
+                public Vector4 atmosphereParams; 
+                public Vector4 atmosphereColor;
             }
-            private class CompositePassData { public TextureHandle source; public TextureHandle depthSource; public Material material; public bool useFSR; public float sharpness; }
+            private class CompositePassData { 
+                public TextureHandle source; 
+                public TextureHandle depthSource; 
+                public TextureHandle normalSource; 
+                public Material material; 
+                public bool useFSR; 
+                public float sharpness;
+                public bool enableOutline;
+                public float outlineThickness;
+                public float outlineStrength;
+                public float outlineShadowStrength; 
+                public Color outlineColor;
+                public Vector4 mainLightColor; 
+                public Vector4 mainLightDirection;
+                public float normalStrength;
+                public float normalThreshold;
+                public float normalFadeDistance; 
+                public Color normalColor;
+            }
             private class FXAAPassData { public TextureHandle source; public Material material; }
             private class TAAPassData { public TextureHandle source; public TextureHandle history; public TextureHandle motion; public TextureHandle destination; public Material material; public float blend; }
-            private class GrassPassData { public TextureHandle colorTarget; public TextureHandle depthTarget; }
+            
+            private class VegetationPassData { 
+                public TextureHandle colorTarget; 
+                public TextureHandle depthTarget; 
+                public TextureHandle normalTarget; 
+                public TextureHandle depthCopy;   
+                public TextureHandle tempDepthBuffer; 
+            }
+            private class CopyPassData { public TextureHandle source; public TextureHandle dest; public Material material; }
+
+            private class GodRayPassData 
+            {
+                public TextureHandle sourceDepth;
+                public TextureHandle occluderTex;
+                public TextureHandle blurTex;
+                public TextureHandle destTex;
+                public Material material;
+                public Vector3 lightPosScreen;
+                public Color lightColor;
+                public float sunThreshold;
+                public float density;
+                public float decay;
+                public float weight;
+                public float exposure;
+                public int samples;
+            }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
             {
                 if (VoxelVolumePool.Instance == null) return;
-
                 var cameraData = frameData.Get<UniversalCameraData>();
-                
-                // Culling update
-                if (_settings.cullFrustum)
-                {
+
+                if (_settings.cullFrustum) {
                     Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
                     Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
-                    VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes);
-                }
-                else
-                {
+                    VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes, cameraData.camera.transform.position, _settings.shadowDistance);
+                } else {
                     VoxelVolumePool.Instance.UpdateVisibility(null);
                 }
-
                 if (VoxelVolumePool.Instance.VisibleChunkCount == 0) return;
 
                 var resourceData = frameData.Get<UniversalResourceData>();
                 var lightData = frameData.Get<UniversalLightData>();
                 var cameraDesc = cameraData.cameraTargetDescriptor;
 
-                // Resolution Logic
                 float currentScale = 1.0f;
                 int iterations = 128;
                 int marchSteps = 64;
@@ -251,17 +383,15 @@ namespace VoxelEngine.Core.Rendering
                 int scaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * currentScale));
                 int scaledHeight = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.height * currentScale));
 
-                // Create Textures
                 TextureDesc colorDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat, enableRandomWrite = true, name = "VoxelRaytraceResult_LowRes" };
                 TextureHandle lowResResult = renderGraph.CreateTexture(colorDesc);
-
                 TextureDesc depthDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat, enableRandomWrite = true, name = "VoxelRaytraceDepth_LowRes" };
                 TextureHandle lowResDepth = renderGraph.CreateTexture(depthDesc);
-                
+                TextureDesc normDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat, enableRandomWrite = true, name = "VoxelRaytraceNormals" };
+                TextureHandle lowResNormals = renderGraph.CreateTexture(normDesc);
                 TextureDesc mvDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16_SFloat, enableRandomWrite = true, name = "VoxelMotionVectors" };
                 TextureHandle motionVectorTex = renderGraph.CreateTexture(mvDesc);
 
-                // Jitter & Matrices Setup
                 int frameIndex = Time.frameCount % 16;
                 float jitterX = (Halton(frameIndex + 1, 2) - 0.5f);
                 float jitterY = (Halton(frameIndex + 1, 3) - 0.5f);
@@ -275,7 +405,6 @@ namespace VoxelEngine.Core.Rendering
                 if (!_prevMatrices.TryGetValue(cam, out Matrix4x4 prevViewProj)) prevViewProj = viewProj;
                 _prevMatrices[cam] = viewProj;
 
-                // TAA History Setup
                 TextureHandle historyRead = TextureHandle.nullHandle;
                 TextureHandle historyWrite = TextureHandle.nullHandle;
                 if (useTAA) {
@@ -291,7 +420,6 @@ namespace VoxelEngine.Core.Rendering
                     hist.currentIndex = (hist.currentIndex + 1) % 2;
                 }
 
-                // Final Output Setup
                 TextureHandle compositeOutput;
                 bool useFXAA = _settings.enableFXAA && _fxaaMaterial != null;
                 if (useFXAA) {
@@ -301,7 +429,7 @@ namespace VoxelEngine.Core.Rendering
                     compositeOutput = resourceData.activeColorTexture;
                 }
 
-                // --- 1. Compute Pass (Raytrace) ---
+                // --- 1. Compute Pass ---
                 CheckTextureHandle(ref _albedoHandle, VoxelDefinitionManager.Instance.albedoTextureArray);
                 CheckTextureHandle(ref _normalHandle, VoxelDefinitionManager.Instance.normalTextureArray);
                 CheckTextureHandle(ref _maskHandle, VoxelDefinitionManager.Instance.maskTextureArray);
@@ -322,13 +450,18 @@ namespace VoxelEngine.Core.Rendering
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
                     if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
-                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, 0); data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
-
-                    builder.UseTexture(data.targetColor, AccessFlags.Write);
-                    builder.UseTexture(data.targetDepth, AccessFlags.Write);
-                    builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
-                    builder.UseTexture(data.sourceDepth, AccessFlags.Read);
-                    builder.UseTexture(data.sourceColor, AccessFlags.Read);
+                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; 
+                    data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, _settings.textureScale); 
+                    data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
+                    data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
+                    data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
+                    data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
+                    data.atmosphereParams = new Vector4(_settings.enableAtmosphere ? _settings.atmosphereDensity : 0.0f, 0, 0, 0);
+                    data.atmosphereColor = _settings.atmosphereColor;
+    
+                    builder.UseTexture(data.targetColor, AccessFlags.Write); builder.UseTexture(data.targetDepth, AccessFlags.Write);
+                    builder.UseTexture(data.targetNormals, AccessFlags.Write); builder.UseTexture(data.targetMotionVector, AccessFlags.Write);
+                    builder.UseTexture(data.sourceDepth, AccessFlags.Read); builder.UseTexture(data.sourceColor, AccessFlags.Read);
                     if (data.albedoArray.IsValid()) builder.UseTexture(data.albedoArray, AccessFlags.Read);
                     if (data.normalArray.IsValid()) builder.UseTexture(data.normalArray, AccessFlags.Read);
                     if (data.maskArray.IsValid()) builder.UseTexture(data.maskArray, AccessFlags.Read);
@@ -352,16 +485,172 @@ namespace VoxelEngine.Core.Rendering
                         if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _NormalTextureArrayParams, pd.normalArray);
                         if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _MaskTextureArrayParams, pd.maskArray);
                         cmd.SetComputeMatrixParam(cs, _CameraToWorldParams, pd.cameraToWorld); cmd.SetComputeMatrixParam(cs, _CameraInverseProjectionParams, pd.cameraInverseProjection); cmd.SetComputeMatrixParam(cs, _CameraViewProjectionParams, pd.viewProj); cmd.SetComputeMatrixParam(cs, _PrevViewProjMatrixParams, pd.prevViewProj);
-                        cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, _SourceTexParams, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
+                        cmd.SetComputeVectorParam(cs, _ZBufferParamsID, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, _CameraDepthTextureParams, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, _SourceTexParams, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, _ResultParams, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, _ResultDepthParams, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, _ResultNormalsParams, pd.targetNormals); cmd.SetComputeTextureParam(cs, ker, _MotionVectorTextureParams, pd.targetMotionVector);
                         cmd.SetComputeVectorParam(cs, _MainLightPositionParams, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, _MainLightColorParams, pd.mainLightColor); cmd.SetComputeVectorParam(cs, _RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, _RaycastBufferParams, pd.raycastBuffer);
+                        cmd.SetComputeFloatParam(cs, _DebugViewNormalsParams, pd.debugNormals);
+                        cmd.SetComputeFloatParam(cs, _DebugViewBricksParams, pd.debugBricks);
+                        cmd.SetComputeVectorParam(cs, _CelShadeParams, pd.celShadeParams);
+                        cmd.SetComputeVectorParam(cs, _AtmosphereParams, pd.atmosphereParams);
+                        cmd.SetComputeVectorParam(cs, _AtmosphereColor, pd.atmosphereColor);
+
                         int groupsX = Mathf.CeilToInt(pd.width / 8.0f); int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
-                        cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);
+                        cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);                    
                     });
                 }
                 
                 TextureHandle compositeSource = lowResResult; 
 
-                // --- 2. TAA Pass ---
+                // --- 2. Voxel Vegetation Pass ---
+                bool hasGrass = VoxelGrassRenderer.ActiveRenderers.Count > 0;
+                bool hasLeaves = VoxelLeafRenderer.ActiveLeafRenderers.Count > 0;
+
+                if (hasGrass || hasLeaves)
+                {
+                    TextureDesc copyDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat, name = "VoxelDepthCopy" };
+                    TextureHandle voxelDepthCopy = renderGraph.CreateTexture(copyDesc);
+                    
+                    using(var builder = renderGraph.AddRasterRenderPass<CopyPassData>("Copy Voxel Depth", out var copyData))
+                    {
+                        copyData.source = lowResDepth;
+                        copyData.dest = voxelDepthCopy;
+                        copyData.material = _copyMaterial;
+                        builder.UseTexture(copyData.source, AccessFlags.Read);
+                        builder.SetRenderAttachment(copyData.dest, 0, AccessFlags.Write);
+                        builder.SetRenderFunc((CopyPassData cData, RasterGraphContext context) => {
+                            Blitter.BlitTexture(context.cmd, cData.source, new Vector4(1,1,0,0), cData.material, 0);
+                        });
+                    }
+
+                    using (var builder = renderGraph.AddRasterRenderPass<VegetationPassData>("Voxel Vegetation", out var vegData))
+                    {
+                        builder.AllowGlobalStateModification(true);
+
+                        vegData.colorTarget = lowResResult;
+                        vegData.depthTarget = lowResDepth;
+                        vegData.normalTarget = lowResNormals;
+                        vegData.depthCopy = voxelDepthCopy;
+                        
+                        TextureDesc tempDepthDesc = new TextureDesc(scaledWidth, scaledHeight) { depthBufferBits = DepthBits.Depth32, name = "VegetationTempZ" };
+                        vegData.tempDepthBuffer = renderGraph.CreateTexture(tempDepthDesc);
+
+                        builder.SetRenderAttachment(vegData.colorTarget, 0, AccessFlags.Write);
+                        builder.SetRenderAttachment(vegData.depthTarget, 1, AccessFlags.Write);
+                        builder.SetRenderAttachment(vegData.normalTarget, 2, AccessFlags.Write);
+                        builder.SetRenderAttachmentDepth(vegData.tempDepthBuffer, AccessFlags.Write);
+                        builder.UseTexture(vegData.depthCopy, AccessFlags.Read);
+
+                        builder.SetRenderFunc((VegetationPassData vData, RasterGraphContext context) =>
+                        {
+                            context.cmd.ClearRenderTarget(true, false, Color.black); 
+                            context.cmd.SetGlobalTexture(_VoxelDepthCopyParams, vData.depthCopy);
+                            if (hasGrass) { foreach (var renderer in VoxelGrassRenderer.ActiveRenderers) renderer.Draw(context.cmd); }
+                            if (hasLeaves) { foreach (var renderer in VoxelLeafRenderer.ActiveLeafRenderers) renderer.Draw(context.cmd); }
+                        });
+                    }
+                }
+
+                // --- 3. God Rays Pass ---
+                if (_settings.enableGodRays && _godRayMaterial != null)
+                {
+                    // mainPos comes from SetupLights and is the vector POINTING TO the sun (e.g., Up)
+                    Vector3 vectorToSun = new Vector3(mainPos.x, mainPos.y, mainPos.z).normalized;
+                    
+                    // If vectorToSun is zero (no light), default to Up
+                    if (vectorToSun == Vector3.zero) vectorToSun = Vector3.up;
+
+                    // Calculate sun height (0 at horizon/dawn/dusk, 1 at noon)
+                    float sunHeight = Mathf.Clamp01(Vector3.Dot(vectorToSun, Vector3.up));
+                    
+                    // Smoothly interpolate threshold between Dawn and Noon settings
+                    float dynamicSunThreshold = Mathf.SmoothStep(_settings.dawnSunThreshold, _settings.noonSunThreshold, sunHeight);
+
+                    Vector3 cameraPos = cameraData.camera.transform.position;
+                    // Place the virtual sun far away in the direction of the light
+                    Vector3 sunWorldPos = cameraPos + vectorToSun * 10000.0f; 
+                    Vector3 viewportPos = cameraData.camera.WorldToViewportPoint(sunWorldPos);
+
+                    // Check if sun is in front of camera
+                    float isVisible = (viewportPos.z > 0) ? 1.0f : 0.0f;
+
+                    TextureDesc occDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm, name = "GodRays_Occluders" };
+                    TextureHandle occluderTex = renderGraph.CreateTexture(occDesc);
+
+                    TextureDesc blurDesc = new TextureDesc(scaledWidth, scaledHeight) { colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm, name = "GodRays_Blur" };
+                    TextureHandle blurTex = renderGraph.CreateTexture(blurDesc);
+
+                    // Pass 0: Occluders
+                    using (var builder = renderGraph.AddRasterRenderPass<GodRayPassData>("God Rays Occluders", out var grData))
+                    {
+                        builder.AllowGlobalStateModification(true);
+
+                        grData.sourceDepth = lowResDepth;
+                        grData.occluderTex = occluderTex;
+                        grData.material = _godRayMaterial;
+                        grData.lightPosScreen = new Vector3(viewportPos.x, viewportPos.y, isVisible);
+                        grData.lightColor = _settings.lightSourceColor;
+                        grData.sunThreshold = dynamicSunThreshold;
+
+                        builder.UseTexture(grData.sourceDepth, AccessFlags.Read);
+                        builder.SetRenderAttachment(grData.occluderTex, 0, AccessFlags.Write);
+
+                        builder.SetRenderFunc((GodRayPassData d, RasterGraphContext ctx) =>
+                        {
+                            ctx.cmd.SetGlobalTexture(_VoxelDepthTextureParams, d.sourceDepth);
+                            d.material.SetVector(_LightPositionParams, d.lightPosScreen);
+                            d.material.SetColor(_LightColorGodRayParams, d.lightColor);
+                            d.material.SetFloat(_SunThresholdParams, d.sunThreshold);
+                            Blitter.BlitTexture(ctx.cmd, d.sourceDepth, new Vector4(1, 1, 0, 0), d.material, 0);
+                        });
+                    }
+
+                    // Pass 1: Radial Blur
+                    using (var builder = renderGraph.AddRasterRenderPass<GodRayPassData>("God Rays Blur", out var grData))
+                    {
+                        grData.occluderTex = occluderTex;
+                        grData.blurTex = blurTex;
+                        grData.material = _godRayMaterial;
+                        grData.lightPosScreen = new Vector3(viewportPos.x, viewportPos.y, isVisible);
+                        grData.density = _settings.rayDensity;
+                        grData.decay = _settings.rayDecay;
+                        grData.weight = _settings.rayWeight;
+                        grData.exposure = _settings.rayExposure;
+                        grData.samples = _settings.raySamples;
+
+                        builder.UseTexture(grData.occluderTex, AccessFlags.Read);
+                        builder.SetRenderAttachment(grData.blurTex, 0, AccessFlags.Write);
+
+                        builder.SetRenderFunc((GodRayPassData d, RasterGraphContext ctx) =>
+                        {
+                            // [FIX] Removed invalid material.SetTexture call
+                            d.material.SetVector(_LightPositionParams, d.lightPosScreen);
+                            d.material.SetFloat(_DensityParams, d.density);
+                            d.material.SetFloat(_DecayParams, d.decay);
+                            d.material.SetFloat(_WeightParams, d.weight);
+                            d.material.SetFloat(_ExposureParams, d.exposure);
+                            d.material.SetInt(_SamplesParams, d.samples);
+                            // Blitter sets _BlitTexture source automatically
+                            Blitter.BlitTexture(ctx.cmd, d.occluderTex, new Vector4(1, 1, 0, 0), d.material, 1);
+                        });
+                    }
+
+                    // Pass 2: Additive Blend
+                    using (var builder = renderGraph.AddRasterRenderPass<GodRayPassData>("God Rays Blend", out var grData))
+                    {
+                        grData.blurTex = blurTex;
+                        grData.destTex = lowResResult;
+                        grData.material = _godRayMaterial;
+
+                        builder.UseTexture(grData.blurTex, AccessFlags.Read);
+                        builder.SetRenderAttachment(grData.destTex, 0, AccessFlags.ReadWrite); 
+
+                        builder.SetRenderFunc((GodRayPassData d, RasterGraphContext ctx) =>
+                        {
+                             // [FIX] Removed invalid material.SetTexture call
+                             Blitter.BlitTexture(ctx.cmd, d.blurTex, new Vector4(1,1,0,0), d.material, 2);
+                        });
+                    }
+                }
+
                 if (useTAA)
                 {
                     using (var builder = renderGraph.AddRasterRenderPass<TAAPassData>("Voxel TAA", out var taaData))
@@ -373,77 +662,78 @@ namespace VoxelEngine.Core.Rendering
                     compositeSource = historyWrite;
                 }
 
-                // --- 3. Composite (Upscale) Pass & Depth Write ---
                 using (var builder = renderGraph.AddRasterRenderPass<CompositePassData>("Composite & Upscale", out var compData))
                 {
                     compData.source = compositeSource; 
                     compData.depthSource = lowResDepth;
+                    compData.normalSource = lowResNormals; 
                     compData.material = _compositeMaterial;
                     compData.useFSR = (_settings.upscalingMode == UpscalingMode.SpatialFSR);
                     compData.sharpness = _settings.sharpness;
+                    
+                    compData.enableOutline = _settings.enableOutline;
+                    compData.outlineColor = _settings.outlineColor;
+                    compData.outlineThickness = _settings.outlineThickness;
+                    compData.outlineStrength = _settings.outlineStrength;
+                    compData.outlineShadowStrength = _settings.outlineShadowStrength; 
+                    compData.outlineColor = _settings.outlineColor;
+                    compData.mainLightColor = mainCol;
+                    compData.mainLightDirection = mainPos; 
+                    
+                    compData.normalColor = _settings.normalHighlightColor;
+                    compData.normalStrength = _settings.normalHighlightStrength;
+                    compData.normalThreshold = _settings.normalThreshold;
+                    compData.normalFadeDistance = _settings.normalFadeDistance; 
 
                     builder.UseTexture(compData.source, AccessFlags.Read);
                     builder.UseTexture(compData.depthSource, AccessFlags.Read);
+                    builder.UseTexture(compData.normalSource, AccessFlags.Read);
                     
-                    // [IMPORTANT] FORCE DEPTH WRITE for Grass Occlusion
-                    // Even if using FXAA intermediate, we MUST write the Voxel Depth to the MAIN Camera Depth Buffer
-                    // so subsequent passes (Grass) can test against it.
                     builder.SetRenderAttachment(compositeOutput, 0, AccessFlags.Write);
                     builder.SetRenderAttachmentDepth(resourceData.activeDepthTexture, AccessFlags.Write);
 
                     builder.SetRenderFunc((CompositePassData cData, RasterGraphContext context) =>
                     {
-                        if (useFXAA) { context.cmd.ClearRenderTarget(false, true, Color.clear); } // Clear intermediate color only
+                        if (useFXAA) { context.cmd.ClearRenderTarget(false, true, Color.clear); }
                         
                         cData.material.SetTexture(_VoxelDepthTextureParams, cData.depthSource);
+                        cData.material.SetTexture(_VoxelNormalTextureParams, cData.normalSource);
                         cData.material.SetFloat(_SharpnessParams, cData.sharpness);
-                        if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR"); else cData.material.DisableKeyword("_UPSCALING_FSR");
                         
-                        // This Blit writes Color to compositeOutput AND Depth to activeDepthTexture (via Shader SV_Depth)
+                        if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR"); 
+                        else cData.material.DisableKeyword("_UPSCALING_FSR");
+
+                        if (cData.enableOutline) 
+                        {
+                            cData.material.EnableKeyword("_OUTLINE_ON");
+                            
+                            cData.material.SetColor(_MainLightColorParams, cData.mainLightColor);
+                            cData.material.SetVector(_MainLightDirectionID, cData.mainLightDirection); 
+                            
+                            cData.material.SetColor(_OutlineColorParams, cData.outlineColor);
+                            cData.material.SetVector(_OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
+                            cData.material.SetFloat(_OutlineShadowStrengthID, cData.outlineShadowStrength); 
+
+                            cData.material.SetColor(_NormalOutlineColorParams, cData.normalColor);
+                            cData.material.SetVector(_NormalOutlineParamsID, new Vector4(cData.normalThreshold, cData.normalStrength, cData.normalFadeDistance, 0));
+                        }
+                        else 
+                        {
+                            cData.material.DisableKeyword("_OUTLINE_ON");
+                        }
+                        
                         Blitter.BlitTexture(context.cmd, cData.source, new Vector4(1, 1, 0, 0), cData.material, 0);
                     });
                 }
 
-                // --- 4. Grass Pass (Rasterization) ---
-                // Grass is drawn AFTER Composite has populated the Depth Buffer.
-                // Grass is drawn BEFORE FXAA so it gets anti-aliased.
-                if (VoxelGrassRenderer.ActiveRenderers.Count > 0 || VoxelLeafRenderer.ActiveLeafRenderers.Count > 0)
-                {
-                    using (var builder = renderGraph.AddRasterRenderPass<GrassPassData>("Voxel Vegetation", out var grassData))
-                    {
-                        grassData.colorTarget = compositeOutput;
-                        grassData.depthTarget = resourceData.activeDepthTexture;
-
-                        // Bind targets
-                        builder.SetRenderAttachment(grassData.colorTarget, 0, AccessFlags.Write);
-                        builder.SetRenderAttachmentDepth(grassData.depthTarget, AccessFlags.ReadWrite);
-
-                        builder.SetRenderFunc((GrassPassData gData, RasterGraphContext context) =>
-                        {
-                            // Draw Grass
-                            foreach (var renderer in VoxelGrassRenderer.ActiveRenderers)
-                            {
-                                renderer.Draw(context.cmd);
-                            }
-                            // Draw Leaves
-                            foreach (var renderer in VoxelLeafRenderer.ActiveLeafRenderers)
-                            {
-                                renderer.Draw(context.cmd);
-                            }
-                        });
-                    }
-                }
-
-                // --- 5. FXAA Pass ---
                 if (useFXAA)
-                {
+                    {
                     using (var builder = renderGraph.AddRasterRenderPass<FXAAPassData>("FXAA Pass", out var fxaaData))
                     {
                         fxaaData.source = compositeOutput;
                         fxaaData.material = _fxaaMaterial;
                         builder.UseTexture(fxaaData.source, AccessFlags.Read);
                         builder.SetRenderAttachment(resourceData.activeColorTexture, 0, AccessFlags.Write);
-                        // No depth write needed for FXAA
                         builder.SetRenderFunc((FXAAPassData fData, RasterGraphContext context) => { Blitter.BlitTexture(context.cmd, fData.source, new Vector4(1, 1, 0, 0), fData.material, 0); });
                     }
                 }

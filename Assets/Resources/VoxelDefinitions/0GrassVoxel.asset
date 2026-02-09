@@ -21,8 +21,8 @@ MonoBehaviour:
     Roughness: {fileID: 2800000, guid: e8ac9f0e62bfd444184ea9c55f2d9b99, type: 3}
     Metallic: 0
     AmbientOcclusion: {fileID: 2800000, guid: c928b6d2f01a5f546b2c3b834fd9b612, type: 3}
-    TopAlbedo: {fileID: 2800000, guid: c4a948e64ab20034f96d6b623d792f81, type: 3}
-    TopNormal: {fileID: 2800000, guid: 6e37e3af340063c489c512337f5b9a7e, type: 3}
-    TopRoughness: {fileID: 2800000, guid: 70fb07020ba50f942b9b1469cbbd5b94, type: 3}
+    TopAlbedo: {fileID: 2800000, guid: a42cd62f3c2eebb47b0132c8c661b27e, type: 3}
+    TopNormal: {fileID: 2800000, guid: 57ef960ad9ca8b94bad434e31c0b2c7e, type: 3}
+    TopRoughness: {fileID: 2800000, guid: b7a51e8131dfc434c8bce0141e8383e3, type: 3}
     TopMetallic: 0
-    TopAmbientOcclusion: {fileID: 2800000, guid: f08505e247dfb3f46a0da3ffb1d3947b, type: 3}
+    TopAmbientOcclusion: {fileID: 2800000, guid: b7a51e8131dfc434c8bce0141e8383e3, type: 3}

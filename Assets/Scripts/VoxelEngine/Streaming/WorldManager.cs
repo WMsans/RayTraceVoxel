@@ -1,12 +1,11 @@
 using UnityEngine;
 using System.Collections.Generic;
-using VoxelEngine.Core.Generators; // For DynamicSDFManager
-using VoxelEngine.Core.Editing; // For VoxelEditManager
+using VoxelEngine.Core.Generators;
+using VoxelEngine.Core.Editing;
 using VoxelEngine.Physics;
 
 namespace VoxelEngine.Core.Streaming
 {
-    // Require the pool to be present
     [RequireComponent(typeof(VoxelVolumePool))]
     public class WorldManager : MonoBehaviour
     {
@@ -24,7 +23,6 @@ namespace VoxelEngine.Core.Streaming
 
         [Header("Culling Settings")]
         public Camera mainCamera;
-        [Tooltip("Chunks outside frustum but within this distance stay at low LOD for shadows.")]
         public float shadowDistance = 256f;
         
         private WorldOctreeNode _rootNode;
@@ -32,12 +30,10 @@ namespace VoxelEngine.Core.Streaming
         private float _targetLeafSize;
         private Plane[] _frustumPlanes = new Plane[6];
         
-        // --- ADDED: Debug List to visualize dirty chunks ---
         private List<Bounds> _debugDirtyChunkBounds = new List<Bounds>();
 
         private void Start()
         {
-            // Ensure Physics Manager exists
             if (VoxelPhysicsManager.Instance == null)
             {
                 gameObject.AddComponent<VoxelPhysicsManager>();
@@ -55,49 +51,47 @@ namespace VoxelEngine.Core.Streaming
                     physicsMan.physicsShader = baker.physicsShader;
                     physicsMan.stride = baker.stride;
                     physicsMan.maxVertices = baker.maxVertices;
-                    Debug.Log("VoxelPhysicsManager auto-configured from VoxelPhysicsBaker prefab.");
                 }
             }
 
-            // [FIX] Auto-configure MaxDepth to match Global Voxel Size
-            // We need the Leaf Node Voxel Size to equal VoxelEditManager.voxelSize (1.0)
-            // Leaf Node Size = Resolution * GlobalVoxelSize
-            // Octree Depth N Size = InitialWorldSize / 2^N
-            // EQUATION: InitialWorldSize / 2^N = Resolution * GlobalVoxelSize
-            // 2^N = InitialWorldSize / (Resolution * GlobalVoxelSize)
-            // N = Log2(InitialWorldSize / (Resolution * GlobalVoxelSize))
-            
+            // Auto-configure MaxDepth to match Global Voxel Size
             if (VoxelEditManager.Instance != null && _pool != null && _pool.prefab != null)
             {
                 float globalVoxelSize = VoxelEditManager.Instance.voxelSize;
                 float resolution = _pool.prefab.resolution;
-                
                 float targetLeafSize = resolution * globalVoxelSize;
                 
                 if (targetLeafSize > 0)
                 {
                     float ratio = initialWorldSize / targetLeafSize;
                     int calculatedDepth = Mathf.RoundToInt(Mathf.Log(ratio, 2));
-                    
                     if (calculatedDepth != maxDepth)
                     {
-                        Debug.Log($"[WorldManager] Auto-adjusting MaxDepth from {maxDepth} to {calculatedDepth} to support editing (Target Leaf Size: {targetLeafSize}).");
                         maxDepth = calculatedDepth;
                     }
                 }
             }
 
-            // Calculate Target Leaf Size for Physics checks
+            // Calculate Target Leaf Size
             _targetLeafSize = initialWorldSize / Mathf.Pow(2, maxDepth);
 
-            // Auto-find viewer if not assigned (usually Main Camera)
-            if (viewer == null && Camera.main != null) 
-                viewer = Camera.main.transform;
-            
-            // Initialize Root Node at (0,0,0)
-            _rootNode = new WorldOctreeNode(Vector3.zero, initialWorldSize, 0, null);
+            // This ensures the Physics Manager knows the base size for calculating dynamic stride
+            if (physicsMan != null)
+            {
+                physicsMan.baseChunkSize = _targetLeafSize;
+                // If viewer is null here, it will be found below, so we can re-assign if needed,
+                // but usually assigning what we have is good.
+                physicsMan.viewer = this.viewer;
+            }
 
-            // Initially enable the root volume
+            if (viewer == null && Camera.main != null) 
+            {
+                viewer = Camera.main.transform;
+                // Re-assign to physics manager just in case
+                if (physicsMan != null) physicsMan.viewer = viewer;
+            }
+            
+            _rootNode = new WorldOctreeNode(Vector3.zero, initialWorldSize, 0, null);
             _rootNode.EnableVolume(this.transform);
         }
 
@@ -105,45 +99,29 @@ namespace VoxelEngine.Core.Streaming
         {
             if (viewer != null)
             {
-                // Update frustum planes for aggressive culling
                 if (mainCamera == null) mainCamera = Camera.main;
                 if (mainCamera != null)
                 {
                     GeometryUtility.CalculateFrustumPlanes(mainCamera, _frustumPlanes);
                 }
 
-                // Run the LOD Logic
                 UpdateNodeLOD(_rootNode, viewer.position);
             }
 
-            // Process Cache Invalidation
             ProcessDirtyRegions();
         }
 
-        /// <summary>
-        /// Checks for dirty SDF regions and regenerates affected VoxelVolumes.
-        /// </summary>
         private void ProcessDirtyRegions()
         {
-            // Clear visualization from previous frame
             _debugDirtyChunkBounds.Clear();
-
             if (DynamicSDFManager.Instance == null) return;
 
-            // 1. Get dirty regions (this clears the list in the manager)
             List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
-            
             if (dirtyRegions == null || dirtyRegions.Count == 0) return;
 
-            // 2. Get all currently active volumes
             var activeVolumes = VoxelVolumeRegistry.Volumes;
-            
-            // Optimization: Use a HashSet to avoid regenerating the same volume twice if it overlaps multiple dirty regions
             HashSet<VoxelVolume> volumesToUpdate = new HashSet<VoxelVolume>();
 
-            // 3. Find Intersections
-            // OPTIMIZATION: Loop through Active Volumes first. 
-            // If a volume intersects ANY dirty region, mark it and stop checking that volume.
             for (int v = 0; v < activeVolumes.Count; v++)
             {
                 VoxelVolume vol = activeVolumes[v];
@@ -154,41 +132,31 @@ namespace VoxelEngine.Core.Streaming
                     if (vol.WorldBounds.Intersects(dirtyRegions[i]))
                     {
                         volumesToUpdate.Add(vol);
-                        break; // Stop checking other regions for this volume
+                        break; 
                     }
                 }
             }
 
-            // 4. Trigger Regeneration
             foreach (var vol in volumesToUpdate)
             {
-                // Cache for visualization
                 _debugDirtyChunkBounds.Add(vol.WorldBounds);
                 vol.Regenerate();
-
-                // Re-queue for physics if it's a leaf node (Highest LoD)
-                if (Mathf.Abs(vol.WorldSize - _targetLeafSize) < 0.1f)
-                {
-                    VoxelPhysicsManager.Instance.Enqueue(vol);
-                }
+                
+                // Enqueue all regenerated chunks for physics updates, regardless of LOD
+                // The PhysicsManager will decide the appropriate resolution.
+                VoxelPhysicsManager.Instance.Enqueue(vol);
             }
         }
 
-        /// <summary>
-        /// Recursive function to traverse the tree and apply Split/Merge logic.
-        /// </summary>
         private void UpdateNodeLOD(WorldOctreeNode node, Vector3 viewerPosition)
         {
             float distance = Vector3.Distance(viewerPosition, node.Center);
-            
-            // --- AGGRESSIVE CULLING CHECKS ---
-            // If no camera is available, assume everything is in view
             bool inFrustum = (mainCamera == null) || GeometryUtility.TestPlanesAABB(_frustumPlanes, node.Bounds);
-            bool inShadowRange = distance < shadowDistance;
+            Vector3 closest = node.Bounds.ClosestPoint(viewerPosition);
+            bool inShadowRange = (closest - viewerPosition).sqrMagnitude < (shadowDistance * shadowDistance);
 
             if (node.IsLeaf)
             {
-                // 1. VOLUME CULLING: If totally out of view and shadow range, release VRAM
                 if (!inFrustum && !inShadowRange)
                 {
                     if (node.ActiveVolume != null)
@@ -198,36 +166,30 @@ namespace VoxelEngine.Core.Streaming
                         node.DisableVolume();
                     }
                 }
-                else // In view or in shadow range
+                else 
                 {
                     if (node.ActiveVolume == null)
                     {
                         node.EnableVolume(this.transform);
-                        
-                        // Register for Physics if Leaf at max depth
-                        if (node.Depth == maxDepth && node.ActiveVolume != null)
+                        // Register for Physics - PhysicsManager handles LOD resolution now
+                        if (node.ActiveVolume != null)
                         {
                             VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
                         }
                     }
                 }
 
-                // 2. SPLIT CHECK
-                // Only split if in frustum and close enough
                 if (node.Depth < maxDepth && distance < (node.Size * splitFactor))
                 {
-                    if (inFrustum)
+                    if (inFrustum || inShadowRange)
                     {
                         SplitNode(node);
                     }
                 }
             }
-            else // Node is a Branch (has children)
+            else // Branch
             {
-                // --- MERGE CHECK ---
-                // 1. Normal distance-based merge
-                // 2. AGGRESSIVE MERGE: If a high-LOD node exits the frustum, immediately merge it.
-                bool shouldMerge = distance > (node.Size * mergeFactor) || !inFrustum;
+                bool shouldMerge = distance > (node.Size * mergeFactor) || (!inFrustum && !inShadowRange);
                 
                 if (shouldMerge)
                 {
@@ -235,7 +197,6 @@ namespace VoxelEngine.Core.Streaming
                 }
                 else
                 {
-                    // If we don't merge, we must check the children
                     foreach (var child in node.Children)
                     {
                         UpdateNodeLOD(child, viewerPosition);
@@ -246,42 +207,30 @@ namespace VoxelEngine.Core.Streaming
 
         private void SplitNode(WorldOctreeNode node)
         {
-            // 1. Create child nodes (CPU logic)
             node.Subdivide();
-
-            // 2. Acquire 8 VoxelVolumes from the pool for the new children
             foreach (var child in node.Children)
             {
-                // This triggers GetVolume -> OnPullFromPool -> Generate(SDF)
                 child.EnableVolume(this.transform);
-
-                // Register for Physics if Leaf
-                if (child.Depth == maxDepth && child.ActiveVolume != null)
+                // Register children for physics
+                if (child.ActiveVolume != null)
                 {
                     VoxelPhysicsManager.Instance.Enqueue(child.ActiveVolume);
                 }
             }
-
-            // 3. Hide/Return the parent VoxelVolume
-            // We no longer need the low-res parent since high-res children are now active
             node.DisableVolume();
         }
 
         private void MergeNode(WorldOctreeNode node)
         {
-            // 1. Acquire 1 VoxelVolume for the parent (Low LOD)
-            // This generates the low-resolution representation of the large area
             node.EnableVolume(this.transform);
-
-            // Ensure parent chunk (Low LoD) has no physics ghost
+            
+            // Register parent (Low LOD) for physics
+            // PhysicsManager will see it has a large WorldSize and use a high stride (low res mesh)
             if (node.ActiveVolume != null)
             {
-                VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
-                VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
+                VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
             }
 
-            // 2. Hide/Return the 8 child VoxelVolumes and destroy child nodes
-            // WorldOctreeNode.Merge() recursively calls DisableVolume() on children
             node.Merge();
         }
 
@@ -294,21 +243,18 @@ namespace VoxelEngine.Core.Streaming
             }
         }
         
-        // Debug Gizmos to visualize the octree
         private void OnDrawGizmos()
         {
             if (drawDebugGizmos)
             {
                 if (_rootNode != null) DrawNodeGizmos(_rootNode);
 
-                // --- ADDED: Draw Dirty Chunks (RED) ---
                 Gizmos.color = new Color(1, 0, 0, 0.8f); 
                 foreach (var b in _debugDirtyChunkBounds)
                 {
                     Gizmos.DrawWireCube(b.center, b.size);
                 }
 
-                // --- ADDED: Draw Shadow Range (YELLOW) ---
                 if (viewer != null)
                 {
                     Gizmos.color = new Color(1, 1, 0, 0.3f);

@@ -28,6 +28,9 @@ namespace VoxelEngine.Core.Rendering
         public float bladeHeight = 1.0f;
         public Color baseColor = new Color(0.1f, 0.3f, 0.1f);
         public Color tipColor = new Color(0.4f, 0.6f, 0.2f);
+        [Header("Cel Shading")]
+        [Range(1, 10)] public int celSteps = 3;
+        [Range(0.0f, 1.0f)] public float shadowBrightness = 0.2f;
 
         [Header("Wind Settings")]
         public Texture2D windTexture;
@@ -209,6 +212,9 @@ namespace VoxelEngine.Core.Rendering
             
             _grassMaterial.SetFloat("_BladeWidth", bladeWidth * _lodScale);
             _grassMaterial.SetFloat("_BladeHeight", bladeHeight * _lodScale);
+            
+            _grassMaterial.SetFloat("_CelSteps", celSteps);
+            _grassMaterial.SetFloat("_ShadowBrightness", shadowBrightness);
             
             _grassMaterial.SetFloat("_WindSpeed", windSpeed);
             _grassMaterial.SetFloat("_WindStrength", windStrength);

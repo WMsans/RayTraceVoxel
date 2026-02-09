@@ -5,6 +5,10 @@ Shader "VoxelEngine/Leaf"
         [Header(Shading)]
         _BaseColor("Inner Color", Color) = (0.05, 0.2, 0.05, 1)
         _TipColor("Outer Color", Color) = (0.1, 0.4, 0.1, 1)
+
+        [Header(Cel Shading)]
+        _CelSteps("Cel Steps", Float) = 3
+        _ShadowBrightness("Shadow Brightness", Float) = 0.2
         
         [Header(Wind)]
         _WindTex("Wind Noise", 2D) = "white" {}
@@ -34,13 +38,19 @@ Shader "VoxelEngine/Leaf"
             #pragma fragment frag
             #pragma multi_compile_instancing
             #pragma instancing_options procedural:setup
+            
+            // Shadow Support
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
+            #pragma multi_compile _ _SHADOWS_SOFT
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 
             struct LeafInstance
             {
                 float3 position;
-                float rotation;
+                uint packedNormal;
                 uint packedData;
             };
 
@@ -55,15 +65,21 @@ Shader "VoxelEngine/Leaf"
                 float _WindFrequency;
                 float4 _WindDirection;
                 float _BladeHeight;
+                // Cel Shading
+                float _CelSteps;
+                float _ShadowBrightness;
             CBUFFER_END
 
             TEXTURE2D(_WindTex);
             SAMPLER(sampler_WindTex);
+            // Texture for manual occlusion (from VoxelRaytracerFeature)
+            TEXTURE2D(_VoxelDepthCopy);
 
             struct Attributes
             {
                 float4 positionOS : POSITION;
                 float2 uv : TEXCOORD0;
+                float3 normalOS : NORMAL;
                 uint instanceID : SV_InstanceID;
             };
 
@@ -72,6 +88,18 @@ Shader "VoxelEngine/Leaf"
                 float4 positionCS : SV_POSITION;
                 float2 uv : TEXCOORD0;
                 float3 color : TEXCOORD1;
+                float3 normalWS : NORMAL;
+                float3 positionWS : TEXCOORD3;
+                float4 rootShadowCoord : TEXCOORD4;
+                float3 terrainNormal : TEXCOORD5;
+            };
+
+            // [NEW] Output structure for MRT (Matches Grass.shader)
+            struct FragOutput
+            {
+                half4 color : SV_Target0;
+                float depth : SV_Target1;
+                half4 normal : SV_Target2;
             };
 
             void setup() {}
@@ -83,49 +111,72 @@ Shader "VoxelEngine/Leaf"
 
                 float3 posWS = input.positionOS.xyz;
                 float3 instancePos = float3(0, 0, 0);
-                float rotation = 0;
                 float sizeScale = 1.0;
                 float colorVariation = 0.5;
+                float3 surfaceNormal = float3(0, 1, 0);
+                float spinRotation = 0;
 
                 #ifdef UNITY_PROCEDURAL_INSTANCING_ENABLED
                     LeafInstance inst = _LeafInstanceBuffer[input.instanceID];
                     instancePos = inst.position;
-                    rotation = inst.rotation;
 
+                    // Unpack Normal & Spin
+                    uint pn = inst.packedNormal;
+                    surfaceNormal.x = (float)(pn & 0xFF) / 255.0 * 2.0 - 1.0;
+                    surfaceNormal.y = (float)((pn >> 8) & 0xFF) / 255.0 * 2.0 - 1.0;
+                    surfaceNormal.z = (float)((pn >> 16) & 0xFF) / 255.0 * 2.0 - 1.0;
+                    surfaceNormal = normalize(surfaceNormal);
+                    spinRotation = (float)((pn >> 24) & 0xFF) / 255.0 * 6.28318; // 0 to 2PI
+
+                    // Unpack Data
                     uint p = inst.packedData;
-                    // Size stored in bits 8-15
                     sizeScale = ((p >> 8) & 0xFF) / 255.0;
-                    // Color variation in bits 16-31
                     colorVariation = ((p >> 16) & 0xFFFF) / 65535.0;
                 #endif
 
-                // Scale geometry
-                posWS *= _BladeHeight * (0.5 + sizeScale); // Randomize size
-
-                // Rotate (Y-Axis)
+                // 1. Scale
+                posWS *= _BladeHeight * (0.5 + sizeScale);
+                // 2. Local Spin
                 float s, c;
-                sincos(rotation, s, c);
-                float3 rotPos;
-                rotPos.x = posWS.x * c + posWS.z * s;
-                rotPos.y = posWS.y;
-                rotPos.z = posWS.x * -s + posWS.z * c;
-                posWS = rotPos;
+                sincos(spinRotation, s, c);
+                float3 spunPos;
+                spunPos.x = posWS.x * c + posWS.z * s;
+                spunPos.y = posWS.y;
+                spunPos.z = posWS.x * -s + posWS.z * c;
+                posWS = spunPos;
+
+                // 3. Align to Surface Normal
+                float3 up = surfaceNormal;
+                float3 helper = abs(up.y) < 0.99 ? float3(0, 1, 0) : float3(1, 0, 0);
+                float3 right = normalize(cross(up, helper));
+                float3 forward = cross(right, up);
+                
+                float3 alignedPos = right * posWS.x + up * posWS.y + forward * posWS.z;
+                posWS = alignedPos;
 
                 float3 worldPos = instancePos + posWS;
 
-                // Wind (Fluttering effect)
+                // 4. Wind
                 float2 windUV = (instancePos.xz * _WindFrequency) + (_Time.y * _WindSpeed);
                 float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
                 windNoise = (windNoise * 2.0 - 1.0);
-                
-                // Leaves flutter more at the tips (UV.y)
                 float flutter = windNoise * _WindStrength * input.uv.y;
-                worldPos.x += flutter;
-                worldPos.z += flutter * 0.5;
-                worldPos.y += flutter * 0.2;
+                worldPos += surfaceNormal * flutter * 0.2;
+                worldPos += right * flutter * 0.5;
 
+                // --- Outputs ---
                 output.positionCS = TransformWorldToHClip(worldPos);
                 output.uv = input.uv;
+                output.positionWS = worldPos;
+                
+                // Approximate normal in WS
+                float3 normalWS = right * input.normalOS.x + up * input.normalOS.y + forward * input.normalOS.z;
+                output.normalWS = normalize(normalWS);
+                
+                output.terrainNormal = surfaceNormal; 
+
+                // Shadow Coord based on ROOT position for stability
+                output.rootShadowCoord = TransformWorldToShadowCoord(instancePos);
 
                 // Color Variation
                 float3 localBase = lerp(_BaseColor.rgb, _BaseColor.rgb * 0.6, colorVariation);
@@ -135,9 +186,51 @@ Shader "VoxelEngine/Leaf"
                 return output;
             }
 
-            half4 frag(Varyings input) : SV_Target
+            FragOutput frag(Varyings input)
             {
-                return half4(input.color, 1.0);
+                // [Occlusion Test against Voxel Depth]
+                float2 screenUV = input.positionCS.xy / _ScaledScreenParams.xy;
+                // Use sampler_PointClamp (provided by URP Core) for depth sampling
+                float voxelDepth = SAMPLE_TEXTURE2D(_VoxelDepthCopy, sampler_PointClamp, screenUV).r;
+                float myDepth = input.positionCS.z;
+
+                #if UNITY_REVERSED_Z
+                    // 1.0 is Near, 0.0 is Far. Smaller = Further.
+                    if (voxelDepth > 0.0 && myDepth < voxelDepth) discard;
+                #else
+                    // 0.0 is Near, 1.0 is Far. Larger = Further.
+                    if (voxelDepth < 1.0 && myDepth > voxelDepth) discard;
+                #endif
+
+                // 1. Get Main Light
+                Light mainLight = GetMainLight(input.rootShadowCoord);
+
+                // 2. Cel Shading Logic
+                float NdotL_Raw = dot(input.terrainNormal, mainLight.direction);
+                float shadow = mainLight.shadowAttenuation;
+                float litVal = max(NdotL_Raw, 0.0) * shadow;
+
+                float steps = max(1.0, _CelSteps);
+                float minBrightness = _ShadowBrightness;
+                float t = litVal * steps;
+                float stepIndex = floor(t);
+                float fraction = t - stepIndex;
+                float smoothFraction = smoothstep(0.0, 0.05 * steps, fraction);
+                float rawLevel = (stepIndex + smoothFraction) / steps;
+                float celDiffuse = lerp(minBrightness, 1.0, saturate(rawLevel));
+
+                // 3. Final Color
+                float3 lighting = celDiffuse * mainLight.color;
+                float3 ambient = float3(0.2, 0.25, 0.3) * 0.5;
+                
+                float3 finalColor = input.color * (lighting + ambient);
+
+                // [NEW] Output MRT
+                FragOutput o;
+                o.color = half4(finalColor, 1.0);
+                o.depth = myDepth;
+                o.normal = half4(normalize(input.normalWS) * 0.5 + 0.5, 1.0);
+                return o;
             }
             ENDHLSL
         }

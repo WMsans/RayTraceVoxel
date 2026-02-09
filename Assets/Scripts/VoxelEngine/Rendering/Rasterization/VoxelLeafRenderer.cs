@@ -24,6 +24,9 @@ namespace VoxelEngine.Core.Rendering
         public float leafScale = 0.8f;
         public Color innerColor = new Color(0.05f, 0.2f, 0.05f);
         public Color outerColor = new Color(0.1f, 0.4f, 0.1f);
+        [Header("Cel Shading")]
+        [Range(1, 10)] public int celSteps = 3;
+        [Range(0.0f, 1.0f)] public float shadowBrightness = 0.2f;
 
         [Header("Wind Settings")]
         public Texture2D windTexture;
@@ -42,15 +45,20 @@ namespace VoxelEngine.Core.Rendering
 
         private VoxelVolume _volume;
         private Material _material;
-        private Mesh _mesh; // Reusing the Cross-Quad mesh
+        private Mesh _mesh; 
         
-        // Removed _lodScale usage for leaves as requested
-        // private float _lodScale = 1.0f; 
+        // Structure matches the Compute Shader and Vertex Shader
+        public struct LeafInstance
+        {
+            public Vector3 position;
+            public uint packedNormal; // [Spin 8] [NormalZ 8] [NormalY 8] [NormalX 8]
+            public uint packedData;   // [Color 16] [Size 8] [Unused 8]
+        }
 
         private void Awake()
         {
             _volume = GetComponent<VoxelVolume>();
-            // Using the existing mesh generator - a cross-quad works well for "tufts" of leaves
+            // Cross-quad works well for tufts
             _mesh = GrassMeshGenerator.GenerateBlade(1f, 1f); 
             
             if (leafShader != null)
@@ -80,6 +88,7 @@ namespace VoxelEngine.Core.Rendering
         private void InitializeBuffers()
         {
             if (_appendBuffer != null) return;
+            // Stride is 20 bytes (Vector3 + uint + uint)
             _appendBuffer = new ComputeBuffer(maxInstances, 20, ComputeBufferType.Append);
             _argsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
         }
@@ -94,7 +103,6 @@ namespace VoxelEngine.Core.Rendering
 
         private void Update()
         {
-            // Update frustum planes once per frame
             if (Time.frameCount != _lastPlaneFrame)
             {
                 if (Camera.main != null)
@@ -104,7 +112,6 @@ namespace VoxelEngine.Core.Rendering
                 }
             }
 
-            // Check Visibility
             bool visible = GeometryUtility.TestPlanesAABB(_frustumPlanes, _volume.WorldBounds);
 
             if (visible)
@@ -162,7 +169,6 @@ namespace VoxelEngine.Core.Rendering
             int groups = Mathf.CeilToInt((_volume.Resolution / 4.0f) / 4.0f);
             leafCompute.Dispatch(kernel, groups, groups, groups);
             
-            // Set Args
             _argsData[0] = (uint)_mesh.GetIndexCount(0);
             _argsData[1] = 0; 
             _argsData[2] = (uint)_mesh.GetIndexStart(0);
@@ -183,6 +189,9 @@ namespace VoxelEngine.Core.Rendering
             
             _material.SetFloat("_BladeHeight", leafScale); 
             
+            _material.SetFloat("_CelSteps", celSteps);
+            _material.SetFloat("_ShadowBrightness", shadowBrightness);
+
             _material.SetFloat("_WindSpeed", windSpeed);
             _material.SetFloat("_WindStrength", windStrength);
             if (windTexture != null) _material.SetTexture("_WindTex", windTexture);
