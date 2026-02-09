@@ -55,7 +55,7 @@ MonoBehaviour:
     normalHighlightColor: {r: 1, g: 0.95686275, b: 0.8392157, a: 1}
     lodBias: 1
     useCameraFarPlane: 0
-    cullFrustum: 0
+    cullFrustum: 1
     shadowDistance: 256
     blueNoiseTexture: {fileID: 2800000, guid: abbd6cebc53adce8b9207a270ab231ee, type: 3}
     debugMode: 0
