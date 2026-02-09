@@ -51,6 +51,10 @@ namespace VoxelEngine.Core.Streaming
         public int maxNodesPerVolume = 50000; 
         public int maxBricksPerVolume = 25000; 
 
+        [Header("Async Generation")]
+        [Tooltip("Max number of chunks to submit for generation per frame. Lower = smoother FPS, Higher = faster loading.")]
+        public int maxGenerationsPerFrame = 2;
+
         [Header("Memory Optimization")]
         [Tooltip("Percentage of used memory to add as extra buffer when trimming (0.0 - 1.0). Allows for editing.")]
         public float trimReserveRatio = 0.25f;
@@ -92,6 +96,16 @@ namespace VoxelEngine.Core.Streaming
         
         public int VisibleChunkCount => _visibleVolumes.Count;
 
+        // --- Async Queue Data ---
+        private struct AuditRequest
+        {
+            public Vector3 position;
+            public float size;
+            public int resolution;
+            public Action<AuditResult> callback;
+        }
+        private Queue<AuditRequest> _auditQueue = new Queue<AuditRequest>();
+
         private void Awake()
         {
             if (Instance != null && Instance != this) { Destroy(this); return; }
@@ -99,6 +113,11 @@ namespace VoxelEngine.Core.Streaming
             InitializeGlobalBuffers();
             InitializePool();
             InitializeTransientPool();
+        }
+
+        private void Update()
+        {
+            ProcessAuditQueue();
         }
 
         private void InitializeGlobalBuffers()
@@ -186,7 +205,6 @@ namespace VoxelEngine.Core.Streaming
             }
             else
             {
-                // [FIX] Removed LogError to prevent spam, this is a valid state when full.
                 // Cleanup if we pulled from pool
                 if (vol != null) 
                 {
@@ -240,31 +258,51 @@ namespace VoxelEngine.Core.Streaming
 
         public void AuditChunk(Vector3 position, float size, int resolution, Action<AuditResult> onComplete)
         {
-            if (_transientPool.Count == 0)
+            // QUEUE MODIFICATION: Don't execute immediately. Enqueue.
+            _auditQueue.Enqueue(new AuditRequest
             {
-                EnsureTransientPool();
+                position = position,
+                size = size,
+                resolution = resolution,
+                callback = onComplete
+            });
+        }
 
+        private void ProcessAuditQueue()
+        {
+            int processed = 0;
+            // Process up to 'maxGenerationsPerFrame' requests per frame
+            while (_auditQueue.Count > 0 && processed < maxGenerationsPerFrame)
+            {
+                // Ensure we have a transient volume available
                 if (_transientPool.Count == 0)
                 {
-                    // Retry next frame
-                    onComplete?.Invoke(new AuditResult { type = AuditResultType.Retry });
-                    return;
+                    EnsureTransientPool();
+                    // If still empty (memory full or limit reached), wait for next frame
+                    if (_transientPool.Count == 0) break;
                 }
-            }
 
+                var req = _auditQueue.Dequeue();
+                ExecuteAudit(req);
+                processed++;
+            }
+        }
+
+        private void ExecuteAudit(AuditRequest req)
+        {
             VoxelVolume vol = _transientPool.Dequeue();
             // Configure transient volume
-            vol.transform.position = position;
-            vol.transform.localScale = Vector3.one * (size / resolution);
-            vol.resolution = resolution;
+            vol.transform.position = req.position;
+            vol.transform.localScale = Vector3.one * (req.size / req.resolution);
+            vol.resolution = req.resolution;
             
             // Run Generation
-            vol.OnPullFromPool(position, size, false);
+            vol.OnPullFromPool(req.position, req.size, false);
             
             // Hide to prevent flash
             vol.gameObject.SetActive(false);
             
-            StartCoroutine(AuditRoutine(vol, position, size, resolution, onComplete));
+            StartCoroutine(AuditRoutine(vol, req.position, req.size, req.resolution, req.callback));
         }
 
         private IEnumerator AuditRoutine(VoxelVolume vol, Vector3 pos, float size, int res, Action<AuditResult> onComplete)
@@ -298,7 +336,6 @@ namespace VoxelEngine.Core.Streaming
                 onComplete?.Invoke(new AuditResult { type = AuditResultType.Solid });
             }
             // Case B2: Complex but Empty (Structure without content)
-            // Fixes issue where empty chunks with slight node structure took up volumes
             else if (payloadCount == 0 && brickVoxelCount == 0)
             {
                 ReturnTransient(vol);
@@ -307,40 +344,23 @@ namespace VoxelEngine.Core.Streaming
             // Case C: Complex / Surface
             else
             {
-                // FIX: Promote the Transient Volume to Permanent immediately.
-                // Do NOT attempt to read back nodes/payloads and copy them.
-                // The data is paged/scattered in global memory, so linear readback fails (returns zeros).
-                // By promoting the volume, we keep the valid memory allocation.
-
-                // We know exactly how much memory the chunk needs (nodeCount, brickVoxelCount).
-                // The transient volume is allocated with 'maxNodesPerVolume'.
-                // We should trim the excess memory and return it to the global allocator before promoting.
-                
                 TrimVolumeMemory(vol, nodeCount, brickVoxelCount);
-
 
                 vol.IsTransient = false;
                 vol.gameObject.name = $"Volume_Active_{pos}";
                 
-                // Add to active set
                 _activeVolumes.Add(vol);
-                UpdateChunkBuffer(null, default, 0f); // Ensure it gets into the render buffer
+                UpdateChunkBuffer(null, default, 0f); 
                 
-                // Ensure it's visible now that it's ready
                 vol.gameObject.SetActive(true);
 
-                // IMPORTANT: We used up a transient volume, so we must replace it
+                // Replace the used transient volume
                 CreateTransientVolume(); 
 
                 onComplete?.Invoke(new AuditResult { type = AuditResultType.Complex, volume = vol });
             }
         }
 
-        /// <summary>
-        /// Shrinks the memory allocation of a volume to fit the actually used nodes and bricks.
-        /// Frees the unused tail of the memory blocks back to the global allocators.
-        /// [FIX] Now includes padding/reserve to allow for editing.
-        /// </summary>
         private void TrimVolumeMemory(VoxelVolume vol, int usedNodes, int usedBrickVoxels)
         {
             int pageSize = SVONode.PAGE_SIZE;
@@ -354,12 +374,9 @@ namespace VoxelEngine.Core.Streaming
             int targetNodeCount = usedNodes + reserveNodes;
             int neededPages = Mathf.CeilToInt((float)targetNodeCount / pageSize);
 
-            // Clamp to what is actually allocated (can't expand here, only shrink)
-            // But assume we have at least 1 page if we have nodes
             if (currentPages != null)
             {
                 if (neededPages > currentPages.Length) neededPages = currentPages.Length;
-                // Ensure we don't trim below what is USED
                 int minNeeded = Mathf.CeilToInt((float)usedNodes / pageSize);
                 if (neededPages < minNeeded) neededPages = minNeeded;
             }
@@ -375,7 +392,6 @@ namespace VoxelEngine.Core.Streaming
 
             int targetBrickVoxels = usedBrickVoxels + reserveBrickVoxels;
 
-            // Clamp to allocation
             if (targetBrickVoxels > currentBrickAllocatedVoxels) targetBrickVoxels = currentBrickAllocatedVoxels;
             if (targetBrickVoxels < usedBrickVoxels) targetBrickVoxels = usedBrickVoxels;
 
@@ -393,14 +409,8 @@ namespace VoxelEngine.Core.Streaming
                 Array.Copy(currentPages, 0, pagesToKeep, 0, neededPages);
                 Array.Copy(currentPages, neededPages, pagesToFree, 0, pagesToFreeCount);
 
-                // Free the physical pages we don't need
                 _nodeAllocator.Free(pagesToFree);
-                
-                // Free the tail of the page table allocation (it's a linear block of ints)
-                // vol.BufferManager.PageTableOffset is the start of the block.
                 _pageTableAllocator.Free(vol.BufferManager.PageTableOffset + neededPages, pagesToFreeCount);
-
-                // Update the array for the final Resize call
                 currentPages = pagesToKeep;
             }
 
@@ -408,10 +418,7 @@ namespace VoxelEngine.Core.Streaming
             if (targetBrickVoxels < currentBrickAllocatedVoxels)
             {
                 int freeCount = currentBrickAllocatedVoxels - targetBrickVoxels;
-                
-                // Free the tail of the brick buffer
                 _brickAllocator.Free(vol.BufferManager.BrickDataOffset + targetBrickVoxels, freeCount);
-                
                 currentBrickAllocatedVoxels = targetBrickVoxels;
             }
 
@@ -426,14 +433,6 @@ namespace VoxelEngine.Core.Streaming
             
             float nodeSave = initialNodeMem > 0 ? 100f * (1f - ((float)finalNodeMem / initialNodeMem)) : 0;
             float brickSave = initialBrickMem > 0 ? 100f * (1f - ((float)finalBrickMem / initialBrickMem)) : 0;
-
-            // Optional: Only log if significant change
-            if ((initialNodeMem - finalNodeMem) > 1024 || (initialBrickMem - finalBrickMem) > 1024)
-            {
-                Debug.Log($"<color=cyan>[Compact Alloc]</color> {vol.name}: " +
-                        $"Nodes {initialNodeMem}->{finalNodeMem} (Saved {nodeSave:F0}%) | " +
-                        $"Bricks {initialBrickMem}->{finalBrickMem} (Saved {brickSave:F0}%)");
-            }
         }
 
         private void ReturnTransient(VoxelVolume vol)
@@ -456,7 +455,6 @@ namespace VoxelEngine.Core.Streaming
                 VoxelVolume vol = _pool.Dequeue();
                 vol.AssignMemorySlice(this, 0, 0, brickOffset, requestedNodes, requestedBricks, ptOffset, pages);
 
-                // Configure volume
                 vol.transform.position = position;
                 float scale = size / vol.Resolution; 
                 if (resolution > 0)
@@ -466,7 +464,6 @@ namespace VoxelEngine.Core.Streaming
                 }
                 vol.transform.localScale = Vector3.one * scale;
                 
-                // Pass flags
                 vol.OnPullFromPool(position, size, generateEmpty, skipGeneration);
                 
                 _activeVolumes.Add(vol);
@@ -484,7 +481,6 @@ namespace VoxelEngine.Core.Streaming
         {
             if (vol == null) return;
             
-            // Whether it came from GetVolume or Promotion, it's in _activeVolumes
             if (_activeVolumes.Remove(vol))
             {
                 if (vol.IsReady)
@@ -540,7 +536,6 @@ namespace VoxelEngine.Core.Streaming
                 _visibleVolumes.Add(vol);
                 ChunkDef def = new ChunkDef();
                 def.boundsMin = vol.WorldBounds.min;
-                // Note: PageTableOffset acts as the "nodeOffset" for Paged SVO shaders
                 def.nodeOffset = (uint)vol.BufferManager.PageTableOffset; 
                 def.boundsMax = vol.WorldBounds.max;
                 def.payloadOffset = (uint)vol.BufferManager.PageTableOffset; 

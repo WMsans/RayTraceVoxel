@@ -594,7 +594,7 @@ MonoBehaviour:
   brushRadius: 4
   brushMaterial: 1
   editRate: 0.1
-  editMode: 1
+  editMode: 0
   structuralAnalyzer: {fileID: 681138562}
 --- !u!114 &587925454
 MonoBehaviour:
@@ -676,6 +676,10 @@ MonoBehaviour:
   poolContainer: {fileID: 0}
   maxNodesPerVolume: 5000
   maxBricksPerVolume: 2500
+  maxGenerationsPerFrame: 2
+  trimReserveRatio: 0.25
+  minNodeReserve: 1024
+  minBrickReserve: 512
   TLASResolution: 16
 --- !u!4 &681138559
 Transform:
