@@ -657,6 +657,7 @@ MonoBehaviour:
   mergeFactor: 1.8
   mainCamera: {fileID: 527118853}
   shadowDistance: 256
+  disableFrustumCulling: 1
 --- !u!114 &681138558
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -151,7 +151,7 @@ namespace VoxelEngine.Core.Streaming
             }
         }
 
-        private void CreateTransientVolume()
+        private bool CreateTransientVolume()
         {
             VoxelVolume vol = null;
             
@@ -174,16 +174,27 @@ namespace VoxelEngine.Core.Streaming
                 vol.AssignMemorySlice(this, 0, 0, brickOffset, maxNodesPerVolume, maxBricksPerVolume, ptOffset, pages);
                 vol.IsTransient = true;
                 _transientPool.Enqueue(vol);
+                return true;
             }
             else
             {
-                Debug.LogError("Failed to allocate memory for Transient Volume!");
+                // [FIX] Removed LogError to prevent spam, this is a valid state when full.
                 // Cleanup if we pulled from pool
                 if (vol != null) 
                 {
                     if (_pool != null) _pool.Enqueue(vol); 
                     else Destroy(vol.gameObject);
                 }
+                return false;
+            }
+        }
+
+        private void EnsureTransientPool()
+        {
+            while (_transientPool.Count < transientPoolSize)
+            {
+                // If we fail to create one (Memory Full), stop trying for now.
+                if (!CreateTransientVolume()) break; 
             }
         }
 
@@ -223,9 +234,14 @@ namespace VoxelEngine.Core.Streaming
         {
             if (_transientPool.Count == 0)
             {
-                // Retry next frame
-                onComplete?.Invoke(new AuditResult { type = AuditResultType.Retry });
-                return;
+                EnsureTransientPool();
+
+                if (_transientPool.Count == 0)
+                {
+                    // Retry next frame
+                    onComplete?.Invoke(new AuditResult { type = AuditResultType.Retry });
+                    return;
+                }
             }
 
             VoxelVolume vol = _transientPool.Dequeue();
@@ -299,7 +315,7 @@ namespace VoxelEngine.Core.Streaming
                 vol.gameObject.SetActive(true);
 
                 // IMPORTANT: We used up a transient volume, so we must replace it
-                CreateTransientVolume();
+                CreateTransientVolume(); 
 
                 onComplete?.Invoke(new AuditResult { type = AuditResultType.Complex, volume = vol });
             }
@@ -373,6 +389,8 @@ namespace VoxelEngine.Core.Streaming
                 vol.transform.SetParent(poolContainer); 
                 _pool.Enqueue(vol);
                 UpdateChunkBuffer(null, default, 0f);
+
+                EnsureTransientPool();
             }
         }
 

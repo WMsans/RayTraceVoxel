@@ -24,6 +24,7 @@ namespace VoxelEngine.Core.Streaming
         [Header("Culling Settings")]
         public Camera mainCamera;
         public float shadowDistance = 256f;
+        public bool disableFrustumCulling = false; // Added debug option
         
         private WorldOctreeNode _rootNode;
         private VoxelVolumePool _pool;
@@ -151,7 +152,10 @@ namespace VoxelEngine.Core.Streaming
         private void UpdateNodeLOD(WorldOctreeNode node, Vector3 viewerPosition)
         {
             float distance = Vector3.Distance(viewerPosition, node.Center);
-            bool inFrustum = (mainCamera == null) || GeometryUtility.TestPlanesAABB(_frustumPlanes, node.Bounds);
+            
+            // Modified to respect disableFrustumCulling flag
+            bool inFrustum = disableFrustumCulling || (mainCamera == null) || GeometryUtility.TestPlanesAABB(_frustumPlanes, node.Bounds);
+            
             Vector3 closest = node.Bounds.ClosestPoint(viewerPosition);
             bool inShadowRange = (closest - viewerPosition).sqrMagnitude < (shadowDistance * shadowDistance);
 
