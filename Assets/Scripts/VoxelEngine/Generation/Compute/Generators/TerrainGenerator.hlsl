@@ -3,25 +3,26 @@
 
 #include "../../../Shared/Shaders/Includes/GenerationContext.hlsl"
 
-// --- Adapted Constants and Noise Functions ---
+// ==========================================================================================
+// TUBE TERRAIN LAYER (Renamed from Original)
+// ==========================================================================================
 
 // Matrix from GLSL: mat2(1.6, -1.2, 1.2, 1.6)
-// Note: GLSL mat2 columns are (1.6, -1.2) and (1.2, 1.6). 
+// Note: GLSL mat2 columns are (1.6, -1.2) and (1.2, 1.6).
 // We implement the transform explicitly to ensure exact parity.
-
-float noi(float2 p)
+float tube_noi(float2 p)
 {
     return 0.5 * (cos(6.2831 * p.x) + cos(6.2831 * p.y));
 }
 
-float terrainMed(float2 p)
+float tube_terrainMed(float2 p)
 {
     p *= 0.0013;
     float s = 1.0;
     float t = 0.0;
     for (int i = 0; i < 6; i++)
     {
-        t += s * noi(p);
+        t += s * tube_noi(p);
         s *= 0.5 + 0.1 * t;
         
         float2 nextP;
@@ -33,59 +34,45 @@ float terrainMed(float2 p)
     return t * 55.0;
 }
 
-// Helper for SVOBuilder optimization (Estimates surface height)
-float GetHeight(float2 pos)
-{
-    return terrainMed(pos);
-}
-
-float tubes(float3 pos)
+float tube_shape(float3 pos)
 {
     float sep = 400.0;
-    
     // Noise distortion
-    pos.z -= sep * 0.025 * noi(0.005 * pos.xz * float2(0.5, 1.5));
-    pos.x -= sep * 0.050 * noi(0.005 * pos.zy * float2(0.5, 1.5));
-    
+    pos.z -= sep * 0.025 * tube_noi(0.005 * pos.xz * float2(0.5, 1.5));
+    pos.x -= sep * 0.050 * tube_noi(0.005 * pos.zy * float2(0.5, 1.5));
     // Domain Repetition (Modulo logic)
-    // GLSL: qos = mod(pos + sep*0.5, sep) - sep*0.5
     float2 posShifted = pos.xz + sep * 0.5;
     float2 qosXZ = posShifted - floor(posShifted / sep) * sep - sep * 0.5;
-    
     float3 qos = float3(qosXZ.x, pos.y - 70.0, qosXZ.y);
     
     qos.x += sep * 0.3 * cos(0.01 * pos.z);
     qos.y += sep * 0.1 * cos(0.01 * pos.x);
 
     float sph = length(qos.xy) - sep * 0.012;
-    
     // Surface detail on tubes
-    sph -= (1.0 - 0.8 * smoothstep(-10.0, 0.0, qos.y)) * sep * 0.003 * noi(0.15 * pos.xy * float2(0.2, 1.0));
-    
+    sph -= (1.0 - 0.8 * smoothstep(-10.0, 0.0, qos.y)) * sep * 0.003 * tube_noi(0.15 * pos.xy * float2(0.2, 1.0));
     return sph;
 }
 
 // Combined SDF Function
 // Returns x: SDF Distance, y: Blend Factor (0=Terrain, 1=Tubes)
-float2 MapTerrain(float3 pos)
+float2 MapTubeTerrain(float3 pos)
 {
-    float h = pos.y - terrainMed(pos.xz);
-    float sph = tubes(pos);
+    float h = pos.y - tube_terrainMed(pos.xz);
+    float sph = tube_shape(pos);
     
     float k = 60.0;
     // Smooth Union / Mix logic
     float w = clamp(0.5 + 0.5 * (h - sph) / k, 0.0, 1.0);
-    
     // smin logic: mix(h, sph, w) - k*w*(1.0-w)
     float finalSDF = lerp(h, sph, w) - k * w * (1.0 - w);
-    
     return float2(finalSDF, w);
 }
 
-void Stage_Terrain(inout GenerationContext ctx)
+void Stage_TubeTerrain(inout GenerationContext ctx)
 {
     // 1. Evaluate blended SDF
-    float2 res = MapTerrain(ctx.position);
+    float2 res = MapTubeTerrain(ctx.position);
     float d = res.x;
     float w = res.y;
 
@@ -93,27 +80,124 @@ void Stage_Terrain(inout GenerationContext ctx)
     if (d < ctx.sdf)
     {
         ctx.sdf = d;
-        
         // 3. Material Assignment
         // w close to 0 is Terrain, w close to 1 is Tubes.
         // We assign ID 4 for Terrain, ID 3 for Tubes.
-        ctx.material = (w > 0.5) ? 3 : 4; 
-
+        ctx.material = (w > 0.5) ? 3 : 4;
         // 4. Tetrahedral Normal Calculation
-        // Calculate the gradient of the MapTerrain function
         float2 e = float2(-1.0, 1.0) * 0.1;
-        
-        float v1 = MapTerrain(ctx.position + float3(e.y, e.x, e.x)).x;
-        float v2 = MapTerrain(ctx.position + float3(e.x, e.x, e.y)).x;
-        float v3 = MapTerrain(ctx.position + float3(e.x, e.y, e.x)).x;
-        float v4 = MapTerrain(ctx.position + float3(e.y, e.y, e.y)).x;
-        
+        float v1 = MapTubeTerrain(ctx.position + float3(e.y, e.x, e.x)).x;
+        float v2 = MapTubeTerrain(ctx.position + float3(e.x, e.x, e.y)).x;
+        float v3 = MapTubeTerrain(ctx.position + float3(e.x, e.y, e.x)).x;
+        float v4 = MapTubeTerrain(ctx.position + float3(e.y, e.y, e.y)).x;
         ctx.gradient = normalize(
             float3(e.y, e.x, e.x) * v1 +
             float3(e.x, e.x, e.y) * v2 +
             float3(e.x, e.y, e.x) * v3 +
             float3(e.y, e.y, e.y) * v4
         );
+    }
+}
+
+// ==========================================================================================
+// NEW TERRAIN IMPLEMENTATION (Reference Port)
+// ==========================================================================================
+
+// --- Hashes ---
+float hash1(float2 p)
+{
+    p = 50.0 * frac(p * 0.3183099);
+    return frac(p.x * p.y * (p.x + p.y));
+}
+
+// --- Noise (Value Noise) ---
+float noise(float2 x)
+{
+    float2 p = floor(x);
+    float2 w = frac(x);
+    
+    // Quintic interpolation curve
+    float2 u = w * w * w * (w * (w * 6.0 - 15.0) + 10.0);
+
+    float a = hash1(p + float2(0, 0));
+    float b = hash1(p + float2(1, 0));
+    float c = hash1(p + float2(0, 1));
+    float d = hash1(p + float2(1, 1));
+    
+    return -1.0 + 2.0 * (a + (b - a) * u.x + (c - a) * u.y + (a - b - c + d) * u.x * u.y);
+}
+
+// --- FBM Construction ---
+// Rotation matrix m2 = mat2(0.8, 0.6, -0.6, 0.8)
+// In GLSL m * v is column-major.
+// row1: 0.8*x - 0.6*y
+// row2: 0.6*x + 0.8*y
+float2 mul_m2(float2 x)
+{
+    return float2(0.8 * x.x - 0.6 * x.y, 0.6 * x.x + 0.8 * x.y);
+}
+
+float fbm_9(float2 x)
+{
+    float f = 1.9;
+    float s = 0.55;
+    float a = 0.0;
+    float b = 0.5;
+    for (int i = 0; i < 9; i++)
+    {
+        float n = noise(x);
+        a += b * n;
+        b *= s;
+        x = mul_m2(x * f);
+    }
+    return a;
+}
+
+// --- Main Height Logic ---
+float GetNewTerrainHeight(float2 p)
+{
+    // Reference: float e = fbm_9( p/2000.0 + vec2(1.0,-2.0) );
+    float e = fbm_9(p / 2000.0 + float2(1.0, -2.0));
+    
+    // Reference: float a = 1.0-smoothstep( 0.12, 0.13, abs(e+0.12) );
+    // (Unused for geometry, but kept for completeness if needed later)
+    
+    // Reference: e = 600.0*e + 600.0;
+    e = 600.0 * e + 600.0;
+    
+    // Reference: e += 90.0*smoothstep( 552.0, 594.0, e );
+    e += 90.0 * smoothstep(552.0, 594.0, e);
+    
+    return e - 500.0;
+}
+
+// Exposed Helper for SVOBuilder optimization (Estimates surface height)
+float GetHeight(float2 pos)
+{
+    // Redirect to the new logic
+    return GetNewTerrainHeight(pos);
+}
+
+void Stage_Terrain(inout GenerationContext ctx)
+{
+    float h = GetNewTerrainHeight(ctx.position.xz);
+    float d = ctx.position.y - h;
+
+    if (d < ctx.sdf)
+    {
+        ctx.sdf = d;
+        ctx.material = 4; // Generic terrain material
+
+        // Calculate Normal (Gradient) using Central Differences
+        // We use a slightly wider epsilon for the large scale of this terrain
+        float2 e = float2(0.1, 0.0);
+        float h1 = GetNewTerrainHeight(ctx.position.xz - e.xy);
+        float h2 = GetNewTerrainHeight(ctx.position.xz + e.xy);
+        float h3 = GetNewTerrainHeight(ctx.position.xz - e.yx);
+        float h4 = GetNewTerrainHeight(ctx.position.xz + e.yx);
+
+        // Normal = normalize( vec3( hL - hR, 2.0*eps, hB - hF ) )
+        ctx.gradient = normalize(float3(h1 - h2, 2.0 * e.x, h3 - h4));
     }
 }
 

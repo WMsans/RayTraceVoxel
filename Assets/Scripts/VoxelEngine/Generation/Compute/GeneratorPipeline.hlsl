@@ -11,7 +11,6 @@
 // --- Global Dynamic SDF Resources ---
 // These are bound by VoxelVolume or DynamicSDFManager
 StructuredBuffer<SDFObject> _SDFObjectBuffer;
-
 float EvaluateSDFObject(SDFObject obj, float3 worldPos, out float3 gradient)
 {
     // 1. Transform to Local Space
@@ -82,16 +81,15 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
     
     // --- 1. Base Stage (Terrain) ---
     Stage_Terrain(ctx);
-
-    // --- 2. Trees Stage (Minecraft-like) ---
-    // Stage_Trees(ctx);     // Existing Sequoias/Big Trees
     
-    // [ADD THIS LINE]
-    Stage_OakTrees(ctx);  // New Dense Oak Layer
+    // --- 2. Trees Stage (Minecraft-like) ---
+    // Stage_Trees(ctx);
+    // Existing Sequoias/Big Trees
+    
+    Stage_OakTrees(ctx);
 
     // --- 3. Dynamic Objects Stage ---
     ApplyDynamicObjects(ctx, worldPos, activeObjects, activeCount);
-
     return ctx;
 }
 
