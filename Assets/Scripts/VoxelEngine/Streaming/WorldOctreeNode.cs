@@ -26,6 +26,10 @@ namespace VoxelEngine.Core.Streaming
         public VoxelVolume ActiveVolume { get; private set; }
         public NodeState State { get; private set; } = NodeState.Uninitialized;
 
+        // --- Safety ---
+        // Used to invalidate pending async generation requests if the node changes state/topology
+        private int _generationRequestId = 0; 
+
         // --- Constants ---
         private static readonly Vector3[] ChildOffsets = new Vector3[]
         {
@@ -77,11 +81,38 @@ namespace VoxelEngine.Core.Streaming
             if (VoxelVolumePool.Instance == null) return;
 
             State = NodeState.Pending;
+            
+            // Increment ID to identify this specific request. 
+            // Any previous pending callbacks will see a mismatch and abort.
+            _generationRequestId++;
+            int currentRequestId = _generationRequestId;
+
             Vector3 minCorner = Center - (Vector3.one * Size * 0.5f);
 
             // Audit the chunk using the Transient Pool
             VoxelVolumePool.Instance.AuditChunk(minCorner, Size, 64, (result) => 
             {
+                // --- CRITICAL FIX ---
+                // We check three things before accepting the volume:
+                // 1. _generationRequestId match: Ensures we haven't been reset/disabled since this request started.
+                // 2. State == Pending: Ensures no other logic has forcibly changed our state.
+                // 3. IsLeaf: Ensures we haven't split (Subdivided) into children while waiting.
+                bool isValid = (currentRequestId == _generationRequestId) 
+                               && (State == NodeState.Pending) 
+                               && IsLeaf;
+
+                if (!isValid)
+                {
+                    // If the node changed (e.g. split into higher LOD), we must NOT accept this lower LOD volume.
+                    // Return it to the pool immediately to prevent overlapping.
+                    if (result.type == AuditResultType.Complex && result.volume != null)
+                    {
+                        VoxelVolumePool.Instance.ReturnVolume(result.volume);
+                    }
+                    return;
+                }
+                // --------------------
+
                 switch (result.type)
                 {
                     case AuditResultType.Empty:
@@ -109,6 +140,9 @@ namespace VoxelEngine.Core.Streaming
 
         public void DisableVolume()
         {
+            // Invalidate any generation requests currently in flight
+            _generationRequestId++;
+
             if (ActiveVolume != null)
             {
                 if (VoxelVolumePool.Instance != null)
