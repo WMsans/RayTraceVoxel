@@ -304,6 +304,13 @@ namespace VoxelEngine.Core.Streaming
                 // The data is paged/scattered in global memory, so linear readback fails (returns zeros).
                 // By promoting the volume, we keep the valid memory allocation.
 
+                // We know exactly how much memory the chunk needs (nodeCount, brickVoxelCount).
+                // The transient volume is allocated with 'maxNodesPerVolume'.
+                // We should trim the excess memory and return it to the global allocator before promoting.
+                
+                TrimVolumeMemory(vol, nodeCount, brickVoxelCount);
+
+
                 vol.IsTransient = false;
                 vol.gameObject.name = $"Volume_Active_{pos}";
                 
@@ -318,6 +325,80 @@ namespace VoxelEngine.Core.Streaming
                 CreateTransientVolume(); 
 
                 onComplete?.Invoke(new AuditResult { type = AuditResultType.Complex, volume = vol });
+            }
+        }
+
+        /// <summary>
+        /// Shrinks the memory allocation of a volume to fit the actually used nodes and bricks.
+        /// Frees the unused tail of the memory blocks back to the global allocators.
+        /// </summary>
+        private void TrimVolumeMemory(VoxelVolume vol, int usedNodes, int usedBrickVoxels)
+        {
+            int pageSize = SVONode.PAGE_SIZE;
+            int neededPages = Mathf.CeilToInt((float)usedNodes / pageSize);
+            if (neededPages == 0 && usedNodes > 0) neededPages = 1;
+
+            int[] currentPages = vol.AllocatedPages;
+            int initialNodeMem = currentPages.Length * pageSize;
+            int initialBrickMem = vol.MaxBricks * SVONode.BRICK_VOXEL_COUNT;
+            
+            // 1. Trim Pages (Physical Pages & Page Table)
+            // The PageTable allocator is linear, so we can free the tail.
+            // The PhysicalPageAllocator allocates discreet indices, so we free the ones at the end of our list.
+            if (currentPages != null && neededPages < currentPages.Length)
+            {
+                int pagesToFreeCount = currentPages.Length - neededPages;
+                int[] pagesToKeep = new int[neededPages];
+                int[] pagesToFree = new int[pagesToFreeCount];
+
+                Array.Copy(currentPages, 0, pagesToKeep, 0, neededPages);
+                Array.Copy(currentPages, neededPages, pagesToFree, 0, pagesToFreeCount);
+
+                // Free the physical pages we don't need
+                _nodeAllocator.Free(pagesToFree);
+                
+                // Free the tail of the page table allocation (it's a linear block of ints)
+                // vol.BufferManager.PageTableOffset is the start of the block.
+                _pageTableAllocator.Free(vol.BufferManager.PageTableOffset + neededPages, pagesToFreeCount);
+
+                // Update the array for the final Resize call
+                currentPages = pagesToKeep;
+            }
+
+            // 2. Trim Bricks (Linear)
+            // brickAllocator allocates 'uint's. 
+            // usedBrickVoxels is the number of uints actually written.
+            int currentBrickAllocatedVoxels = vol.MaxBricks * SVONode.BRICK_VOXEL_COUNT;
+            
+            // We can optionally align this to a block size, but exact fit is most compact.
+            if (usedBrickVoxels < currentBrickAllocatedVoxels)
+            {
+                int freeCount = currentBrickAllocatedVoxels - usedBrickVoxels;
+                
+                // Free the tail of the brick buffer
+                _brickAllocator.Free(vol.BufferManager.BrickDataOffset + usedBrickVoxels, freeCount);
+                
+                currentBrickAllocatedVoxels = usedBrickVoxels;
+            }
+
+            // 3. Update Volume Metadata
+            // Calculate new max limits based on what we kept
+            int newMaxBricks = Mathf.CeilToInt((float)currentBrickAllocatedVoxels / SVONode.BRICK_VOXEL_COUNT);
+            int newMaxNodes = neededPages * pageSize;
+            
+            vol.ResizeMemory(currentPages, newMaxNodes, newMaxBricks);
+
+            int finalNodeMem = neededPages * pageSize;
+            int finalBrickMem = usedBrickVoxels; // Approximately
+            
+            float nodeSave = 100f * (1f - ((float)finalNodeMem / initialNodeMem));
+            float brickSave = 100f * (1f - ((float)finalBrickMem / initialBrickMem));
+
+            if (nodeSave > 0 || brickSave > 0)
+            {
+                Debug.Log($"<color=cyan>[Compact Alloc]</color> {vol.name}: " +
+                        $"Nodes {initialNodeMem}->{finalNodeMem} ({nodeSave:F1}% saved) | " +
+                        $"Bricks {initialBrickMem}->{finalBrickMem} ({brickSave:F1}% saved)");
             }
         }
 
