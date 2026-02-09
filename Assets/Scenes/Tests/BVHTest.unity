@@ -594,7 +594,7 @@ MonoBehaviour:
   brushRadius: 4
   brushMaterial: 1
   editRate: 0.1
-  editMode: 0
+  editMode: 1
   structuralAnalyzer: {fileID: 681138562}
 --- !u!114 &587925454
 MonoBehaviour:
