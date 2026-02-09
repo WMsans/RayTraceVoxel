@@ -158,20 +158,30 @@ float GetHeight(float2 pos)
 void Stage_Terrain(inout GenerationContext ctx)
 {
     float h = GetNewTerrainHeight(ctx.position.xz);
-    float d = ctx.position.y - h;
-    if (d < ctx.sdf)
+    
+    // 1. Calculate the Vertical Distance (Heightmap distance)
+    float verticalDist = ctx.position.y - h;
+
+    // 2. Calculate the Normal (Gradient)
+    float2 e = float2(0.1, 0.0);
+    float h1 = GetNewTerrainHeight(ctx.position.xz - e.xy);
+    float h2 = GetNewTerrainHeight(ctx.position.xz + e.xy);
+    float h3 = GetNewTerrainHeight(ctx.position.xz - e.yx);
+    float h4 = GetNewTerrainHeight(ctx.position.xz + e.yx);
+
+    // Note: The gradient vector (dh/dx, 1, dh/dz) is unnormalized surface normal
+    float3 unnormalizedNormal = float3(h1 - h2, 2.0 * e.x, h3 - h4);
+    float3 normal = normalize(unnormalizedNormal);
+
+    // 3. FIX: Convert Vertical Distance to True Perpendicular SDF Distance
+    // We multiply by dot(N, Up). Since Up is (0,1,0), this is just normal.y
+    float trueSDF = verticalDist * normal.y;
+
+    if (trueSDF < ctx.sdf)
     {
-        ctx.sdf = d;
+        ctx.sdf = trueSDF;
         ctx.material = 4; // Generic terrain material
-
-        // Calculate Normal
-        float2 e = float2(0.1, 0.0);
-        float h1 = GetNewTerrainHeight(ctx.position.xz - e.xy);
-        float h2 = GetNewTerrainHeight(ctx.position.xz + e.xy);
-        float h3 = GetNewTerrainHeight(ctx.position.xz - e.yx);
-        float h4 = GetNewTerrainHeight(ctx.position.xz + e.yx);
-
-        ctx.gradient = normalize(float3(h1 - h2, 2.0 * e.x, h3 - h4));
+        ctx.gradient = normal;
     }
 }
 
