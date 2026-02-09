@@ -74,6 +74,23 @@ namespace VoxelEngine.Core.Streaming
 
         // --- Volume Management (UPDATED for Transient Auditor) ---
 
+        public bool AreChildrenReady
+        {
+            get
+            {
+                if (IsLeaf || Children == null) return true;
+                
+                // If any child is Pending or Uninitialized, the group isn't ready.
+                // We accept Empty, Solid, and Active as "Ready" states.
+                for (int i = 0; i < Children.Length; i++)
+                {
+                    if (Children[i].State == NodeState.Pending || Children[i].State == NodeState.Uninitialized)
+                        return false;
+                }
+                return true;
+            }
+        }
+
         public void RequestGeneration(MonoBehaviour runner)
         {
             if (State != NodeState.Uninitialized) return;

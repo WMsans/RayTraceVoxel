@@ -208,6 +208,40 @@ namespace VoxelEngine.Core.Streaming
             }
             else // Branch
             {
+                // If the Parent volume is still active, it means we are transitioning from Parent -> Children.
+                // We keep the Parent visible until ALL children are ready (Active, Solid, or Empty).
+                if (node.ActiveVolume != null)
+                {
+                    if (node.AreChildrenReady)
+                    {
+                        // Handoff Complete: Children are ready.
+                        // 1. Enable Child Visuals
+                        foreach (var child in node.Children)
+                        {
+                            if (child.ActiveVolume != null)
+                                child.ActiveVolume.gameObject.SetActive(true);
+                        }
+
+                        // 2. Disable Parent
+                        if (VoxelPhysicsManager.Instance != null)
+                        {
+                            VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
+                            VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
+                        }
+                        node.DisableVolume();
+                    }
+                    else
+                    {
+                        // Handoff Pending: Children not ready.
+                        // Keep Parent visible. Ensure generated children stay hidden to prevent z-fighting.
+                        foreach (var child in node.Children)
+                        {
+                            if (child.ActiveVolume != null)
+                                child.ActiveVolume.gameObject.SetActive(false);
+                        }
+                    }
+                }
+
                 bool shouldMerge = distance > (node.Size * mergeFactor) || (!inFrustum && !inShadowRange);
                 
                 if (shouldMerge)
@@ -235,7 +269,9 @@ namespace VoxelEngine.Core.Streaming
                     VoxelPhysicsManager.Instance.Enqueue(child.ActiveVolume);
                 }
             }
-            node.DisableVolume();
+            // MODIFIED: Do NOT disable the parent volume immediately. 
+            // We let it persist in the "Branch" state until children are ready (handled in UpdateNodeLOD).
+            // node.DisableVolume(); 
         }
 
         private void MergeNode(WorldOctreeNode node)
