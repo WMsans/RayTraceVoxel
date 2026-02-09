@@ -671,6 +671,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.VoxelVolumePool
   prefab: {fileID: 7605555090304409176, guid: def5071789b0b264aad0807b43204eaf, type: 3}
   poolSize: 400
+  transientPoolSize: 5
   poolContainer: {fileID: 0}
   maxNodesPerVolume: 5000
   maxBricksPerVolume: 2500

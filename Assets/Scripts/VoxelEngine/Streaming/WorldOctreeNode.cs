@@ -3,6 +3,7 @@ using VoxelEngine.Core;
 
 namespace VoxelEngine.Core.Streaming
 {
+    public enum NodeState { Uninitialized, Pending, Empty, Solid, Active }
     /// <summary>
     /// Represents a node in the infinite world octree (CPU-side).
     /// Manages spatial data and holds a reference to a physical VoxelVolume if active.
@@ -22,13 +23,10 @@ namespace VoxelEngine.Core.Streaming
         public Bounds Bounds => new Bounds(Center, Vector3.one * Size);
 
         // --- Payload ---
-        /// <summary>
-        /// The active VoxelVolume MonoBehaviour managed by this node (if Leaf).
-        /// </summary>
         public VoxelVolume ActiveVolume { get; private set; }
+        public NodeState State { get; private set; } = NodeState.Uninitialized;
 
         // --- Constants ---
-        // Normalized offsets for 8 octants (x, y, z)
         private static readonly Vector3[] ChildOffsets = new Vector3[]
         {
             new Vector3(-1, -1, -1), new Vector3(1, -1, -1),
@@ -70,41 +68,56 @@ namespace VoxelEngine.Core.Streaming
             Children = null;
         }
 
-        // --- Volume Management (UPDATED) ---
+        // --- Volume Management (UPDATED for Transient Auditor) ---
 
-        public void EnableVolume(Transform container)
+        public void RequestGeneration(MonoBehaviour runner)
         {
-            if (ActiveVolume != null) return; 
+            if (State != NodeState.Uninitialized) return;
+            
+            if (VoxelVolumePool.Instance == null) return;
 
-            if (VoxelVolumePool.Instance == null)
-            {
-                Debug.LogError("WorldOctreeNode: Pool not found!");
-                return;
-            }
-
-            // Calculate Min Corner for the Volume origin
+            State = NodeState.Pending;
             Vector3 minCorner = Center - (Vector3.one * Size * 0.5f);
-            
-            // Request from Pool
-            ActiveVolume = VoxelVolumePool.Instance.GetVolume(minCorner, Size);
-            
-            if (ActiveVolume != null)
+
+            // Audit the chunk using the Transient Pool
+            VoxelVolumePool.Instance.AuditChunk(minCorner, Size, 64, (result) => 
             {
-                ActiveVolume.name = $"Volume_D{Depth}_{Center}";
-            }
+                switch (result.type)
+                {
+                    case AuditResultType.Empty:
+                        State = NodeState.Empty;
+                        ActiveVolume = null;
+                        break;
+                    case AuditResultType.Solid:
+                        State = NodeState.Solid;
+                        ActiveVolume = null;
+                        break;
+                    case AuditResultType.Complex:
+                        State = NodeState.Active;
+                        ActiveVolume = result.volume;
+                        if (ActiveVolume != null)
+                        {
+                            ActiveVolume.name = $"Volume_D{Depth}_{Center}";
+                        }
+                        break;
+                    case AuditResultType.Retry:
+                        State = NodeState.Uninitialized; // Try again later
+                        break;
+                }
+            });
         }
 
         public void DisableVolume()
         {
-            if (ActiveVolume == null) return;
-
-            // Return to Pool
-            if (VoxelVolumePool.Instance != null)
+            if (ActiveVolume != null)
             {
-                VoxelVolumePool.Instance.ReturnVolume(ActiveVolume);
+                if (VoxelVolumePool.Instance != null)
+                {
+                    VoxelVolumePool.Instance.ReturnVolume(ActiveVolume);
+                }
+                ActiveVolume = null;
             }
-            
-            ActiveVolume = null;
+            State = NodeState.Uninitialized;
         }
     }
 }

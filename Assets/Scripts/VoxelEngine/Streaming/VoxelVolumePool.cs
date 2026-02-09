@@ -1,3 +1,5 @@
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using System.Runtime.InteropServices;
@@ -8,6 +10,7 @@ using Unity.Burst;
 using Unity.Jobs;
 using Unity.Collections;
 using Unity.Mathematics;
+using UnityEngine.Rendering;
 
 namespace VoxelEngine.Core.Streaming
 {
@@ -30,11 +33,20 @@ namespace VoxelEngine.Core.Streaming
         public uint count;
     }
 
+    public enum AuditResultType { Retry, Empty, Solid, Complex }
+
+    public struct AuditResult
+    {
+        public AuditResultType type;
+        public VoxelVolume volume; // Only valid if Complex
+    }
+
     public class VoxelVolumePool : MonoBehaviour
     {
         public static VoxelVolumePool Instance { get; private set; }
         public VoxelVolume prefab;
         public int poolSize = 100;
+        public int transientPoolSize = 5; // Reserve for auditing
         public Transform poolContainer;
         public int maxNodesPerVolume = 50000; 
         public int maxBricksPerVolume = 25000; 
@@ -60,6 +72,8 @@ namespace VoxelEngine.Core.Streaming
         private const int MAX_TLAS_INDICES = 262144; 
 
         private Queue<VoxelVolume> _pool = new Queue<VoxelVolume>();
+        private Queue<VoxelVolume> _transientPool = new Queue<VoxelVolume>(); // Transient Auditor Pool
+
         private List<VoxelVolume> _activeVolumes = new List<VoxelVolume>();
         private List<VoxelVolume> _visibleVolumes = new List<VoxelVolume>();
         public IReadOnlyList<VoxelVolume> VisibleVolumes => _visibleVolumes;
@@ -76,18 +90,18 @@ namespace VoxelEngine.Core.Streaming
             Instance = this;
             InitializeGlobalBuffers();
             InitializePool();
+            InitializeTransientPool();
         }
 
         private void InitializeGlobalBuffers()
         {
-            int totalNodes = poolSize * maxNodesPerVolume;
-            // Ensure totalNodes is multiple of PAGE_SIZE for safety
+            int totalNodes = (poolSize + transientPoolSize) * maxNodesPerVolume;
             int pageSize = SVONode.PAGE_SIZE;
             if (totalNodes % pageSize != 0) totalNodes = ((totalNodes / pageSize) + 1) * pageSize;
             
             int totalPages = totalNodes / pageSize;
 
-            int totalBricks = poolSize * maxBricksPerVolume; 
+            int totalBricks = (poolSize + transientPoolSize) * maxBricksPerVolume; 
             int totalBrickVoxels = totalBricks * SVONode.BRICK_VOXEL_COUNT;
 
             Debug.Log($"Allocating Global Voxel Memory: {totalNodes/1000}k Nodes ({totalPages} Pages), {totalBricks/1000}k Bricks. BrickData: {totalBrickVoxels * 4 / 1024 / 1024} MB");
@@ -128,74 +142,211 @@ namespace VoxelEngine.Core.Streaming
             }
         }
 
-        public VoxelVolume GetVolume(Vector3 position, float size, int requestedNodes = -1, int requestedBricks = -1, int resolution = -1, bool generateEmpty = false)
+        private void InitializeTransientPool()
+        {
+            // Transient volumes hold onto their memory permanently to avoid allocation churn
+            for (int i = 0; i < transientPoolSize; i++)
+            {
+                CreateTransientVolume();
+            }
+        }
+
+        private void CreateTransientVolume()
+        {
+            VoxelVolume vol = null;
+            
+            // Prefer taking from main pool to keep hierarchy clean, otherwise instantiate
+            if (_pool.Count > 0)
+            {
+                vol = _pool.Dequeue();
+            }
+            else
+            {
+                vol = Instantiate(prefab, poolContainer);
+            }
+            
+            vol.gameObject.name = $"Volume_Transient";
+            vol.gameObject.SetActive(false);
+
+            // Pre-allocate memory
+            if (AllocateVolumeMemory(maxNodesPerVolume, maxBricksPerVolume, out int[] pages, out int ptOffset, out int brickOffset))
+            {
+                vol.AssignMemorySlice(this, 0, 0, brickOffset, maxNodesPerVolume, maxBricksPerVolume, ptOffset, pages);
+                vol.IsTransient = true;
+                _transientPool.Enqueue(vol);
+            }
+            else
+            {
+                Debug.LogError("Failed to allocate memory for Transient Volume!");
+                // Cleanup if we pulled from pool
+                if (vol != null) 
+                {
+                    if (_pool != null) _pool.Enqueue(vol); 
+                    else Destroy(vol.gameObject);
+                }
+            }
+        }
+
+        private bool AllocateVolumeMemory(int requestedNodes, int requestedBricks, out int[] pages, out int pageTableOffset, out int brickOffset)
+        {
+            pages = null; pageTableOffset = -1; brickOffset = -1;
+            int pageSize = SVONode.PAGE_SIZE;
+            int pagesNeeded = Mathf.CeilToInt((float)requestedNodes / pageSize);
+            
+            if (!_nodeAllocator.Allocate(pagesNeeded, out pages)) return false;
+            
+            if (!_pageTableAllocator.Allocate(pagesNeeded, out pageTableOffset))
+            {
+                _nodeAllocator.Free(pages);
+                return false;
+            }
+            
+            // Update Page Table
+            int[] pageTableData = new int[pagesNeeded];
+            for (int i = 0; i < pagesNeeded; i++) pageTableData[i] = pages[i] * pageSize;
+            GlobalPageTableBuffer.SetData(pageTableData, 0, pageTableOffset, pagesNeeded);
+
+            int brickVoxels = requestedBricks * SVONode.BRICK_VOXEL_COUNT;
+            if (!_brickAllocator.Allocate(brickVoxels, out brickOffset))
+            {
+                _nodeAllocator.Free(pages);
+                _pageTableAllocator.Free(pageTableOffset, pagesNeeded);
+                return false;
+            }
+
+            return true;
+        }
+
+        // --- Audit / Transient Logic ---
+
+        public void AuditChunk(Vector3 position, float size, int resolution, Action<AuditResult> onComplete)
+        {
+            if (_transientPool.Count == 0)
+            {
+                // Retry next frame
+                onComplete?.Invoke(new AuditResult { type = AuditResultType.Retry });
+                return;
+            }
+
+            VoxelVolume vol = _transientPool.Dequeue();
+            // Configure transient volume
+            vol.transform.position = position;
+            vol.transform.localScale = Vector3.one * (size / resolution);
+            vol.resolution = resolution;
+            
+            // Run Generation
+            vol.OnPullFromPool(position, size, false);
+            
+            // Hide to prevent flash
+            vol.gameObject.SetActive(false);
+            
+            StartCoroutine(AuditRoutine(vol, position, size, resolution, onComplete));
+        }
+
+        private IEnumerator AuditRoutine(VoxelVolume vol, Vector3 pos, float size, int res, Action<AuditResult> onComplete)
+        {
+            // 1. Read Counters
+            var req = AsyncGPUReadback.Request(vol.CounterBuffer);
+            yield return new WaitUntil(() => req.done);
+
+            if (req.hasError)
+            {
+                ReturnTransient(vol);
+                onComplete?.Invoke(new AuditResult { type = AuditResultType.Retry });
+                yield break;
+            }
+
+            var data = req.GetData<uint>();
+            int nodeCount = (int)data[0];
+            int payloadCount = (int)data[1];
+            int brickVoxelCount = (int)data[2];
+
+            // Case A: Empty
+            if (nodeCount == 0)
+            {
+                ReturnTransient(vol);
+                onComplete?.Invoke(new AuditResult { type = AuditResultType.Empty });
+            }
+            // Case B: Solid (Heuristic: 1 Node usually means Root only, and if not empty, it's solid)
+            else if (nodeCount == 1)
+            {
+                ReturnTransient(vol);
+                onComplete?.Invoke(new AuditResult { type = AuditResultType.Solid });
+            }
+            // Case C: Complex / Surface
+            else
+            {
+                // FIX: Promote the Transient Volume to Permanent immediately.
+                // Do NOT attempt to read back nodes/payloads and copy them.
+                // The data is paged/scattered in global memory, so linear readback fails (returns zeros).
+                // By promoting the volume, we keep the valid memory allocation.
+
+                vol.IsTransient = false;
+                vol.gameObject.name = $"Volume_Active_{pos}";
+                
+                // Add to active set
+                _activeVolumes.Add(vol);
+                UpdateChunkBuffer(null, default, 0f); // Ensure it gets into the render buffer
+                
+                // Ensure it's visible now that it's ready
+                vol.gameObject.SetActive(true);
+
+                // IMPORTANT: We used up a transient volume, so we must replace it
+                CreateTransientVolume();
+
+                onComplete?.Invoke(new AuditResult { type = AuditResultType.Complex, volume = vol });
+            }
+        }
+
+        private void ReturnTransient(VoxelVolume vol)
+        {
+            vol.OnReturnToPool();
+            _transientPool.Enqueue(vol);
+        }
+
+        // --- Main Pool Logic ---
+
+        public VoxelVolume GetVolume(Vector3 position, float size, int requestedNodes = -1, int requestedBricks = -1, int resolution = -1, bool generateEmpty = false, bool skipGeneration = false)
         {
             if (_pool.Count == 0) return null;
             
             if (requestedNodes < 0) requestedNodes = maxNodesPerVolume;
             if (requestedBricks < 0) requestedBricks = maxBricksPerVolume;
             
-            int pageSize = SVONode.PAGE_SIZE;
-            int pagesNeeded = Mathf.CeilToInt((float)requestedNodes / pageSize);
-            
-            // Attempt Allocation
-            if (!_nodeAllocator.Allocate(pagesNeeded, out int[] pages))
+            if (AllocateVolumeMemory(requestedNodes, requestedBricks, out int[] pages, out int ptOffset, out int brickOffset))
             {
-                Debug.LogWarning("VoxelVolumePool: Failed to allocate pages.");
+                VoxelVolume vol = _pool.Dequeue();
+                vol.AssignMemorySlice(this, 0, 0, brickOffset, requestedNodes, requestedBricks, ptOffset, pages);
+
+                // Configure volume
+                vol.transform.position = position;
+                float scale = size / vol.Resolution; 
+                if (resolution > 0)
+                {
+                    vol.resolution = resolution;
+                    scale = size / resolution;
+                }
+                vol.transform.localScale = Vector3.one * scale;
+                
+                // Pass flags
+                vol.OnPullFromPool(position, size, generateEmpty, skipGeneration);
+                
+                _activeVolumes.Add(vol);
+                UpdateChunkBuffer(null, default, 0f);
+                return vol;
+            }
+            else
+            {
+                Debug.LogWarning("VoxelVolumePool: Failed to allocate pages for GetVolume.");
                 return null;
             }
-            
-            if (!_pageTableAllocator.Allocate(pagesNeeded, out int pageTableOffset))
-            {
-                Debug.LogWarning("VoxelVolumePool: Failed to allocate page table entries.");
-                _nodeAllocator.Free(pages);
-                return null;
-            }
-            
-            // Update Page Table Buffer
-            int[] pageTableData = new int[pagesNeeded];
-            for (int i = 0; i < pagesNeeded; i++)
-            {
-                pageTableData[i] = pages[i] * pageSize; 
-            }
-            GlobalPageTableBuffer.SetData(pageTableData, 0, pageTableOffset, pagesNeeded);
-
-            int brickVoxels = requestedBricks * SVONode.BRICK_VOXEL_COUNT;
-            if (!_brickAllocator.Allocate(brickVoxels, out int brickOffset))
-            {
-                Debug.LogWarning("VoxelVolumePool: Failed to allocate bricks.");
-                _nodeAllocator.Free(pages);
-                _pageTableAllocator.Free(pageTableOffset, pagesNeeded);
-                return null;
-            }
-
-            VoxelVolume vol = _pool.Dequeue();
-            vol.AssignMemorySlice(this, 0, 0, brickOffset, requestedNodes, requestedBricks, pageTableOffset, pages);
-
-            // Configure volume
-            vol.transform.position = position;
-            float scale = size / vol.Resolution; 
-            
-            // Apply requested resolution if valid
-            if (resolution > 0)
-            {
-                vol.resolution = resolution;
-                scale = size / resolution;
-            }
-            
-            vol.transform.localScale = Vector3.one * scale;
-            
-            // Pass empty flag
-            vol.OnPullFromPool(position, size, generateEmpty);
-            
-            _activeVolumes.Add(vol);
-            UpdateChunkBuffer(null, default, 0f);
-            return vol;
         }
 
         public void ReturnVolume(VoxelVolume vol)
         {
             if (vol == null) return;
+            
+            // Whether it came from GetVolume or Promotion, it's in _activeVolumes
             if (_activeVolumes.Remove(vol))
             {
                 if (vol.IsReady)
@@ -207,17 +358,10 @@ namespace VoxelEngine.Core.Streaming
                 
                 vol.OnReturnToPool();
 
-                // Remove MeshCollider to avoid issues with recycled chunks having old collision data
                 MeshCollider meshCollider = vol.meshCol;
-                if (meshCollider != null)
-                {
-                    meshCollider.sharedMesh = null;
-                }
+                if (meshCollider != null) meshCollider.sharedMesh = null;
                 var MeshFilter = vol.meshFil;
-                if(MeshFilter != null)
-                {
-                    MeshFilter.mesh = null;
-                }
+                if(MeshFilter != null) MeshFilter.mesh = null;
 
                 vol.transform.SetParent(poolContainer); 
                 _pool.Enqueue(vol);
@@ -246,7 +390,6 @@ namespace VoxelEngine.Core.Streaming
 
                     if (!inFrustum && shadowDistance > 0)
                     {
-                        // Efficient AABB-Sphere distance check
                         Vector3 closest = vol.WorldBounds.ClosestPoint(viewerPos);
                         inShadowRange = (closest - viewerPos).sqrMagnitude < shadowDistSqr;
                     }
@@ -257,6 +400,7 @@ namespace VoxelEngine.Core.Streaming
                 _visibleVolumes.Add(vol);
                 ChunkDef def = new ChunkDef();
                 def.boundsMin = vol.WorldBounds.min;
+                // Note: PageTableOffset acts as the "nodeOffset" for Paged SVO shaders
                 def.nodeOffset = (uint)vol.BufferManager.PageTableOffset; 
                 def.boundsMax = vol.WorldBounds.max;
                 def.payloadOffset = (uint)vol.BufferManager.PageTableOffset; 
@@ -316,7 +460,6 @@ namespace VoxelEngine.Core.Streaming
 
             if (TLASChunkIndexBuffer.count < count)
             {
-                Debug.LogWarning($"TLAS Indices overflow: {count} > {TLASChunkIndexBuffer.count}. Increasing buffer size.");
                 TLASChunkIndexBuffer.Release();
                 TLASChunkIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, Mathf.Max(count, MAX_TLAS_INDICES * 2), 4);
             }

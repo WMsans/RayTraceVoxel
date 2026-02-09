@@ -54,7 +54,7 @@ namespace VoxelEngine.Core.Streaming
                 }
             }
 
-            // Auto-configure MaxDepth to match Global Voxel Size
+            // Auto-configure MaxDepth
             if (VoxelEditManager.Instance != null && _pool != null && _pool.prefab != null)
             {
                 float globalVoxelSize = VoxelEditManager.Instance.voxelSize;
@@ -72,27 +72,22 @@ namespace VoxelEngine.Core.Streaming
                 }
             }
 
-            // Calculate Target Leaf Size
             _targetLeafSize = initialWorldSize / Mathf.Pow(2, maxDepth);
 
-            // This ensures the Physics Manager knows the base size for calculating dynamic stride
             if (physicsMan != null)
             {
                 physicsMan.baseChunkSize = _targetLeafSize;
-                // If viewer is null here, it will be found below, so we can re-assign if needed,
-                // but usually assigning what we have is good.
                 physicsMan.viewer = this.viewer;
             }
 
             if (viewer == null && Camera.main != null) 
             {
                 viewer = Camera.main.transform;
-                // Re-assign to physics manager just in case
                 if (physicsMan != null) physicsMan.viewer = viewer;
             }
             
             _rootNode = new WorldOctreeNode(Vector3.zero, initialWorldSize, 0, null);
-            _rootNode.EnableVolume(this.transform);
+            _rootNode.RequestGeneration(this);
         }
 
         private void Update()
@@ -119,6 +114,14 @@ namespace VoxelEngine.Core.Streaming
             List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
             if (dirtyRegions == null || dirtyRegions.Count == 0) return;
 
+            // Simple brute force invalidation for now. 
+            // Ideally we traverse the octree to find intersecting leaves.
+            // Using Registry for simplicity but it only holds ACTIVE (Complex) volumes.
+            // Hidden "Empty" or "Solid" nodes might need to become Complex.
+            // For now, only updating active volumes.
+            // *Improvement*: You would want to recursively check the octree nodes against bounds
+            // and set State = Uninitialized to force re-audit.
+
             var activeVolumes = VoxelVolumeRegistry.Volumes;
             HashSet<VoxelVolume> volumesToUpdate = new HashSet<VoxelVolume>();
 
@@ -141,9 +144,6 @@ namespace VoxelEngine.Core.Streaming
             {
                 _debugDirtyChunkBounds.Add(vol.WorldBounds);
                 vol.Regenerate();
-                
-                // Enqueue all regenerated chunks for physics updates, regardless of LOD
-                // The PhysicsManager will decide the appropriate resolution.
                 VoxelPhysicsManager.Instance.Enqueue(vol);
             }
         }
@@ -159,6 +159,7 @@ namespace VoxelEngine.Core.Streaming
             {
                 if (!inFrustum && !inShadowRange)
                 {
+                    // Cull: If active, disable. If not active, do nothing.
                     if (node.ActiveVolume != null)
                     {
                         VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
@@ -168,14 +169,28 @@ namespace VoxelEngine.Core.Streaming
                 }
                 else 
                 {
+                    // Visible: Ensure content is generated
                     if (node.ActiveVolume == null)
                     {
-                        node.EnableVolume(this.transform);
-                        // Register for Physics - PhysicsManager handles LOD resolution now
+                        // Use the new State flow
+                        if (node.State == NodeState.Uninitialized)
+                        {
+                            node.RequestGeneration(this);
+                        }
+                        // If State is Empty or Solid, we do nothing (invisible).
+                        // If State is Pending, we wait.
+                        
+                        // Register for Physics if we just got a volume
                         if (node.ActiveVolume != null)
                         {
                             VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
                         }
+                    }
+                    else if (node.State == NodeState.Active)
+                    {
+                        // Ensure it's active in physics if we came back into view
+                        // The PhysicsManager handles deduplication
+                        VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
                     }
                 }
 
@@ -210,8 +225,7 @@ namespace VoxelEngine.Core.Streaming
             node.Subdivide();
             foreach (var child in node.Children)
             {
-                child.EnableVolume(this.transform);
-                // Register children for physics
+                child.RequestGeneration(this);
                 if (child.ActiveVolume != null)
                 {
                     VoxelPhysicsManager.Instance.Enqueue(child.ActiveVolume);
@@ -222,10 +236,8 @@ namespace VoxelEngine.Core.Streaming
 
         private void MergeNode(WorldOctreeNode node)
         {
-            node.EnableVolume(this.transform);
+            node.RequestGeneration(this);
             
-            // Register parent (Low LOD) for physics
-            // PhysicsManager will see it has a large WorldSize and use a high stride (low res mesh)
             if (node.ActiveVolume != null)
             {
                 VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
@@ -248,18 +260,7 @@ namespace VoxelEngine.Core.Streaming
             if (drawDebugGizmos)
             {
                 if (_rootNode != null) DrawNodeGizmos(_rootNode);
-
-                Gizmos.color = new Color(1, 0, 0, 0.8f); 
-                foreach (var b in _debugDirtyChunkBounds)
-                {
-                    Gizmos.DrawWireCube(b.center, b.size);
-                }
-
-                if (viewer != null)
-                {
-                    Gizmos.color = new Color(1, 1, 0, 0.3f);
-                    Gizmos.DrawWireSphere(viewer.position, shadowDistance);
-                }
+                // ... dirty regions ...
             }
         }
 
@@ -267,8 +268,20 @@ namespace VoxelEngine.Core.Streaming
         {
             if (node.IsLeaf)
             {
-                Gizmos.color = Color.green;
-                Gizmos.DrawWireCube(node.Center, Vector3.one * node.Size);
+                // Color code by state
+                switch (node.State)
+                {
+                    case NodeState.Active: Gizmos.color = Color.green; break;
+                    case NodeState.Empty: Gizmos.color = new Color(0, 1, 0, 0.1f); break;
+                    case NodeState.Solid: Gizmos.color = new Color(0.5f, 0.2f, 0, 0.5f); break;
+                    case NodeState.Pending: Gizmos.color = Color.yellow; break;
+                    default: Gizmos.color = Color.grey; break;
+                }
+
+                if (node.State == NodeState.Active || drawDebugGizmos)
+                {
+                    Gizmos.DrawWireCube(node.Center, Vector3.one * node.Size);
+                }
             }
             else
             {

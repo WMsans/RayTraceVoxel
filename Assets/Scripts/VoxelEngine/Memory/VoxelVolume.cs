@@ -91,12 +91,15 @@ namespace VoxelEngine.Core
             );
         }
 
-        public void OnPullFromPool(Vector3 worldOrigin, float size, bool empty = false)
+        public void OnPullFromPool(Vector3 worldOrigin, float size, bool empty = false, bool skipGeneration = false)
         {
             WorldSize = size;
             BufferManager.ResetCounters();
             this.gameObject.SetActive(true);
-            Regenerate(empty);
+            if (!skipGeneration)
+            {
+                Regenerate(empty);
+            }
         }
 
         public void OnReturnToPool() { this.gameObject.SetActive(false); }
@@ -109,6 +112,12 @@ namespace VoxelEngine.Core
             SVOGenerator.Build(svoCompute, BufferManager, resolution, WorldOrigin, WorldSize, empty);
             
             // Notify listeners (e.g. GrassRenderer)
+            OnRegenerationComplete?.Invoke();
+        }
+        
+        // Shim for calling event from Pool when data is injected manually
+        public void OnRegenerationCompleteShim()
+        {
             OnRegenerationComplete?.Invoke();
         }
 

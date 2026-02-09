@@ -54,6 +54,9 @@ namespace VoxelEngine.Core.Generators
             else
             {
                 shader.SetInt("_NumDynamicObjects", 0);
+                shader.SetBuffer(kBuild, "_SDFObjectBuffer", buffers.PageTableBuffer);
+                shader.SetBuffer(kBuild, "_LBVHNodeBuffer", buffers.PageTableBuffer);
+                shader.SetBuffer(kBuild, "_SDFObjectIndexBuffer", buffers.PageTableBuffer);
             }
             
             shader.SetBuffer(kBuild, "_NodeBuffer", buffers.NodeBuffer);
@@ -113,8 +116,8 @@ namespace VoxelEngine.Core.Generators
             }
 
             // Bind Edit Buffers (or safe fallbacks if empty)
-            shader.SetBuffer(kBuild, "_EditInfoBuffer", editCount > 0 ? editManager.EditInfoBuffer : buffers.NodeBuffer);
-            shader.SetBuffer(kBuild, "_EditVoxelBuffer", editCount > 0 ? editManager.EditVoxelBuffer : buffers.NodeBuffer);
+            shader.SetBuffer(kBuild, "_EditInfoBuffer", editCount > 0 ? editManager.EditInfoBuffer : buffers.PageTableBuffer);
+            shader.SetBuffer(kBuild, "_EditVoxelBuffer", editCount > 0 ? editManager.EditVoxelBuffer : buffers.PageTableBuffer);
             shader.SetInt("_EditCount", editCount);
             shader.SetFloat("_GlobalVoxelSize", editVoxelSize);
             shader.SetInt("_GlobalBrickSize", 4);
