@@ -273,6 +273,13 @@ namespace VoxelEngine.Core.Streaming
                 ReturnTransient(vol);
                 onComplete?.Invoke(new AuditResult { type = AuditResultType.Solid });
             }
+            // Case B2: Complex but Empty (Structure without content)
+            // Fixes issue where empty chunks with slight node structure took up volumes
+            else if (payloadCount == 0 && brickVoxelCount == 0)
+            {
+                ReturnTransient(vol);
+                onComplete?.Invoke(new AuditResult { type = AuditResultType.Empty });
+            }
             // Case C: Complex / Surface
             else
             {
