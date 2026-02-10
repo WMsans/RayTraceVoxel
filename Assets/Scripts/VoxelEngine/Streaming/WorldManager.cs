@@ -197,10 +197,32 @@ namespace VoxelEngine.Core.Streaming
 
                 var node = _nodeObjects[idx];
                 
-                // If it's a leaf, ensure content is generated
-                if (node.IsLeaf && node.ActiveVolume == null && node.State == NodeState.Uninitialized)
+                if (node.IsLeaf)
                 {
-                     node.RequestGeneration(this);
+                    // If it's a leaf, ensure content is generated
+                    if (node.ActiveVolume == null && node.State == NodeState.Uninitialized)
+                    {
+                         node.RequestGeneration(this);
+                    }
+                }
+                else
+                {
+                    // [FIX]: Overlap Issue
+                    // If this parent is subdivided (IsLeaf == false), we MUST ensure ALL children 
+                    // are generated so the parent can deactivate. 
+                    if (!node.AreChildrenReady && node.Children != null)
+                    {
+                        for (int c = 0; c < node.Children.Length; c++)
+                        {
+                            var child = node.Children[c];
+                            // [FIX] Only request generation for LEAF children. 
+                            // Branch children handle their own generation.
+                            if (child.IsLeaf && child.State == NodeState.Uninitialized)
+                            {
+                                child.RequestGeneration(this);
+                            }
+                        }
+                    }
                 }
 
                 // Physics & Enabling

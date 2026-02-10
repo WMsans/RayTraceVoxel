@@ -567,6 +567,11 @@ namespace VoxelEngine.Core.Streaming
             for (int i = 0; i < _activeVolumes.Count; i++)
             {
                 var vol = _activeVolumes[i];
+                
+                // [FIX] Skip volumes that have been disabled (e.g. by LOD logic in WorldManager)
+                // This prevents the parent chunk from rendering when it has been replaced by children.
+                if (!vol.gameObject.activeInHierarchy) continue;
+
                 if (cullingPlanes != null)
                 {
                     bool inFrustum = GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds);

@@ -116,6 +116,10 @@ namespace VoxelEngine.Core.Streaming
                 
                 for (int i = 0; i < Children.Length; i++)
                 {
+                    // [FIX] Ignore children that are branches (they handle their own LOD).
+                    // We only wait for leaf children to be ready (Generated/Empty).
+                    if (!Children[i].IsLeaf) continue;
+
                     if (Children[i].State == NodeState.Pending || Children[i].State == NodeState.Uninitialized)
                         return false;
                 }
@@ -153,6 +157,9 @@ namespace VoxelEngine.Core.Streaming
                 {
                     if (result.type == AuditResultType.Complex && result.volume != null)
                         VoxelVolumePool.Instance.ReturnVolume(result.volume);
+                    
+                    // [FIX] Reset state so we don't get stuck in Pending forever.
+                    State = NodeState.Uninitialized; 
                     onComplete?.Invoke(false);
                     return;
                 }
