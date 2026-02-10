@@ -42,27 +42,22 @@ void GetOakTree(float3 p, float h, out float dist, out uint mat, out float3 grad
     // Trunk Gradient
     float3 gTrunk = normalize(float3(p.x, 0, p.z));
 
-    // 2. Leaves (Ellipsoid with Noise)
+    // 2. Leaves (Ellipsoid)
     // Center canopy higher up
     float3 leafCenter = float3(0, h * 0.9, 0);
-    
+
     // HUGE Canopy: ~20 units wide, ~12 units tall
-    float3 leafRad = float3(10.0, 6.0, 10.0); 
-    
+    float3 leafRad = float3(10.0, 6.0, 10.0);
     float3 pLeaf = p - leafCenter;
     float dLeaves = sdEllipsoidOak(pLeaf, leafRad);
 
-    // 3D Noise (Scaled for larger size)
-    // Only apply if close to surface
-    if (dLeaves < 4.0) 
-    {
-        // Lower frequency (0.25) for larger "clumps" of leaves
-        float noiseVal = snoise(pLeaf * 0.25) * 1.5;
-        dLeaves += noiseVal;
-    }
+    // [PERFORMANCE CHANGE] 
+    // Removed 3D Noise application here to improve performance.
+    // The conditional block 'if (dLeaves < 4.0) { ... snoise ... }' was deleted.
     
     // 3. Union (Trunk + Leaves)
-    float k = 1.2; // Smoother blend for larger shapes
+    float k = 1.2;
+    // Smoother blend for larger shapes
     float hMix = clamp(0.5 + 0.5 * (dTrunk - dLeaves) / k, 0.0, 1.0);
     dist = lerp(dTrunk, dLeaves, hMix) - k * hMix * (1.0 - hMix);
 
@@ -91,6 +86,7 @@ void Stage_OakTrees(inout GenerationContext ctx)
             float2 cellId = currentGridId + neighbor;
             
             float h = HashOak(cellId);
+
             if (h < OAK_CHANCE)
             {
                 // Jitter
@@ -103,8 +99,8 @@ void Stage_OakTrees(inout GenerationContext ctx)
                 float terrainH = GetHeight(treeXZ);
                 
                 // Height increased: Range 18.0 to 30.0
-                float treeHeight = 18.0 + h * 12.0; 
-                
+                float treeHeight = 18.0 + h * 12.0;
+
                 // Vertical bounds check
                 if (ctx.position.y < terrainH - 5.0 || ctx.position.y > terrainH + treeHeight + 15.0) continue;
 

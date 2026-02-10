@@ -1,36 +1,30 @@
 using UnityEngine;
 using VoxelEngine.Core;
+using System;
 
 namespace VoxelEngine.Core.Streaming
 {
     public enum NodeState { Uninitialized, Pending, Empty, Solid, Active }
-    /// <summary>
-    /// Represents a node in the infinite world octree (CPU-side).
-    /// Manages spatial data and holds a reference to a physical VoxelVolume if active.
-    /// </summary>
+
     public class WorldOctreeNode
     {
+        // --- Native Linkage ---
+        public int Index { get; private set; } = -1;
+
         // --- Properties ---
         public Vector3 Center { get; private set; }
         public float Size { get; private set; }
         public int Depth { get; private set; }
         
-        // --- Hierarchy ---
         public WorldOctreeNode Parent { get; private set; }
         public WorldOctreeNode[] Children { get; private set; }
         public bool IsLeaf => Children == null;
 
         public Bounds Bounds => new Bounds(Center, Vector3.one * Size);
-
-        // --- Payload ---
         public VoxelVolume ActiveVolume { get; private set; }
         public NodeState State { get; private set; } = NodeState.Uninitialized;
 
-        // --- Safety ---
-        // Used to invalidate pending async generation requests if the node changes state/topology
         private int _generationRequestId = 0; 
-
-        // --- Constants ---
         private static readonly Vector3[] ChildOffsets = new Vector3[]
         {
             new Vector3(-1, -1, -1), new Vector3(1, -1, -1),
@@ -45,11 +39,19 @@ namespace VoxelEngine.Core.Streaming
             Size = size;
             Depth = depth;
             Parent = parent;
+
+            // Register with Manager for Burst tracking
+            if (WorldManager.Instance != null)
+            {
+                Index = WorldManager.Instance.RegisterNode(this, center, size, depth);
+            }
         }
 
         public void Subdivide()
         {
+            if (State == NodeState.Pending) CancelGeneration();
             if (!IsLeaf) return;
+
             Children = new WorldOctreeNode[8];
             float quarterSize = Size * 0.25f;
             float childSize = Size * 0.5f;
@@ -59,99 +61,145 @@ namespace VoxelEngine.Core.Streaming
                 Vector3 childPos = Center + (ChildOffsets[i] * quarterSize);
                 Children[i] = new WorldOctreeNode(childPos, childSize, Depth + 1, this);
             }
+
+            // Sync Struct
+            if (WorldManager.Instance != null) 
+                WorldManager.Instance.UpdateNodeStruct(Index, false); // No longer a leaf
         }
 
         public void Merge()
         {
             if (IsLeaf) return;
-            foreach (var child in Children)
+
+            // If we are already waiting for a merge generation, do nothing.
+            if (State == NodeState.Pending) return;
+
+            // 1. Request Parent Content
+            RequestGeneration(WorldManager.Instance, (success) => 
             {
-                child.Merge(); 
-                child.DisableVolume();
-            }
-            Children = null;
+                if (success)
+                {
+                    if (IsLeaf) return; // Already merged?
+
+                    // 2. Dispose Children
+                    foreach (var child in Children)
+                    {
+                        child.Dispose();
+                    }
+                    Children = null;
+
+                    // Sync Struct
+                    if (WorldManager.Instance != null) 
+                        WorldManager.Instance.UpdateNodeStruct(Index, true); // Now a leaf
+                }
+            }, forMerge: true);
         }
 
-        // --- Volume Management (UPDATED for Transient Auditor) ---
-
-        public void RequestGeneration(MonoBehaviour runner)
+        public void Dispose()
         {
-            if (State != NodeState.Uninitialized) return;
+            Merge(); // Recursively clean children
+            DisableVolume();
             
-            if (VoxelVolumePool.Instance == null) return;
+            if (WorldManager.Instance != null && Index != -1)
+            {
+                WorldManager.Instance.UnregisterNode(Index);
+                Index = -1;
+            }
+        }
+
+        public bool AreChildrenReady
+        {
+            get
+            {
+                if (IsLeaf || Children == null) return true;
+                if (State == NodeState.Pending) return false;
+                
+                for (int i = 0; i < Children.Length; i++)
+                {
+                    // [FIX] Ignore children that are branches (they handle their own LOD).
+                    // We only wait for leaf children to be ready (Generated/Empty).
+                    if (!Children[i].IsLeaf) continue;
+
+                    if (Children[i].State == NodeState.Pending || Children[i].State == NodeState.Uninitialized)
+                        return false;
+                }
+                return true;
+            }
+        }
+
+        public void RequestGeneration(MonoBehaviour runner, Action<bool> onComplete = null, bool forMerge = false)
+        {
+            if (State == NodeState.Active || State == NodeState.Empty || State == NodeState.Solid)
+            {
+                onComplete?.Invoke(true);
+                return;
+            }
+
+            if (State != NodeState.Uninitialized) return;
+            if (VoxelVolumePool.Instance == null) { onComplete?.Invoke(false); return; }
 
             State = NodeState.Pending;
-            
-            // Increment ID to identify this specific request. 
-            // Any previous pending callbacks will see a mismatch and abort.
             _generationRequestId++;
             int currentRequestId = _generationRequestId;
-
             Vector3 minCorner = Center - (Vector3.one * Size * 0.5f);
 
-            // Audit the chunk using the Transient Pool
             VoxelVolumePool.Instance.AuditChunk(minCorner, Size, 64, (result) => 
             {
-                // --- CRITICAL FIX ---
-                // We check three things before accepting the volume:
-                // 1. _generationRequestId match: Ensures we haven't been reset/disabled since this request started.
-                // 2. State == Pending: Ensures no other logic has forcibly changed our state.
-                // 3. IsLeaf: Ensures we haven't split (Subdivided) into children while waiting.
-                bool isValid = (currentRequestId == _generationRequestId) 
-                               && (State == NodeState.Pending) 
-                               && IsLeaf;
-
-                if (!isValid)
+                if (currentRequestId != _generationRequestId || State != NodeState.Pending)
                 {
-                    // If the node changed (e.g. split into higher LOD), we must NOT accept this lower LOD volume.
-                    // Return it to the pool immediately to prevent overlapping.
                     if (result.type == AuditResultType.Complex && result.volume != null)
-                    {
                         VoxelVolumePool.Instance.ReturnVolume(result.volume);
-                    }
+                    onComplete?.Invoke(false);
                     return;
                 }
-                // --------------------
+
+                if (!forMerge && !IsLeaf)
+                {
+                    if (result.type == AuditResultType.Complex && result.volume != null)
+                        VoxelVolumePool.Instance.ReturnVolume(result.volume);
+                    
+                    // [FIX] Reset state so we don't get stuck in Pending forever.
+                    State = NodeState.Uninitialized; 
+                    onComplete?.Invoke(false);
+                    return;
+                }
 
                 switch (result.type)
                 {
-                    case AuditResultType.Empty:
-                        State = NodeState.Empty;
-                        ActiveVolume = null;
-                        break;
-                    case AuditResultType.Solid:
-                        State = NodeState.Solid;
-                        ActiveVolume = null;
-                        break;
+                    case AuditResultType.Empty: State = NodeState.Empty; break;
+                    case AuditResultType.Solid: State = NodeState.Solid; break;
                     case AuditResultType.Complex:
                         State = NodeState.Active;
                         ActiveVolume = result.volume;
-                        if (ActiveVolume != null)
-                        {
-                            ActiveVolume.name = $"Volume_D{Depth}_{Center}";
-                        }
+                        if (ActiveVolume != null) ActiveVolume.name = $"Volume_D{Depth}_{Center}";
                         break;
                     case AuditResultType.Retry:
-                        State = NodeState.Uninitialized; // Try again later
-                        break;
+                        State = NodeState.Uninitialized;
+                        onComplete?.Invoke(false);
+                        return;
                 }
+                onComplete?.Invoke(true);
             });
         }
 
         public void DisableVolume()
         {
-            // Invalidate any generation requests currently in flight
-            _generationRequestId++;
-
+            CancelGeneration();
             if (ActiveVolume != null)
             {
-                if (VoxelVolumePool.Instance != null)
-                {
-                    VoxelVolumePool.Instance.ReturnVolume(ActiveVolume);
-                }
+                if (VoxelVolumePool.Instance != null) VoxelVolumePool.Instance.ReturnVolume(ActiveVolume);
                 ActiveVolume = null;
             }
             State = NodeState.Uninitialized;
+        }
+
+        public void CancelGeneration()
+        {
+            if (State == NodeState.Pending)
+            {
+                _generationRequestId++;
+                State = NodeState.Uninitialized;
+            }
         }
     }
 }

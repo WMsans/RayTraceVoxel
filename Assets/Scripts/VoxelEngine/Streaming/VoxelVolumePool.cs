@@ -9,6 +9,7 @@ using VoxelEngine.Core.Memory;
 using Unity.Burst;
 using Unity.Jobs;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe; // Added for UnsafeUtility
 using Unity.Mathematics;
 using UnityEngine.Rendering;
 
@@ -41,6 +42,34 @@ namespace VoxelEngine.Core.Streaming
         public VoxelVolume volume; // Only valid if Complex
     }
 
+    [BurstCompile]
+    public struct TrimPagesJob : IJob
+    {
+        [ReadOnly] public NativeArray<int> Source;
+        [WriteOnly] public NativeArray<int> Keep;
+        [WriteOnly] public NativeArray<int> Free;
+        public int SplitIndex;
+
+        public unsafe void Execute()
+        {
+            int* srcPtr = (int*)Source.GetUnsafeReadOnlyPtr();
+            
+            // Copy Keep Portion
+            if (Keep.Length > 0)
+            {
+                void* keepPtr = Keep.GetUnsafePtr();
+                UnsafeUtility.MemCpy(keepPtr, srcPtr, Keep.Length * sizeof(int));
+            }
+
+            // Copy Free Portion
+            if (Free.Length > 0)
+            {
+                void* freePtr = Free.GetUnsafePtr();
+                UnsafeUtility.MemCpy(freePtr, srcPtr + SplitIndex, Free.Length * sizeof(int));
+            }
+        }
+    }
+
     public class VoxelVolumePool : MonoBehaviour
     {
         public static VoxelVolumePool Instance { get; private set; }
@@ -50,6 +79,18 @@ namespace VoxelEngine.Core.Streaming
         public Transform poolContainer;
         public int maxNodesPerVolume = 50000; 
         public int maxBricksPerVolume = 25000; 
+
+        [Header("Async Generation")]
+        [Tooltip("Max number of chunks to submit for generation per frame. Lower = smoother FPS, Higher = faster loading.")]
+        public int maxGenerationsPerFrame = 2;
+
+        [Header("Memory Optimization")]
+        [Tooltip("Percentage of used memory to add as extra buffer when trimming (0.0 - 1.0). Allows for editing.")]
+        public float trimReserveRatio = 0.25f;
+        [Tooltip("Minimum number of extra nodes to keep when trimming.")]
+        public int minNodeReserve = 1024;
+        [Tooltip("Minimum number of extra bricks to keep when trimming.")]
+        public int minBrickReserve = 512;
 
         public GraphicsBuffer GlobalNodeBuffer { get; private set; }
         public GraphicsBuffer GlobalPayloadBuffer { get; private set; }
@@ -84,6 +125,16 @@ namespace VoxelEngine.Core.Streaming
         
         public int VisibleChunkCount => _visibleVolumes.Count;
 
+        // --- Async Queue Data ---
+        private struct AuditRequest
+        {
+            public Vector3 position;
+            public float size;
+            public int resolution;
+            public Action<AuditResult> callback;
+        }
+        private Queue<AuditRequest> _auditQueue = new Queue<AuditRequest>();
+
         private void Awake()
         {
             if (Instance != null && Instance != this) { Destroy(this); return; }
@@ -91,6 +142,11 @@ namespace VoxelEngine.Core.Streaming
             InitializeGlobalBuffers();
             InitializePool();
             InitializeTransientPool();
+        }
+
+        private void Update()
+        {
+            ProcessAuditQueue();
         }
 
         private void InitializeGlobalBuffers()
@@ -151,7 +207,7 @@ namespace VoxelEngine.Core.Streaming
             }
         }
 
-        private void CreateTransientVolume()
+        private bool CreateTransientVolume()
         {
             VoxelVolume vol = null;
             
@@ -174,16 +230,26 @@ namespace VoxelEngine.Core.Streaming
                 vol.AssignMemorySlice(this, 0, 0, brickOffset, maxNodesPerVolume, maxBricksPerVolume, ptOffset, pages);
                 vol.IsTransient = true;
                 _transientPool.Enqueue(vol);
+                return true;
             }
             else
             {
-                Debug.LogError("Failed to allocate memory for Transient Volume!");
                 // Cleanup if we pulled from pool
                 if (vol != null) 
                 {
                     if (_pool != null) _pool.Enqueue(vol); 
                     else Destroy(vol.gameObject);
                 }
+                return false;
+            }
+        }
+
+        private void EnsureTransientPool()
+        {
+            while (_transientPool.Count < transientPoolSize)
+            {
+                // If we fail to create one (Memory Full), stop trying for now.
+                if (!CreateTransientVolume()) break; 
             }
         }
 
@@ -221,26 +287,51 @@ namespace VoxelEngine.Core.Streaming
 
         public void AuditChunk(Vector3 position, float size, int resolution, Action<AuditResult> onComplete)
         {
-            if (_transientPool.Count == 0)
+            // QUEUE MODIFICATION: Don't execute immediately. Enqueue.
+            _auditQueue.Enqueue(new AuditRequest
             {
-                // Retry next frame
-                onComplete?.Invoke(new AuditResult { type = AuditResultType.Retry });
-                return;
-            }
+                position = position,
+                size = size,
+                resolution = resolution,
+                callback = onComplete
+            });
+        }
 
+        private void ProcessAuditQueue()
+        {
+            int processed = 0;
+            // Process up to 'maxGenerationsPerFrame' requests per frame
+            while (_auditQueue.Count > 0 && processed < maxGenerationsPerFrame)
+            {
+                // Ensure we have a transient volume available
+                if (_transientPool.Count == 0)
+                {
+                    EnsureTransientPool();
+                    // If still empty (memory full or limit reached), wait for next frame
+                    if (_transientPool.Count == 0) break;
+                }
+
+                var req = _auditQueue.Dequeue();
+                ExecuteAudit(req);
+                processed++;
+            }
+        }
+
+        private void ExecuteAudit(AuditRequest req)
+        {
             VoxelVolume vol = _transientPool.Dequeue();
             // Configure transient volume
-            vol.transform.position = position;
-            vol.transform.localScale = Vector3.one * (size / resolution);
-            vol.resolution = resolution;
+            vol.transform.position = req.position;
+            vol.transform.localScale = Vector3.one * (req.size / req.resolution);
+            vol.resolution = req.resolution;
             
             // Run Generation
-            vol.OnPullFromPool(position, size, false);
+            vol.OnPullFromPool(req.position, req.size, false);
             
             // Hide to prevent flash
             vol.gameObject.SetActive(false);
             
-            StartCoroutine(AuditRoutine(vol, position, size, resolution, onComplete));
+            StartCoroutine(AuditRoutine(vol, req.position, req.size, req.resolution, req.callback));
         }
 
         private IEnumerator AuditRoutine(VoxelVolume vol, Vector3 pos, float size, int res, Action<AuditResult> onComplete)
@@ -274,7 +365,6 @@ namespace VoxelEngine.Core.Streaming
                 onComplete?.Invoke(new AuditResult { type = AuditResultType.Solid });
             }
             // Case B2: Complex but Empty (Structure without content)
-            // Fixes issue where empty chunks with slight node structure took up volumes
             else if (payloadCount == 0 && brickVoxelCount == 0)
             {
                 ReturnTransient(vol);
@@ -283,26 +373,114 @@ namespace VoxelEngine.Core.Streaming
             // Case C: Complex / Surface
             else
             {
-                // FIX: Promote the Transient Volume to Permanent immediately.
-                // Do NOT attempt to read back nodes/payloads and copy them.
-                // The data is paged/scattered in global memory, so linear readback fails (returns zeros).
-                // By promoting the volume, we keep the valid memory allocation.
+                TrimVolumeMemory(vol, nodeCount, brickVoxelCount);
 
                 vol.IsTransient = false;
                 vol.gameObject.name = $"Volume_Active_{pos}";
                 
-                // Add to active set
                 _activeVolumes.Add(vol);
-                UpdateChunkBuffer(null, default, 0f); // Ensure it gets into the render buffer
+                UpdateChunkBuffer(null, default, 0f); 
                 
-                // Ensure it's visible now that it's ready
                 vol.gameObject.SetActive(true);
 
-                // IMPORTANT: We used up a transient volume, so we must replace it
-                CreateTransientVolume();
+                // Replace the used transient volume
+                CreateTransientVolume(); 
 
                 onComplete?.Invoke(new AuditResult { type = AuditResultType.Complex, volume = vol });
             }
+        }
+
+        private void TrimVolumeMemory(VoxelVolume vol, int usedNodes, int usedBrickVoxels)
+        {
+            int pageSize = SVONode.PAGE_SIZE;
+            int[] currentPages = vol.AllocatedPages;
+            int currentBrickAllocatedVoxels = vol.MaxBricks * SVONode.BRICK_VOXEL_COUNT;
+
+            // --- 1. Calculate Target Sizes with Reserve (Nodes) ---
+            int reserveNodes = Mathf.CeilToInt(usedNodes * trimReserveRatio);
+            if (reserveNodes < minNodeReserve) reserveNodes = minNodeReserve;
+            
+            int targetNodeCount = usedNodes + reserveNodes;
+            int neededPages = Mathf.CeilToInt((float)targetNodeCount / pageSize);
+
+            if (currentPages != null)
+            {
+                if (neededPages > currentPages.Length) neededPages = currentPages.Length;
+                int minNeeded = Mathf.CeilToInt((float)usedNodes / pageSize);
+                if (neededPages < minNeeded) neededPages = minNeeded;
+            }
+            else
+            {
+                neededPages = 0;
+            }
+
+            // --- 2. Calculate Target Sizes with Reserve (Bricks) ---
+            int reserveBrickVoxels = Mathf.CeilToInt(usedBrickVoxels * trimReserveRatio);
+            int minReserveVoxels = minBrickReserve * SVONode.BRICK_VOXEL_COUNT;
+            if (reserveBrickVoxels < minReserveVoxels) reserveBrickVoxels = minReserveVoxels;
+
+            int targetBrickVoxels = usedBrickVoxels + reserveBrickVoxels;
+
+            if (targetBrickVoxels > currentBrickAllocatedVoxels) targetBrickVoxels = currentBrickAllocatedVoxels;
+            if (targetBrickVoxels < usedBrickVoxels) targetBrickVoxels = usedBrickVoxels;
+
+
+            // --- 3. Execute Trim (Pages) with Burst & MemCpy ---
+            int initialNodeMem = currentPages != null ? currentPages.Length * pageSize : 0;
+            int initialBrickMem = currentBrickAllocatedVoxels;
+
+            if (currentPages != null && neededPages < currentPages.Length)
+            {
+                int pagesToFreeCount = currentPages.Length - neededPages;
+                
+                // Using NativeArray + Burst for splitting to avoid managed array overhead where possible,
+                // and to utilize fast memory copy.
+                NativeArray<int> srcNative = new NativeArray<int>(currentPages, Allocator.TempJob);
+                NativeArray<int> keepNative = new NativeArray<int>(neededPages, Allocator.TempJob);
+                NativeArray<int> freeNative = new NativeArray<int>(pagesToFreeCount, Allocator.TempJob);
+
+                TrimPagesJob job = new TrimPagesJob
+                {
+                    Source = srcNative,
+                    Keep = keepNative,
+                    Free = freeNative,
+                    SplitIndex = neededPages
+                };
+                
+                job.Schedule().Complete();
+
+                // Convert back to managed arrays (assuming VoxelVolume/Allocator APIs strictly require int[])
+                int[] pagesToKeep = keepNative.ToArray();
+                int[] pagesToFree = freeNative.ToArray();
+                
+                srcNative.Dispose();
+                keepNative.Dispose();
+                freeNative.Dispose();
+
+                _nodeAllocator.Free(pagesToFree);
+                _pageTableAllocator.Free(vol.BufferManager.PageTableOffset + neededPages, pagesToFreeCount);
+                currentPages = pagesToKeep;
+            }
+
+            // --- 4. Execute Trim (Bricks) ---
+            if (targetBrickVoxels < currentBrickAllocatedVoxels)
+            {
+                int freeCount = currentBrickAllocatedVoxels - targetBrickVoxels;
+                _brickAllocator.Free(vol.BufferManager.BrickDataOffset + targetBrickVoxels, freeCount);
+                currentBrickAllocatedVoxels = targetBrickVoxels;
+            }
+
+            // --- 5. Update Volume Metadata ---
+            int newMaxBricks = Mathf.CeilToInt((float)currentBrickAllocatedVoxels / SVONode.BRICK_VOXEL_COUNT);
+            int newMaxNodes = currentPages != null ? currentPages.Length * pageSize : 0;
+            
+            vol.ResizeMemory(currentPages, newMaxNodes, newMaxBricks);
+
+            int finalNodeMem = newMaxNodes;
+            int finalBrickMem = currentBrickAllocatedVoxels;
+            
+            float nodeSave = initialNodeMem > 0 ? 100f * (1f - ((float)finalNodeMem / initialNodeMem)) : 0;
+            float brickSave = initialBrickMem > 0 ? 100f * (1f - ((float)finalBrickMem / initialBrickMem)) : 0;
         }
 
         private void ReturnTransient(VoxelVolume vol)
@@ -325,7 +503,6 @@ namespace VoxelEngine.Core.Streaming
                 VoxelVolume vol = _pool.Dequeue();
                 vol.AssignMemorySlice(this, 0, 0, brickOffset, requestedNodes, requestedBricks, ptOffset, pages);
 
-                // Configure volume
                 vol.transform.position = position;
                 float scale = size / vol.Resolution; 
                 if (resolution > 0)
@@ -335,7 +512,6 @@ namespace VoxelEngine.Core.Streaming
                 }
                 vol.transform.localScale = Vector3.one * scale;
                 
-                // Pass flags
                 vol.OnPullFromPool(position, size, generateEmpty, skipGeneration);
                 
                 _activeVolumes.Add(vol);
@@ -353,7 +529,6 @@ namespace VoxelEngine.Core.Streaming
         {
             if (vol == null) return;
             
-            // Whether it came from GetVolume or Promotion, it's in _activeVolumes
             if (_activeVolumes.Remove(vol))
             {
                 if (vol.IsReady)
@@ -373,6 +548,8 @@ namespace VoxelEngine.Core.Streaming
                 vol.transform.SetParent(poolContainer); 
                 _pool.Enqueue(vol);
                 UpdateChunkBuffer(null, default, 0f);
+
+                EnsureTransientPool();
             }
         }
 
@@ -390,6 +567,11 @@ namespace VoxelEngine.Core.Streaming
             for (int i = 0; i < _activeVolumes.Count; i++)
             {
                 var vol = _activeVolumes[i];
+                
+                // [FIX] Skip volumes that have been disabled (e.g. by LOD logic in WorldManager)
+                // This prevents the parent chunk from rendering when it has been replaced by children.
+                if (!vol.gameObject.activeInHierarchy) continue;
+
                 if (cullingPlanes != null)
                 {
                     bool inFrustum = GeometryUtility.TestPlanesAABB(cullingPlanes, vol.WorldBounds);
@@ -407,7 +589,6 @@ namespace VoxelEngine.Core.Streaming
                 _visibleVolumes.Add(vol);
                 ChunkDef def = new ChunkDef();
                 def.boundsMin = vol.WorldBounds.min;
-                // Note: PageTableOffset acts as the "nodeOffset" for Paged SVO shaders
                 def.nodeOffset = (uint)vol.BufferManager.PageTableOffset; 
                 def.boundsMax = vol.WorldBounds.max;
                 def.payloadOffset = (uint)vol.BufferManager.PageTableOffset; 

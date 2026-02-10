@@ -91,6 +91,16 @@ namespace VoxelEngine.Core
             );
         }
 
+        /// <summary>
+        /// Update internal memory records after the pool has trimmed the allocation.
+        /// </summary>
+        public void ResizeMemory(int[] newPages, int newMaxNodes, int newMaxBricks)
+        {
+            _allocatedPages = newPages;
+            _maxNodes = newMaxNodes;
+            _maxBricks = newMaxBricks;
+        }
+
         public void OnPullFromPool(Vector3 worldOrigin, float size, bool empty = false, bool skipGeneration = false)
         {
             WorldSize = size;
