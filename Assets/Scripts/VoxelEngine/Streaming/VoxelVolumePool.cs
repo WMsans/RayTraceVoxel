@@ -9,6 +9,7 @@ using VoxelEngine.Core.Memory;
 using Unity.Burst;
 using Unity.Jobs;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe; // Added for UnsafeUtility
 using Unity.Mathematics;
 using UnityEngine.Rendering;
 
@@ -39,6 +40,34 @@ namespace VoxelEngine.Core.Streaming
     {
         public AuditResultType type;
         public VoxelVolume volume; // Only valid if Complex
+    }
+
+    [BurstCompile]
+    public struct TrimPagesJob : IJob
+    {
+        [ReadOnly] public NativeArray<int> Source;
+        [WriteOnly] public NativeArray<int> Keep;
+        [WriteOnly] public NativeArray<int> Free;
+        public int SplitIndex;
+
+        public unsafe void Execute()
+        {
+            int* srcPtr = (int*)Source.GetUnsafeReadOnlyPtr();
+            
+            // Copy Keep Portion
+            if (Keep.Length > 0)
+            {
+                void* keepPtr = Keep.GetUnsafePtr();
+                UnsafeUtility.MemCpy(keepPtr, srcPtr, Keep.Length * sizeof(int));
+            }
+
+            // Copy Free Portion
+            if (Free.Length > 0)
+            {
+                void* freePtr = Free.GetUnsafePtr();
+                UnsafeUtility.MemCpy(freePtr, srcPtr + SplitIndex, Free.Length * sizeof(int));
+            }
+        }
     }
 
     public class VoxelVolumePool : MonoBehaviour
@@ -396,18 +425,37 @@ namespace VoxelEngine.Core.Streaming
             if (targetBrickVoxels < usedBrickVoxels) targetBrickVoxels = usedBrickVoxels;
 
 
-            // --- 3. Execute Trim (Pages) ---
+            // --- 3. Execute Trim (Pages) with Burst & MemCpy ---
             int initialNodeMem = currentPages != null ? currentPages.Length * pageSize : 0;
             int initialBrickMem = currentBrickAllocatedVoxels;
 
             if (currentPages != null && neededPages < currentPages.Length)
             {
                 int pagesToFreeCount = currentPages.Length - neededPages;
-                int[] pagesToKeep = new int[neededPages];
-                int[] pagesToFree = new int[pagesToFreeCount];
+                
+                // Using NativeArray + Burst for splitting to avoid managed array overhead where possible,
+                // and to utilize fast memory copy.
+                NativeArray<int> srcNative = new NativeArray<int>(currentPages, Allocator.TempJob);
+                NativeArray<int> keepNative = new NativeArray<int>(neededPages, Allocator.TempJob);
+                NativeArray<int> freeNative = new NativeArray<int>(pagesToFreeCount, Allocator.TempJob);
 
-                Array.Copy(currentPages, 0, pagesToKeep, 0, neededPages);
-                Array.Copy(currentPages, neededPages, pagesToFree, 0, pagesToFreeCount);
+                TrimPagesJob job = new TrimPagesJob
+                {
+                    Source = srcNative,
+                    Keep = keepNative,
+                    Free = freeNative,
+                    SplitIndex = neededPages
+                };
+                
+                job.Schedule().Complete();
+
+                // Convert back to managed arrays (assuming VoxelVolume/Allocator APIs strictly require int[])
+                int[] pagesToKeep = keepNative.ToArray();
+                int[] pagesToFree = freeNative.ToArray();
+                
+                srcNative.Dispose();
+                keepNative.Dispose();
+                freeNative.Dispose();
 
                 _nodeAllocator.Free(pagesToFree);
                 _pageTableAllocator.Free(vol.BufferManager.PageTableOffset + neededPages, pagesToFreeCount);
