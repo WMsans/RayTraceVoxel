@@ -20,6 +20,7 @@ MonoBehaviour:
     fxaaShader: {fileID: 4800000, guid: 33335dbe0b055a94ea1232a1aed98205, type: 3}
     injectionPoint: 400
     qualityLevel: 2
+    bounceCount: 1
     renderScale: 1
     textureScale: 0.05
     iterations: 64

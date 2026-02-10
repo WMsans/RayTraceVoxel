@@ -26,6 +26,7 @@ namespace VoxelEngine.Core.Rendering
 
             [Header("Quality")]
             public QualityLevel qualityLevel = QualityLevel.High;
+            [Range(0, 8)] public int bounceCount = 3;
             [Range(0.1f, 1.0f)]
             public float renderScale = 1.0f;
             [Range(0.01f, 10.0f)] public float textureScale = 1.0f;
@@ -196,6 +197,7 @@ namespace VoxelEngine.Core.Rendering
             private static readonly int _MousePositionParams = Shader.PropertyToID("_MousePosition");
             private static readonly int _MaxIterationsParams = Shader.PropertyToID("_MaxIterations");
             private static readonly int _MaxMarchStepsParams = Shader.PropertyToID("_MaxMarchSteps");
+            private static readonly int _BounceCountParams = Shader.PropertyToID("_BounceCount");
             private static readonly int _CameraViewProjectionParams = Shader.PropertyToID("_CameraViewProjection");
             private static readonly int _PrevViewProjMatrixParams = Shader.PropertyToID("_PrevViewProjMatrix");
             private static readonly int _MotionVectorTextureParams = Shader.PropertyToID("_MotionVectorTexture");
@@ -301,6 +303,7 @@ namespace VoxelEngine.Core.Rendering
 
             private class PassData {
                 public ComputeShader computeShader; public int kernel; public TextureHandle targetColor; public TextureHandle targetDepth; public TextureHandle targetMotionVector; public TextureHandle targetNormals; public TextureHandle sourceDepth; public TextureHandle sourceColor; public Matrix4x4 cameraToWorld; public Matrix4x4 cameraInverseProjection; public Matrix4x4 viewProj; public Matrix4x4 prevViewProj; public Vector4 zBufferParams; public int width; public int height; public Vector4 mainLightPosition; public Vector4 mainLightColor; public Vector4 raytraceParams; public GraphicsBuffer nodeBuffer; public GraphicsBuffer payloadBuffer; public GraphicsBuffer brickDataBuffer; public GraphicsBuffer pageTableBuffer; public GraphicsBuffer tlasGridBuffer; public GraphicsBuffer tlasChunkIndexBuffer; public Vector3 tlasBoundsMin; public Vector3 tlasBoundsMax; public int tlasResolution; public GraphicsBuffer chunkBuffer; public int chunkCount; public GraphicsBuffer materialBuffer; public GraphicsBuffer raycastBuffer; public TextureHandle albedoArray; public TextureHandle normalArray; public TextureHandle maskArray; public int frameCount; public TextureHandle blueNoise; public Vector2 mousePosition; public int maxIterations; public int maxMarchSteps;
+                public int bounceCount;
                 public float debugNormals; public float debugBricks;
                 public Vector4 celShadeParams;
                 public Vector4 atmosphereParams; 
@@ -453,6 +456,7 @@ namespace VoxelEngine.Core.Rendering
                     data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(_ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol; 
                     data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, _settings.textureScale); 
                     data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
+                    data.bounceCount = _settings.bounceCount;
                     data.debugNormals = (_settings.debugMode == DebugMode.Normals) ? 1.0f : 0.0f;
                     data.debugBricks = (_settings.debugMode == DebugMode.Bricks) ? 1.0f : 0.0f;
                     data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
@@ -479,6 +483,7 @@ namespace VoxelEngine.Core.Rendering
                         if (pd.tlasGridBuffer != null) cmd.SetComputeBufferParam(cs, ker, _TLASGridBufferParams, pd.tlasGridBuffer);
                         if (pd.tlasChunkIndexBuffer != null) cmd.SetComputeBufferParam(cs, ker, _TLASChunkIndexBufferParams, pd.tlasChunkIndexBuffer);
                         cmd.SetComputeVectorParam(cs, _TLASBoundsMinParams, pd.tlasBoundsMin); cmd.SetComputeVectorParam(cs, _TLASBoundsMaxParams, pd.tlasBoundsMax); cmd.SetComputeIntParam(cs, _TLASResolutionParams, pd.tlasResolution); cmd.SetComputeIntParam(cs, _FrameCountParams, pd.frameCount); cmd.SetComputeVectorParam(cs, _MousePositionParams, pd.mousePosition); cmd.SetComputeIntParam(cs, _MaxIterationsParams, pd.maxIterations); cmd.SetComputeIntParam(cs, _MaxMarchStepsParams, pd.maxMarchSteps);
+                        cmd.SetComputeIntParam(cs, _BounceCountParams, pd.bounceCount);
                         if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, _BlueNoiseTextureParams, pd.blueNoise);
                         if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, _VoxelMaterialBufferParams, pd.materialBuffer);
                         if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, _AlbedoTextureArrayParams, pd.albedoArray);
