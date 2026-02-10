@@ -569,8 +569,8 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 587925448}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0.061048694, z: 0, w: -0.9981348}
-  m_LocalPosition: {x: -16.4625, y: 112.86998, z: 43.16806}
+  m_LocalRotation: {x: 0, y: 0.9886768, z: 0, w: 0.150061}
+  m_LocalPosition: {x: 684.5122, y: 364.26038, z: 482.51468}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -594,7 +594,7 @@ MonoBehaviour:
   brushRadius: 4
   brushMaterial: 1
   editRate: 0.1
-  editMode: 0
+  editMode: 1
   structuralAnalyzer: {fileID: 681138562}
 --- !u!114 &587925454
 MonoBehaviour:

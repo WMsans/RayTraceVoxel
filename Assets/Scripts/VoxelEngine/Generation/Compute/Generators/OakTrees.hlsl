@@ -94,7 +94,7 @@ void Stage_OakTrees(inout GenerationContext ctx)
                 float2 treeXZ = cellId * OAK_GRID_SIZE + offset;
 
                 // Radius check increased to 18.0 for larger canopies
-                if (abs(ctx.position.x - treeXZ.x) > 18.0 || abs(ctx.position.z - treeXZ.y) > 18.0) continue;
+                // if (abs(ctx.position.x - treeXZ.x) > 18.0 || abs(ctx.position.z - treeXZ.y) > 18.0) continue;
 
                 float terrainH = GetHeight(treeXZ);
                 
