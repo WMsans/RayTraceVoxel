@@ -205,14 +205,23 @@ namespace VoxelEngine.Core.Streaming
 
                 // Physics & Enabling
                 if (node.ActiveVolume != null)
-                {
-                    // Only enable if children aren't covering it (handled by WorldOctreeNode logic usually, 
-                    // but we ensure active here)
-                    if (!node.AreChildrenReady) 
+                {                    
+                    bool shouldBeActive = node.IsLeaf || !node.AreChildrenReady;
+
+                    if (shouldBeActive) 
                     {
                         if (!node.ActiveVolume.gameObject.activeSelf) 
                             node.ActiveVolume.gameObject.SetActive(true);
                         VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
+                    }
+                    else
+                    {
+                        // Hidden (occluded by higher detail children)
+                        if (node.ActiveVolume.gameObject.activeSelf) 
+                            node.ActiveVolume.gameObject.SetActive(false);
+                        
+                        // Remove physics to prevent ghost collisions from hidden LoD
+                        VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
                     }
                 }
             }
