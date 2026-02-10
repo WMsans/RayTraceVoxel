@@ -1,5 +1,8 @@
 using UnityEngine;
 using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 using VoxelEngine.Core.Generators;
 using VoxelEngine.Core.Editing;
 using VoxelEngine.Physics;
@@ -9,6 +12,8 @@ namespace VoxelEngine.Core.Streaming
     [RequireComponent(typeof(VoxelVolumePool))]
     public class WorldManager : MonoBehaviour
     {
+        public static WorldManager Instance { get; private set; }
+
         [Header("Configuration")]
         public int initialWorldSize = 1024;
         public int maxDepth = 4;
@@ -18,31 +23,65 @@ namespace VoxelEngine.Core.Streaming
         public Transform viewer;
         [Tooltip("Split if Distance < Size * SplitFactor")]
         public float splitFactor = 1.5f;
-        [Tooltip("Merge if Distance > Size * MergeFactor. Must be > SplitFactor to prevent flickering.")]
+        [Tooltip("Merge if Distance > Size * MergeFactor")]
         public float mergeFactor = 1.8f;
 
         [Header("Culling Settings")]
         public Camera mainCamera;
         public float shadowDistance = 256f;
-        public bool disableFrustumCulling = false; // Added debug option
-        
+        public bool disableFrustumCulling = false;
+
+        // --- Native Data ---
+        private NativeList<OctreeNodeStruct> _nodeStructs;
+        private NativeQueue<int> _splitQueue;
+        private NativeQueue<int> _mergeQueue;
+        private NativeList<int> _visibleIndices;
+        private NativeList<int> _invisibleIndices;
+        private NativeArray<BurstPlane> _burstPlanes;
+        private Stack<int> _freeIndices;
+
+        // --- Object Mapping ---
+        // Maps struct index -> WorldOctreeNode object
+        private List<WorldOctreeNode> _nodeObjects; 
         private WorldOctreeNode _rootNode;
         private VoxelVolumePool _pool;
-        private float _targetLeafSize;
         private Plane[] _frustumPlanes = new Plane[6];
-        
-        private List<Bounds> _debugDirtyChunkBounds = new List<Bounds>();
+
+        private void Awake()
+        {
+            if (Instance != null && Instance != this) Destroy(this);
+            Instance = this;
+
+            _nodeStructs = new NativeList<OctreeNodeStruct>(1000, Allocator.Persistent);
+            _splitQueue = new NativeQueue<int>(Allocator.Persistent);
+            _mergeQueue = new NativeQueue<int>(Allocator.Persistent);
+            
+            // Initialize with matching capacity to nodeStructs
+            _visibleIndices = new NativeList<int>(1000, Allocator.Persistent);
+            _invisibleIndices = new NativeList<int>(1000, Allocator.Persistent);
+            
+            _burstPlanes = new NativeArray<BurstPlane>(6, Allocator.Persistent);
+            
+            _nodeObjects = new List<WorldOctreeNode>(1000);
+            _freeIndices = new Stack<int>();
+        }
 
         private void Start()
         {
-            if (VoxelPhysicsManager.Instance == null)
-            {
-                gameObject.AddComponent<VoxelPhysicsManager>();
-            }
-
+            if (VoxelPhysicsManager.Instance == null) gameObject.AddComponent<VoxelPhysicsManager>();
             _pool = GetComponent<VoxelVolumePool>();
 
-            // Auto-configure Physics Manager from Prefab if needed
+            InitializePhysicsAndDepth();
+
+            if (viewer == null && Camera.main != null) viewer = Camera.main.transform;
+
+            // Create Root
+            _rootNode = new WorldOctreeNode(Vector3.zero, initialWorldSize, 0, null);
+            _rootNode.RequestGeneration(this);
+        }
+
+        private void InitializePhysicsAndDepth()
+        {
             var physicsMan = VoxelPhysicsManager.Instance;
             if (physicsMan.physicsShader == null && _pool != null && _pool.prefab != null)
             {
@@ -55,273 +94,251 @@ namespace VoxelEngine.Core.Streaming
                 }
             }
 
-            // Auto-configure MaxDepth
+            // Auto-configure MaxDepth based on voxel resolution
             if (VoxelEditManager.Instance != null && _pool != null && _pool.prefab != null)
             {
                 float globalVoxelSize = VoxelEditManager.Instance.voxelSize;
                 float resolution = _pool.prefab.resolution;
                 float targetLeafSize = resolution * globalVoxelSize;
-                
+
                 if (targetLeafSize > 0)
                 {
                     float ratio = initialWorldSize / targetLeafSize;
                     int calculatedDepth = Mathf.RoundToInt(Mathf.Log(ratio, 2));
-                    if (calculatedDepth != maxDepth)
-                    {
-                        maxDepth = calculatedDepth;
-                    }
+                    if (calculatedDepth != maxDepth) maxDepth = calculatedDepth;
                 }
             }
-
-            _targetLeafSize = initialWorldSize / Mathf.Pow(2, maxDepth);
-
+            
             if (physicsMan != null)
             {
-                physicsMan.baseChunkSize = _targetLeafSize;
+                physicsMan.baseChunkSize = initialWorldSize / Mathf.Pow(2, maxDepth);
                 physicsMan.viewer = this.viewer;
             }
-
-            if (viewer == null && Camera.main != null) 
-            {
-                viewer = Camera.main.transform;
-                if (physicsMan != null) physicsMan.viewer = viewer;
-            }
-            
-            _rootNode = new WorldOctreeNode(Vector3.zero, initialWorldSize, 0, null);
-            _rootNode.RequestGeneration(this);
         }
 
         private void Update()
         {
-            if (viewer != null)
-            {
-                if (mainCamera == null) mainCamera = Camera.main;
-                if (mainCamera != null)
-                {
-                    GeometryUtility.CalculateFrustumPlanes(mainCamera, _frustumPlanes);
-                }
+            if (viewer == null) return;
+            if (mainCamera == null) mainCamera = Camera.main;
 
-                UpdateNodeLOD(_rootNode, viewer.position);
+            // 1. Prepare Data
+            if (mainCamera != null)
+            {
+                GeometryUtility.CalculateFrustumPlanes(mainCamera, _frustumPlanes);
+                for (int i = 0; i < 6; i++) _burstPlanes[i] = _frustumPlanes[i];
             }
 
+            // --- CRITICAL FIX: Ensure capacity BEFORE job schedule ---
+            // NativeList.AddNoResize requires capacity to exist.
+            int requiredCapacity = _nodeStructs.Length;
+            if (_visibleIndices.Capacity < requiredCapacity) _visibleIndices.SetCapacity(requiredCapacity);
+            if (_invisibleIndices.Capacity < requiredCapacity) _invisibleIndices.SetCapacity(requiredCapacity);
+
+            _splitQueue.Clear();
+            _mergeQueue.Clear();
+            _visibleIndices.Clear();
+            _invisibleIndices.Clear();
+
+            // 2. Run Job
+            var job = new OctreeTraversalJob
+            {
+                nodes = _nodeStructs.AsArray(),
+                planes = _burstPlanes,
+                viewerPos = viewer.position,
+                shadowDistanceSq = shadowDistance * shadowDistance,
+                splitFactor = splitFactor,
+                mergeFactor = mergeFactor,
+                maxDepth = maxDepth,
+                cullEnabled = !disableFrustumCulling,
+                splitQueue = _splitQueue.AsParallelWriter(),
+                mergeQueue = _mergeQueue.AsParallelWriter(),
+                visibleNodes = _visibleIndices.AsParallelWriter(),
+                invisibleNodes = _invisibleIndices.AsParallelWriter()
+            };
+
+            JobHandle handle = job.Schedule(_nodeStructs.Length, 64);
+            handle.Complete();
+
+            // 3. Apply Results
+            ApplyLODChanges();
+            ApplyVisibility();
+            
             ProcessDirtyRegions();
         }
 
+        private void ApplyLODChanges()
+        {
+            // SPLITS
+            while (_splitQueue.TryDequeue(out int index))
+            {
+                if (IsValidIndex(index))
+                {
+                    _nodeObjects[index].Subdivide();
+                }
+            }
+
+            // MERGES
+            while (_mergeQueue.TryDequeue(out int index))
+            {
+                if (IsValidIndex(index))
+                {
+                    _nodeObjects[index].Merge();
+                }
+            }
+        }
+
+        private void ApplyVisibility()
+        {
+            // Visible Nodes
+            for (int i = 0; i < _visibleIndices.Length; i++)
+            {
+                int idx = _visibleIndices[i];
+                if (!IsValidIndex(idx)) continue;
+
+                var node = _nodeObjects[idx];
+                
+                // If it's a leaf, ensure content is generated
+                if (node.IsLeaf && node.ActiveVolume == null && node.State == NodeState.Uninitialized)
+                {
+                     node.RequestGeneration(this);
+                }
+
+                // Physics & Enabling
+                if (node.ActiveVolume != null)
+                {
+                    // Only enable if children aren't covering it (handled by WorldOctreeNode logic usually, 
+                    // but we ensure active here)
+                    if (!node.AreChildrenReady) 
+                    {
+                        if (!node.ActiveVolume.gameObject.activeSelf) 
+                            node.ActiveVolume.gameObject.SetActive(true);
+                        VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
+                    }
+                }
+            }
+
+            // Invisible Nodes (Culling)
+            for (int i = 0; i < _invisibleIndices.Length; i++)
+            {
+                int idx = _invisibleIndices[i];
+                if (!IsValidIndex(idx)) continue;
+
+                var node = _nodeObjects[idx];
+                
+                // If we are invisible, we can aggressively clean up physics
+                if (node.ActiveVolume != null)
+                {
+                    // Don't destroy content, just cull physics/rendering
+                    VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
+                    
+                    // Optional: Disable GameObject to stop rendering cost
+                    if (node.ActiveVolume.gameObject.activeSelf)
+                        node.ActiveVolume.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        private bool IsValidIndex(int index)
+        {
+            return index >= 0 && index < _nodeObjects.Count && _nodeObjects[index] != null;
+        }
+
+        // --- Node Pool Management (Called by WorldOctreeNode) ---
+
+        public int RegisterNode(WorldOctreeNode node, Vector3 center, float size, int depth)
+        {
+            int index;
+            if (_freeIndices.Count > 0)
+            {
+                index = _freeIndices.Pop();
+                _nodeObjects[index] = node;
+                _nodeStructs[index] = new OctreeNodeStruct 
+                { 
+                    center = center, size = size, depth = depth, isLeaf = true, isOccupied = true 
+                };
+            }
+            else
+            {
+                index = _nodeObjects.Count;
+                _nodeObjects.Add(node);
+                _nodeStructs.Add(new OctreeNodeStruct 
+                { 
+                    center = center, size = size, depth = depth, isLeaf = true, isOccupied = true 
+                });
+            }
+            return index;
+        }
+
+        public void UnregisterNode(int index)
+        {
+            if (index < 0 || index >= _nodeObjects.Count) return;
+
+            _nodeObjects[index] = null;
+            
+            // Mark struct as unoccupied so Job skips it
+            var s = _nodeStructs[index];
+            s.isOccupied = false;
+            _nodeStructs[index] = s;
+
+            _freeIndices.Push(index);
+        }
+
+        public void UpdateNodeStruct(int index, bool isLeaf)
+        {
+            if (index < 0 || index >= _nodeStructs.Length) return;
+            var s = _nodeStructs[index];
+            s.isLeaf = isLeaf;
+            _nodeStructs[index] = s;
+        }
+
+        // --- Dirty Regions (unchanged mostly) ---
         private void ProcessDirtyRegions()
         {
-            _debugDirtyChunkBounds.Clear();
             if (DynamicSDFManager.Instance == null) return;
-
             List<Bounds> dirtyRegions = DynamicSDFManager.Instance.GetAndClearDirtyRegions();
             if (dirtyRegions == null || dirtyRegions.Count == 0) return;
 
-            var activeVolumes = VoxelVolumeRegistry.Volumes;
-            HashSet<VoxelVolume> volumesToUpdate = new HashSet<VoxelVolume>();
-
-            for (int v = 0; v < activeVolumes.Count; v++)
+            foreach (var vol in VoxelVolumeRegistry.Volumes)
             {
-                VoxelVolume vol = activeVolumes[v];
                 if (!vol.gameObject.activeInHierarchy) continue;
-
                 for (int i = 0; i < dirtyRegions.Count; i++)
                 {
                     if (vol.WorldBounds.Intersects(dirtyRegions[i]))
                     {
-                        volumesToUpdate.Add(vol);
-                        break; 
+                        vol.Regenerate();
+                        VoxelPhysicsManager.Instance.Enqueue(vol);
+                        break;
                     }
                 }
             }
-
-            foreach (var vol in volumesToUpdate)
-            {
-                _debugDirtyChunkBounds.Add(vol.WorldBounds);
-                vol.Regenerate();
-                VoxelPhysicsManager.Instance.Enqueue(vol);
-            }
-        }
-
-        private void UpdateNodeLOD(WorldOctreeNode node, Vector3 viewerPosition)
-        {
-            float distance = Vector3.Distance(viewerPosition, node.Center);
-            
-            // Modified to respect disableFrustumCulling flag
-            bool inFrustum = disableFrustumCulling || (mainCamera == null) || GeometryUtility.TestPlanesAABB(_frustumPlanes, node.Bounds);
-            
-            Vector3 closest = node.Bounds.ClosestPoint(viewerPosition);
-            bool inShadowRange = (closest - viewerPosition).sqrMagnitude < (shadowDistance * shadowDistance);
-
-            if (node.IsLeaf)
-            {
-                if (!inFrustum && !inShadowRange)
-                {
-                    // Cull: If active, disable. If not active, do nothing.
-                    if (node.ActiveVolume != null)
-                    {
-                        VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
-                        VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
-                        node.DisableVolume();
-                    }
-                }
-                else 
-                {
-                    // Visible: Ensure content is generated
-                    if (node.ActiveVolume == null)
-                    {
-                        if (node.State == NodeState.Uninitialized)
-                        {
-                            node.RequestGeneration(this);
-                        }
-                        
-                        if (node.ActiveVolume != null)
-                        {
-                            VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
-                        }
-                    }
-                    else if (node.State == NodeState.Active)
-                    {
-                        VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
-                    }
-                }
-
-                if (node.Depth < maxDepth && distance < (node.Size * splitFactor))
-                {
-                    if (inFrustum || inShadowRange)
-                    {
-                        SplitNode(node);
-                    }
-                }
-            }
-            else // Branch
-            {
-                // If the Parent volume is still active, it means we are transitioning from Parent -> Children.
-                // We keep the Parent visible until ALL children are ready (Active, Solid, or Empty).
-                if (node.ActiveVolume != null)
-                {
-                    if (node.AreChildrenReady)
-                    {
-                        // Handoff Complete: Children are ready.
-                        foreach (var child in node.Children)
-                        {
-                            if (child.ActiveVolume != null)
-                                child.ActiveVolume.gameObject.SetActive(true);
-                        }
-
-                        if (VoxelPhysicsManager.Instance != null)
-                        {
-                            VoxelPhysicsManager.Instance.ClearCollider(node.ActiveVolume);
-                            VoxelPhysicsManager.Instance.Remove(node.ActiveVolume);
-                        }
-                        node.DisableVolume();
-                    }
-                    else
-                    {
-                        // Handoff Pending: Children not ready.
-                        // Keep Parent visible. Ensure generated children stay hidden to prevent z-fighting.
-                        foreach (var child in node.Children)
-                        {
-                            if (child.ActiveVolume != null)
-                                child.ActiveVolume.gameObject.SetActive(false);
-                        }
-                    }
-                }
-
-                bool shouldMerge = distance > (node.Size * mergeFactor) || (!inFrustum && !inShadowRange);
-                
-                if (shouldMerge)
-                {
-                    MergeNode(node);
-                }
-                else
-                {
-                    foreach (var child in node.Children)
-                    {
-                        UpdateNodeLOD(child, viewerPosition);
-                    }
-                }
-            }
-        }
-
-        private void SplitNode(WorldOctreeNode node)
-        {
-            node.Subdivide();
-            foreach (var child in node.Children)
-            {
-                child.RequestGeneration(this);
-                if (child.ActiveVolume != null)
-                {
-                    VoxelPhysicsManager.Instance.Enqueue(child.ActiveVolume);
-                }
-            }
-        }
-
-        private void MergeNode(WorldOctreeNode node)
-        {
-            // If we are already waiting for a merge generation, do nothing.
-            if (node.State == NodeState.Pending) return;
-
-            // 1. Request the Parent content in the background
-            //    Pass forMerge: true so the node accepts the volume even though it has children (is a Branch).
-            node.RequestGeneration(this, (success) => 
-            {
-                if (success)
-                {
-                    // 2. Parent is Ready (Active/Solid/Empty).
-                    //    Now it is safe to remove the children.
-                    
-                    if (node.ActiveVolume != null)
-                    {
-                        VoxelPhysicsManager.Instance.Enqueue(node.ActiveVolume);
-                    }
-
-                    // 3. Clear Children
-                    //    This causes the visual swap: Parent is visible (handled by pool), Children are removed.
-                    node.Merge();
-                }
-            }, forMerge: true);
         }
 
         private void OnDestroy()
         {
+            if (Instance == this) Instance = null;
+            if (_nodeStructs.IsCreated) _nodeStructs.Dispose();
+            if (_splitQueue.IsCreated) _splitQueue.Dispose();
+            if (_mergeQueue.IsCreated) _mergeQueue.Dispose();
+            if (_visibleIndices.IsCreated) _visibleIndices.Dispose();
+            if (_invisibleIndices.IsCreated) _invisibleIndices.Dispose();
+            if (_burstPlanes.IsCreated) _burstPlanes.Dispose();
+            
             if (_rootNode != null)
             {
                 _rootNode.Merge();
                 _rootNode.DisableVolume();
             }
         }
-        
+
         private void OnDrawGizmos()
         {
-            if (drawDebugGizmos)
+            if (drawDebugGizmos && _nodeStructs.IsCreated)
             {
-                if (_rootNode != null) DrawNodeGizmos(_rootNode);
-            }
-        }
-
-        private void DrawNodeGizmos(WorldOctreeNode node)
-        {
-            if (node.IsLeaf)
-            {
-                switch (node.State)
+                Gizmos.color = Color.green;
+                foreach (var node in _nodeStructs)
                 {
-                    case NodeState.Active: Gizmos.color = Color.green; break;
-                    case NodeState.Empty: Gizmos.color = new Color(0, 1, 0, 0.1f); break;
-                    case NodeState.Solid: Gizmos.color = new Color(0.5f, 0.2f, 0, 0.5f); break;
-                    case NodeState.Pending: Gizmos.color = Color.yellow; break;
-                    default: Gizmos.color = Color.grey; break;
-                }
-
-                if (node.State == NodeState.Active || drawDebugGizmos)
-                {
-                    Gizmos.DrawWireCube(node.Center, Vector3.one * node.Size);
-                }
-            }
-            else
-            {
-                if (node.Children != null)
-                {
-                    foreach (var child in node.Children)
-                        DrawNodeGizmos(child);
+                    if (node.isOccupied && node.isLeaf)
+                        Gizmos.DrawWireCube(node.center, Vector3.one * node.size);
                 }
             }
         }
