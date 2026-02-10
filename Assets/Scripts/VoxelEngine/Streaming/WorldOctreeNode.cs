@@ -125,6 +125,12 @@ namespace VoxelEngine.Core.Streaming
 
         public void RequestGeneration(MonoBehaviour runner, Action<bool> onComplete = null, bool forMerge = false)
         {
+            if (State == NodeState.Active || State == NodeState.Empty || State == NodeState.Solid)
+            {
+                onComplete?.Invoke(true);
+                return;
+            }
+
             if (State != NodeState.Uninitialized) return;
             if (VoxelVolumePool.Instance == null) { onComplete?.Invoke(false); return; }
 
