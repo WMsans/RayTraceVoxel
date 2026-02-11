@@ -21,8 +21,6 @@ RWStructuredBuffer<uint> _TopologyBuffer;
 RWStructuredBuffer<uint> _LabelBuffer;
 
 // Active Bricks: Packed uint (x | y<<10 | z<<20)
-// For AnalyzeBricks: Output (Append)
-// For Others: Input (Structured)
 AppendStructuredBuffer<uint> _ActiveBrickBuffer;
 StructuredBuffer<uint> _ActiveBricksInput;
 
@@ -71,7 +69,11 @@ bool IsSolid(uint idx)
 // Checks if a voxel in the neighbor volume is solid
 bool IsNeighborSolid(uint3 neighborPos)
 {
-    if (any(neighborPos >= _NeighborResolution)) return false;
+    // FAIL SAFE: If we are querying outside the neighbor's bounds, it often means the neighbor
+    // is a smaller chunk (e.g. LOD mismatch) or a split chunk. 
+    // In this case, defaulting to "Stable" (true) is safer than "Air" (false), 
+    // as it prevents the upper chunk from detaching due to boundary mismatch.
+    if (any(neighborPos >= _NeighborResolution)) return true;
 
     float3 nodePos = float3(0,0,0);
     float nodeSize = _NeighborResolution;
@@ -133,9 +135,6 @@ bool IsNeighborSolid(uint3 neighborPos)
     if (brickPtr == 0) return false;
 
     // Determine local coordinate inside the brick
-    // We need to know which brick 'targetPos' lands in.
-    // targetPos is global coord in neighbor.
-    // Brick coord:
     uint3 brickOrigin = (uint3)(targetPos / BRICK_SIZE) * BRICK_SIZE;
     uint3 voxelLocal = neighborPos - brickOrigin;
     
@@ -203,6 +202,7 @@ void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
     }
 
     if (!hitLeaf) return;
+
     // 2. Found Active Brick - Append to List
     uint packedBrickCoord = id.x | (id.y << 10) | (id.z << 20);
     _ActiveBrickBuffer.Append(packedBrickCoord);
@@ -262,11 +262,13 @@ void InitLabels(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
     uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
     
     if (any(voxelGlobal >= _Resolution)) return;
+
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
     if (IsSolid(flatIdx))
     {
         bool isStable = false;
+
         // 1. Check if below ground threshold (Physical Ground)
         if ((float)voxelGlobal.y <= _GroundThresholdY)
         {
@@ -277,8 +279,20 @@ void InitLabels(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
         {
             if (_HasNeighbor)
             {
-                // Check if the voxel directly below (Top of neighbor) is solid
-                uint3 neighborPos = uint3(voxelGlobal.x, _NeighborResolution - 1, voxelGlobal.z);
+                // CORRECTED: Handle Resolution Mismatch
+                // If the neighbor is half resolution (lower LOD), we must scale our coordinates down.
+                // If the neighbor is double resolution (higher LOD), we scale up.
+                float ratio = (float)_NeighborResolution / (float)_Resolution;
+                
+                uint nX = (uint)(voxelGlobal.x * ratio);
+                uint nZ = (uint)(voxelGlobal.z * ratio);
+                
+                // Clamp to prevent float precision issues pushing it out of bounds 
+                if (nX >= _NeighborResolution) nX = _NeighborResolution - 1;
+                if (nZ >= _NeighborResolution) nZ = _NeighborResolution - 1;
+
+                uint3 neighborPos = uint3(nX, _NeighborResolution - 1, nZ);
+                
                 if (IsNeighborSolid(neighborPos))
                 {
                     isStable = true;
@@ -309,6 +323,7 @@ void PropagateLabels(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThread
     uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
     
     if (any(voxelGlobal >= _Resolution)) return;
+
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
     uint myLabel = _LabelBuffer[flatIdx];
@@ -362,6 +377,7 @@ void CollectDebris(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID
     uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
     
     if (any(voxelGlobal >= _Resolution)) return;
+
     uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
     
     uint label = _LabelBuffer[flatIdx];

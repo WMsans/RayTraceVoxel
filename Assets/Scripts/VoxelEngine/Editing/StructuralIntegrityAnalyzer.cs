@@ -20,6 +20,10 @@ namespace VoxelEngine.Core.Editing
 
         public event System.Action<VoxelVolume, List<Vector3>> OnAnalysisCompleted;
         
+        [Header("Safety Settings")]
+        [Tooltip("If the number of floating voxels exceeds this count for a static world chunk, the deletion will be aborted to prevent accidental world loss.")]
+        public int safetyVoxelCountLimit = 100000;
+        
         private List<Vector3> _floatingVoxelPositions = new List<Vector3>();
         private float _debugVoxelSize = 1.0f;
         
@@ -103,7 +107,7 @@ namespace VoxelEngine.Core.Editing
             if (_analysisQueue.Count == 0)
             {
                 _isAnalyzing = false;
-                Debug.Log($"[Structural Analysis] Analysis Batch Complete. Total Floating Voxels: {_floatingVoxelPositions.Count}");
+                Debug.Log($"[Structural Analysis] Analysis Batch Complete.");
                 return;
             }
 
@@ -331,6 +335,20 @@ namespace VoxelEngine.Core.Editing
                 float voxelSize = vol.WorldSize / vol.Resolution;
                 
                 int readCount = Mathf.Min(count, data.Length);
+
+                // --- SAFETY CHECK ---
+                // If we are deleting a persistent world chunk, check against the safety limit.
+                if (!vol.IsTransient)
+                {
+                    if (readCount > safetyVoxelCountLimit)
+                    {
+                        Debug.LogWarning($"[Structural Analysis] Safety Stop: Detected {readCount} floating voxels in {vol.name}. This exceeds the safety threshold ({safetyVoxelCountLimit}). Aborting debris creation to prevent accidental chunk deletion. Check neighbor alignment or LOD mismatch.");
+                        CleanupCurrentBuffers();
+                        ProcessNextVolume();
+                        return;
+                    }
+                }
+                // --------------------
                 
                 // Grouping: Island ID -> List of World Positions
                 Dictionary<uint, List<Vector3>> debrisIslands = new Dictionary<uint, List<Vector3>>();
@@ -354,7 +372,7 @@ namespace VoxelEngine.Core.Editing
                     debrisIslands[voxel.label].Add(worldPos);
                 }
 
-                Debug.Log($"[Structural Analysis] Found {debrisIslands.Count} distinct floating islands in {vol.name}.");
+                Debug.Log($"[Structural Analysis] Found {debrisIslands.Count} distinct floating islands in {vol.name}. Total Floating Voxels: {readCount}");
 
                 if (vol.IsTransient)
                 {
