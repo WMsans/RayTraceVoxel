@@ -270,6 +270,10 @@ namespace VoxelEngine.Core.Editing
                 VoxelPhysicsManager.Instance.Enqueue(vol);
             }
 
+            // Update Source Vegetation
+            if (vol.grassRenderer != null) vol.grassRenderer.Refresh();
+            if (vol.leafRenderer != null) vol.leafRenderer.Refresh();
+
             // 6. Readback with Data Interception (Phase 3) OR Cleanup
             if (createDebris && readbackBuffer != null)
             {
@@ -527,6 +531,10 @@ namespace VoxelEngine.Core.Editing
                     debrisVol.gameObject.SetActive(true);
                     VoxelPhysicsManager.Instance.Enqueue(debrisVol);
                 }
+
+                // Update Debris Vegetation
+                if (debrisVol.grassRenderer != null) debrisVol.grassRenderer.Refresh();
+                if (debrisVol.leafRenderer != null) debrisVol.leafRenderer.Refresh();
             }
         }
 
