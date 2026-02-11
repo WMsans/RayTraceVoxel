@@ -82,7 +82,7 @@ Shader "VoxelEngine/Leaf"
                 float3 normalOS : NORMAL;
                 uint instanceID : SV_InstanceID;
             };
-            
+
             struct Varyings
             {
                 float4 positionCS : SV_POSITION;
@@ -158,14 +158,15 @@ Shader "VoxelEngine/Leaf"
                 float3 worldPos = mul(_ObjectToWorld, float4(totalLocalPos, 1.0)).xyz;
                 float3 rootWorldPos = mul(_ObjectToWorld, float4(instancePosLocal, 1.0)).xyz;
                 float3 surfaceNormalWS = normalize(mul((float3x3)_ObjectToWorld, surfaceNormalLocal));
-                
+
                 // Rotated Basis vectors for normal calculation
                 float3 rightWS = normalize(mul((float3x3)_ObjectToWorld, right));
                 float3 upWS = normalize(mul((float3x3)_ObjectToWorld, up));
                 float3 forwardWS = normalize(mul((float3x3)_ObjectToWorld, forward));
 
-                // 4. Wind (World Space)
-                float2 windUV = (rootWorldPos.xz * _WindFrequency) + (_Time.y * _WindSpeed);
+                // Old: float2 windUV = (rootWorldPos.xz * _WindFrequency) + (_Time.y * _WindSpeed);
+                float2 windUV = (instancePosLocal.xz * _WindFrequency) + (_Time.y * _WindSpeed);
+                
                 float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
                 windNoise = (windNoise * 2.0 - 1.0);
                 float flutter = windNoise * _WindStrength * input.uv.y;

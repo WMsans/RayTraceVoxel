@@ -132,7 +132,6 @@ Shader "VoxelEngine/Grass"
 
                     heightScale = h / 255.0 * 2.0 + 0.5; 
                     colorVariation = c / 255.0;
-
                     float nx = (packedNormal & 0xFF) / 255.0 * 2.0 - 1.0;
                     float nz = ((packedNormal >> 8) & 0xFF) / 255.0 * 2.0 - 1.0;
                     float ny = sqrt(saturate(1.0 - nx*nx - nz*nz));
@@ -153,13 +152,14 @@ Shader "VoxelEngine/Grass"
                 localPosOffset = rotPos;
 
                 float3 totalLocalPos = instanceLocalPos + localPosOffset;
-
+                
                 // [UPDATED] Transform to World Space
                 float3 worldPos = mul(_ObjectToWorld, float4(totalLocalPos, 1.0)).xyz;
                 float3 rootWorldPos = mul(_ObjectToWorld, float4(instanceLocalPos, 1.0)).xyz;
 
-                // --- Improved Wind (World Space) ---
-                float2 windUV = (rootWorldPos.xz * _WindFrequency) + (_Time.y * _WindSpeed * _WindDirection.xy);
+                // Old: float2 windUV = (rootWorldPos.xz * _WindFrequency) + (_Time.y * _WindSpeed * _WindDirection.xy);
+                float2 windUV = (instanceLocalPos.xz * _WindFrequency) + (_Time.y * _WindSpeed * _WindDirection.xy);
+
                 float windNoise = SAMPLE_TEXTURE2D_LOD(_WindTex, sampler_WindTex, windUV, 0).r;
                 windNoise = (windNoise * 2.0 - 1.0);
                 
@@ -179,7 +179,8 @@ Shader "VoxelEngine/Grass"
                 output.rootShadowCoord = TransformWorldToShadowCoord(rootWorldPos);
 
                 float3 localBase = lerp(_BaseColor.rgb * 0.5, _BaseColor.rgb, colorVariation);
-                localBase *= 0.5; // Darken root (AO)
+                localBase *= 0.5;
+                // Darken root (AO)
                 output.color = lerp(localBase, _TipColor.rgb, input.uv.y);
 
                 return output;
@@ -198,7 +199,6 @@ Shader "VoxelEngine/Grass"
                 #endif
 
                 Light mainLight = GetMainLight(input.rootShadowCoord);
-                
                 float NdotL_Raw = dot(input.terrainNormal, mainLight.direction);
                 float shadow = mainLight.shadowAttenuation;
                 float litVal = max(NdotL_Raw, 0.0) * shadow;
