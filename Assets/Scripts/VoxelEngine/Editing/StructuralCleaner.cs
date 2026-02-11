@@ -151,13 +151,17 @@ namespace VoxelEngine.Core.Editing
             int resBricks = vol.Resolution / 4;
             Vector3Int maxBrickIdx = new Vector3Int(resBricks - 1, resBricks - 1, resBricks - 1);
 
-            Vector3Int[] neighborOffsets = new Vector3Int[]
+            List<Vector3Int> neighborOffsets = new List<Vector3Int>();
+            for (int z = -1; z <= 1; z++)
             {
-                Vector3Int.zero,
-                Vector3Int.up, Vector3Int.down, 
-                Vector3Int.left, Vector3Int.right,
-                new Vector3Int(0, 0, 1), new Vector3Int(0, 0, -1)
-            };
+                for (int y = -1; y <= 1; y++)
+                {
+                    for (int x = -1; x <= 1; x++)
+                    {
+                        neighborOffsets.Add(new Vector3Int(x, y, z));
+                    }
+                }
+            }
 
             float inverseVoxelSize = 1.0f / voxelSize;
 
@@ -167,7 +171,7 @@ namespace VoxelEngine.Core.Editing
                 Vector3 localPos = vol.transform.InverseTransformPoint(worldPos);
                 Vector3Int centerIdx = Vector3Int.FloorToInt(localPos * inverseVoxelSize);
 
-                int iterations = erodeFloatingVoxels ? 7 : 1; 
+                int iterations = erodeFloatingVoxels ? neighborOffsets.Count : 1; 
 
                 for (int i = 0; i < iterations; i++)
                 {
@@ -229,7 +233,7 @@ namespace VoxelEngine.Core.Editing
             
             voxelModifierShader.SetInts("_MaxBrickIndex", new int[] {resBricks-1, resBricks-1, resBricks-1});
             voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
-             
+            
             int groupsAlloc = Mathf.CeilToInt(brickCount / 64.0f);
             voxelModifierShader.Dispatch(kernelAlloc, groupsAlloc, 1, 1);
             
@@ -257,7 +261,7 @@ namespace VoxelEngine.Core.Editing
             SetCommonBuffers(kernelRemove, vol);
             voxelModifierShader.SetBuffer(kernelRemove, "_TargetPositions", positionsBuffer);
             voxelModifierShader.SetInt("_TargetCount", voxelCount);
-             
+            
             int groupsRemove = Mathf.CeilToInt(voxelCount / 64.0f);
             voxelModifierShader.Dispatch(kernelRemove, groupsRemove, 1, 1);
 
