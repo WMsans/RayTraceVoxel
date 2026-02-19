@@ -21,8 +21,8 @@ namespace VoxelEngine.Core.Rendering
                 passData.edgeWidth = edgeWidth;
                 passData.material = material;
 
-                builder.UseTexture(fullSource);
-                builder.UseTexture(edgeSource);
+                builder.UseTexture(passData.source, AccessFlags.Read);
+                builder.UseTexture(passData.edgeSource, AccessFlags.Read);
                 builder.SetRenderAttachment(target, 0);
 
                 builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
@@ -31,7 +31,7 @@ namespace VoxelEngine.Core.Rendering
                     data.material.SetFloat(ShaderParamIDs._EdgeWidthParams, data.edgeWidth);
                     Blitter.BlitTexture(ctx.cmd, data.source, new Vector4(1, 1, 0, 0), data.material, 0);
                 });
-            } // The builder is disposed here, resolving the error.
+            }
 
             return target;
         }
