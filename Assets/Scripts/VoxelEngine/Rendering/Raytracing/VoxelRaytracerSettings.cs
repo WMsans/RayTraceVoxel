@@ -1,9 +1,11 @@
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using UnityEngine.Scripting.APIUpdating;
 
 namespace VoxelEngine.Core.Rendering
 {
+    [MovedFrom(true, "VoxelEngine.Core.Rendering", null, "VoxelRaytracerFeature+Settings")]
     [System.Serializable]
     public class VoxelRaytracerSettings
     {
