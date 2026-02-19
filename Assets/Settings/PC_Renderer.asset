@@ -45,6 +45,10 @@ MonoBehaviour:
     enableFXAA: 0
     enableTAA: 0
     taaBlend: 0.9
+    enableEdgeBlur: 1
+    edgeWidthPercent: 0.1
+    edgeRenderScale: 0.5
+    edgeBlendShader: {fileID: 4800000, guid: e9d9c1051fb3c2240b0465dfeb0a69d5, type: 3}
     enableOutline: 1
     outlineThickness: 1
     outlineShadowStrength: 0.7
