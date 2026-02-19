@@ -13,22 +13,25 @@ namespace VoxelEngine.Core.Rendering
                 return fullSource;
 
             var passName = "VoxelEdgeBlend";
-            var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData);
-            passData.source = fullSource;
-            passData.edgeSource = edgeSource;
-            passData.edgeWidth = edgeWidth;
-            passData.material = material;
-
-            builder.UseTexture(fullSource);
-            builder.UseTexture(edgeSource);
-            builder.SetRenderAttachment(target, 0);
-
-            builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
+            
+            using (var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData))
             {
-                data.material.SetTexture(ShaderParamIDs._EdgeSourceParams, data.edgeSource);
-                data.material.SetFloat(ShaderParamIDs._EdgeWidthParams, data.edgeWidth);
-                Blitter.BlitTexture(ctx.cmd, data.source, new Vector4(1, 1, 0, 0), data.material, 0);
-            });
+                passData.source = fullSource;
+                passData.edgeSource = edgeSource;
+                passData.edgeWidth = edgeWidth;
+                passData.material = material;
+
+                builder.UseTexture(fullSource);
+                builder.UseTexture(edgeSource);
+                builder.SetRenderAttachment(target, 0);
+
+                builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
+                {
+                    data.material.SetTexture(ShaderParamIDs._EdgeSourceParams, data.edgeSource);
+                    data.material.SetFloat(ShaderParamIDs._EdgeWidthParams, data.edgeWidth);
+                    Blitter.BlitTexture(ctx.cmd, data.source, new Vector4(1, 1, 0, 0), data.material, 0);
+                });
+            } // The builder is disposed here, resolving the error.
 
             return target;
         }
