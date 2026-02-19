@@ -111,19 +111,15 @@ namespace VoxelEngine.Core.Streaming
             {
                 bool shouldMerge = false;
                 
-                // Merge if culled (and not casting shadows)
-                if (!effectivelyVisible) 
+                // [FIX] Removed strict frustum culling merge. 
+                // Previously: if (!effectivelyVisible) shouldMerge = true;
+                // This caused chunks to unload immediately when looking away, causing lag when looking back.
+                // Now we only merge based on distance, keeping invisible chunks in memory.
+
+                float mergeDist = size * mergeFactor;
+                if (distSq > mergeDist * mergeDist)
                 {
                     shouldMerge = true;
-                }
-                else
-                {
-                    // Or if far away
-                    float mergeDist = size * mergeFactor;
-                    if (distSq > mergeDist * mergeDist)
-                    {
-                        shouldMerge = true;
-                    }
                 }
 
                 if (shouldMerge)

@@ -174,15 +174,14 @@ namespace VoxelEngine.Physics
             // --- Dynamic LoD Calculation ---
             // Calculate effective stride based on chunk size relative to base size.
             // Larger chunks (farther away) get a higher stride, reducing resolution.
-            // Formula: Stride scales linearly with WorldSize. 
-            // Result: Vertex count per chunk remains roughly constant regardless of size.
             
             int useStride = stride;
-            if (volume.WorldSize > baseChunkSize * 1.1f) // 1.1f epsilon
+            // Only apply LOD stride logic to standard terrain, typically non-transient
+            if (volume.WorldSize > baseChunkSize * 1.1f && !volume.IsTransient) 
             {
                 float ratio = volume.WorldSize / baseChunkSize;
                 useStride = Mathf.RoundToInt(stride * ratio);
-                useStride = Mathf.Max(stride, useStride); // Ensure we don't go below base
+                useStride = Mathf.Max(stride, useStride); 
             }
 
             int maxTriangles = maxVertices / 3;
@@ -192,18 +191,20 @@ namespace VoxelEngine.Physics
             ComputeBuffer countBuffer = new ComputeBuffer(4, sizeof(int), ComputeBufferType.IndirectArguments);
             countBuffer.SetData(new int[] { 0, 1, 0, 0 });
 
+            // [FIX] Determine correct generation size.
+            // Standard Terrain (Non-Transient): Uses Transform Scaling for LOD, so we generate in 'baseChunkSize' (unscaled space).
+            // Debris (Transient): Uses 1:1 Scale, so we must generate in 'volume.WorldSize' (actual size).
+            float generationSize = volume.IsTransient ? volume.WorldSize : baseChunkSize;
+
             PhysicsGenerator.Generate(
                 physicsShader, 
                 volume.BufferManager, 
                 vertexOutput, 
                 countBuffer, 
                 volume.Resolution, 
-                useStride, // Use the dynamic stride
+                useStride, 
                 volume.WorldOrigin,
-                // [FIX] Pass baseChunkSize instead of volume.WorldSize.
-                // This generates the mesh in unscaled space (e.g. 0-32), allowing
-                // the VoxelVolume Transform to handle the scaling (e.g. x2 to reach 64).
-                baseChunkSize,
+                generationSize, 
                 _edgeTableBuffer,
                 _triTableBuffer
             );

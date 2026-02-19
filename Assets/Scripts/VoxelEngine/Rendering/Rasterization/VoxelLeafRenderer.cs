@@ -17,7 +17,7 @@ namespace VoxelEngine.Core.Rendering
 
         [Header("Generation Settings")]
         public int maxInstances = 50000;
-        public int targetMaterialId = 6; // Default for Leaves
+        public int targetMaterialId = 6; 
         [Range(0f, 1f)] public float sdfThreshold = 0.8f;
 
         [Header("Visual Settings")]
@@ -33,32 +33,29 @@ namespace VoxelEngine.Core.Rendering
         public float windSpeed = 0.5f;
         public float windStrength = 0.2f;
 
-        // --- Buffers ---
         private ComputeBuffer _appendBuffer;
         private ComputeBuffer _argsBuffer;
         private uint[] _argsData = new uint[] { 0, 0, 0, 0, 0 };
         private bool _isDirty = true;
         
-        // --- Static Frustum Cache ---
         private static Plane[] _frustumPlanes = new Plane[6];
         private static int _lastPlaneFrame = -1;
 
         private VoxelVolume _volume;
         private Material _material;
         private Mesh _mesh; 
-        
-        // Structure matches the Compute Shader and Vertex Shader
+        public Bounds _renderBounds; // Made public
+
         public struct LeafInstance
         {
             public Vector3 position;
-            public uint packedNormal; // [Spin 8] [NormalZ 8] [NormalY 8] [NormalX 8]
-            public uint packedData;   // [Color 16] [Size 8] [Unused 8]
+            public uint packedNormal; 
+            public uint packedData;   
         }
 
         private void Awake()
         {
             _volume = GetComponent<VoxelVolume>();
-            // Cross-quad works well for tufts
             _mesh = GrassMeshGenerator.GenerateBlade(1f, 1f); 
             
             if (leafShader != null)
@@ -88,7 +85,6 @@ namespace VoxelEngine.Core.Rendering
         private void InitializeBuffers()
         {
             if (_appendBuffer != null) return;
-            // Stride is 20 bytes (Vector3 + uint + uint)
             _appendBuffer = new ComputeBuffer(maxInstances, 20, ComputeBufferType.Append);
             _argsBuffer = new ComputeBuffer(1, 5 * sizeof(uint), ComputeBufferType.IndirectArguments);
         }
@@ -103,6 +99,9 @@ namespace VoxelEngine.Core.Rendering
 
         private void Update()
         {
+            // [UPDATED] Update bounds for culling
+            _renderBounds = _volume.WorldBounds;
+
             if (Time.frameCount != _lastPlaneFrame)
             {
                 if (Camera.main != null)
@@ -155,7 +154,8 @@ namespace VoxelEngine.Core.Rendering
             leafCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer); 
             leafCompute.SetBuffer(kernel, "_LeafAppendBuffer", _appendBuffer);
 
-            leafCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin);
+            // [UPDATED] Remove World Origin
+            // leafCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin);
             leafCompute.SetFloat("_ChunkWorldSize", _volume.WorldSize);
             leafCompute.SetInt("_GridSize", _volume.Resolution);
             
@@ -182,6 +182,9 @@ namespace VoxelEngine.Core.Rendering
         public void Draw(RasterCommandBuffer cmd)
         {
             if (_material == null || _argsBuffer == null || !_volume.gameObject.activeInHierarchy) return;
+
+            // [UPDATED] Pass Transform Matrix
+            _material.SetMatrix("_ObjectToWorld", _volume.transform.localToWorldMatrix);
 
             _material.SetBuffer("_LeafInstanceBuffer", _appendBuffer);
             _material.SetColor("_BaseColor", innerColor);

@@ -58,7 +58,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    for (int bounce = 0; bounce < 3; bounce++)
+    for (int bounce = 0; bounce < _BounceCount; bounce++)
     {
         HitInfo hit = TraceScene(rayOrigin, rayDir, currentMaxDist);
         if (!hit.hit)

@@ -139,6 +139,7 @@ namespace VoxelEngine.Core.Rendering
                 data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale;
                 data.maxIterations = iterations;
                 data.maxMarchSteps = marchSteps;
+                data.bounceCount = _settings.bounceCount;
                 data.debugNormals = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Normals) ? 1.0f : 0.0f;
                 data.debugBricks = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Bricks) ? 1.0f : 0.0f;
                 data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
@@ -176,6 +177,7 @@ namespace VoxelEngine.Core.Rendering
                     cmd.SetComputeVectorParam(cs, ShaderParamIDs._MousePositionParams, pd.mousePosition);
                     cmd.SetComputeIntParam(cs, ShaderParamIDs._MaxIterationsParams, pd.maxIterations);
                     cmd.SetComputeIntParam(cs, ShaderParamIDs._MaxMarchStepsParams, pd.maxMarchSteps);
+                    cmd.SetComputeIntParam(cs, ShaderParamIDs._BounceCountParams, pd.bounceCount);
                     if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._BlueNoiseTextureParams, pd.blueNoise);
                     if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._VoxelMaterialBufferParams, pd.materialBuffer);
                     if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._AlbedoTextureArrayParams, pd.albedoArray);

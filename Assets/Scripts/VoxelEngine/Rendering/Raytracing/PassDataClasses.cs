@@ -46,6 +46,7 @@ namespace VoxelEngine.Core.Rendering
             public Vector2 mousePosition;
             public int maxIterations;
             public int maxMarchSteps;
+            public int bounceCount;
             public float debugNormals;
             public float debugBricks;
             public Vector4 celShadeParams;

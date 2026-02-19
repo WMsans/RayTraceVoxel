@@ -75,3 +75,4 @@ float _DebugViewBricks;
 float4 _MousePosition;
 int _MaxIterations;
 int _MaxMarchSteps;
+int _BounceCount;

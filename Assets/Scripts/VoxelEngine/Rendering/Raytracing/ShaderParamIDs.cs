@@ -41,6 +41,7 @@ namespace VoxelEngine.Core.Rendering
         public static readonly int _MousePositionParams = Shader.PropertyToID("_MousePosition");
         public static readonly int _MaxIterationsParams = Shader.PropertyToID("_MaxIterations");
         public static readonly int _MaxMarchStepsParams = Shader.PropertyToID("_MaxMarchSteps");
+        public static readonly int _BounceCountParams = Shader.PropertyToID("_BounceCount");
         public static readonly int _CameraViewProjectionParams = Shader.PropertyToID("_CameraViewProjection");
         public static readonly int _PrevViewProjMatrixParams = Shader.PropertyToID("_PrevViewProjMatrix");
         public static readonly int _MotionVectorTextureParams = Shader.PropertyToID("_MotionVectorTexture");

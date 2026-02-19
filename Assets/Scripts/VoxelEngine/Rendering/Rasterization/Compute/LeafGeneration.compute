@@ -7,17 +7,16 @@ StructuredBuffer<VoxelPayload> _PayloadBuffer;
 StructuredBuffer<uint> _BrickDataBuffer;
 StructuredBuffer<uint> _PageTableBuffer;
 
-// --- Outputs ---
 struct LeafInstance {
-    float3 position;
-    uint packedNormal; // [Spin 8] [Nz 8] [Ny 8] [Nx 8]
-    uint packedData;   // [Color 16] [Size 8] [Unused 8]
+    float3 position; // Now Local Position
+    uint packedNormal;
+    uint packedData;
 };
 
 AppendStructuredBuffer<LeafInstance> _LeafAppendBuffer;
 
 // --- Uniforms ---
-float3 _ChunkWorldOrigin;
+// float3 _ChunkWorldOrigin; // [REMOVED]
 float _ChunkWorldSize;
 uint _GridSize;
 uint _NodeOffset;
@@ -34,11 +33,9 @@ float Random(float3 p) {
 [numthreads(4, 4, 4)]
 void GenerateLeaves(uint3 id : SV_DispatchThreadID)
 {
-    // 1. Boundary Check
     uint bricksPerAxis = _GridSize / BRICK_SIZE;
     if (any(id >= bricksPerAxis)) return;
 
-    // 2. Resolve SVO Node
     uint nodeIndex = GetNodeIndex(4, id);
     SVONode node = _NodeBuffer[GetPhysicalIndex(nodeIndex, _NodeOffset, _PageTableBuffer)];
     uint payloadIndex, matID;
@@ -46,15 +43,11 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
 
     if (payloadIndex == 0) return;
 
-    // 3. Get Brick Data
     VoxelPayload payload = _PayloadBuffer[GetPhysicalIndex(payloadIndex, _PayloadOffset, _PageTableBuffer)];
     uint brickPtr = payload.brickDataIndex;
 
-    // 4. Iterate Voxels
-    float scale = _ChunkWorldSize / (float)_GridSize;
     float3 brickOriginLocal = id * BRICK_SIZE;
 
-    // Loop through logical 4x4x4 center
     for (uint z = 1; z <= BRICK_SIZE; z++)
     {
         for (uint y = 1; y <= BRICK_SIZE; y++)
@@ -64,7 +57,6 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
                 uint voxelIdx = _BrickOffset + brickPtr + 
                                (z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE) + 
                                (y * BRICK_STORAGE_SIZE) + x;
-
                 uint packedData = _BrickDataBuffer[voxelIdx];
                 
                 float sdf;
@@ -72,17 +64,16 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
                 uint mat;
                 UnpackVoxelData(packedData, sdf, normal, mat);
 
-                // --- Filtering ---
                 if (mat != _TargetMaterialId) continue;
                 if (abs(sdf) > _SdfThreshold) continue;
 
-                // --- Generation ---
                 int3 voxelOffset = int3(x, y, z) - int3(BRICK_PADDING, BRICK_PADDING, BRICK_PADDING);
                 float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset + 0.5;
                 
-                // Project to exact surface
                 float3 surfacePosLocal = voxelPosLocal - normal * sdf;
-                float3 worldPos = _ChunkWorldOrigin + surfacePosLocal * scale;
+                
+                // [CHANGED] Local Position
+                float3 instancePos = surfacePosLocal;
 
                 // Jitter
                 float3 jitterSeed = brickOriginLocal + (float3)voxelOffset;
@@ -91,26 +82,21 @@ void GenerateLeaves(uint3 id : SV_DispatchThreadID)
                     Random(jitterSeed + float3(4.2, 9.1, 1.3)),
                     Random(jitterSeed + float3(1.5, 6.7, 2.4))
                 ) * 2.0 - 1.0;
-
-                worldPos += jitter * 0.4 * scale; 
+                
+                instancePos += jitter * 0.4; 
 
                 LeafInstance instance;
-                instance.position = worldPos;
+                instance.position = instancePos;
                 
-                // Pack Normal and Spin
-                // Map Normal [-1, 1] -> [0, 255]
                 uint nx = (uint)(clamp(normal.x * 0.5 + 0.5, 0.0, 1.0) * 255.0);
                 uint ny = (uint)(clamp(normal.y * 0.5 + 0.5, 0.0, 1.0) * 255.0);
                 uint nz = (uint)(clamp(normal.z * 0.5 + 0.5, 0.0, 1.0) * 255.0);
-                
-                // Random Spin (0-255 representing 0-360 degrees)
-                uint spin = (uint)(Random(worldPos) * 255.0);
+                uint spin = (uint)(Random(instancePos) * 255.0);
                 
                 instance.packedNormal = nx | (ny << 8) | (nz << 16) | (spin << 24);
-
-                // Pack Size and Color
-                uint size = (uint)((Random(worldPos + float3(0,1,0)) * 0.5 + 0.5) * 255.0);
-                uint colorVar = (uint)(Random(worldPos + float3(1,0,1)) * 65535.0);
+                
+                uint size = (uint)((Random(instancePos + float3(0,1,0)) * 0.5 + 0.5) * 255.0);
+                uint colorVar = (uint)(Random(instancePos + float3(1,0,1)) * 65535.0);
                 instance.packedData = (size << 8) | (colorVar << 16);
 
                 _LeafAppendBuffer.Append(instance);

@@ -1,8 +1,8 @@
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.Rendering.RenderGraphModule; // [Fix] Required for RasterCommandBuffer
+using UnityEngine.Rendering.RenderGraphModule; 
 using VoxelEngine.Core.Data;
-using VoxelEngine.Core.Editing; // Required for VoxelEditManager
+using VoxelEngine.Core.Editing; 
 using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Rendering
@@ -10,7 +10,6 @@ namespace VoxelEngine.Core.Rendering
     [RequireComponent(typeof(VoxelVolume))]
     public class VoxelGrassRenderer : MonoBehaviour
     {
-        // --- Static Registry for Render Pass ---
         public static HashSet<VoxelGrassRenderer> ActiveRenderers = new HashSet<VoxelGrassRenderer>();
 
         [Header("Shaders")]
@@ -39,23 +38,19 @@ namespace VoxelEngine.Core.Rendering
         public float windFrequency = 0.1f;
         public Vector2 windDirection = new Vector2(1f, 0.5f);
 
-        // --- Buffers ---
         private ComputeBuffer _grassAppendBuffer;
         private ComputeBuffer _indirectArgsBuffer;
         private uint[] _argsData = new uint[] { 0, 0, 0, 0, 0 };
         private bool _isDirty = true;
         
-        // --- Static Frustum Cache ---
         private static Plane[] _frustumPlanes = new Plane[6];
         private static int _lastPlaneFrame = -1;
 
-        // --- References ---
         private VoxelVolume _volume;
         private Material _grassMaterial;
         private Mesh _grassMesh;
-        private Bounds _renderBounds;
+        public Bounds _renderBounds; // Made public for external culling if needed
         
-        // --- LOD State ---
         private float _lodScale = 1.0f;
 
         private void Awake()
@@ -104,7 +99,9 @@ namespace VoxelEngine.Core.Rendering
 
         private void Update()
         {
-            // Update frustum planes once per frame
+            // [UPDATED] Keep render bounds fresh for culling systems
+            _renderBounds = _volume.WorldBounds;
+
             if (Time.frameCount != _lastPlaneFrame)
             {
                 if (Camera.main != null)
@@ -114,7 +111,6 @@ namespace VoxelEngine.Core.Rendering
                 }
             }
 
-            // Check Visibility
             bool visible = GeometryUtility.TestPlanesAABB(_frustumPlanes, _volume.WorldBounds);
 
             if (visible)
@@ -143,14 +139,12 @@ namespace VoxelEngine.Core.Rendering
         public void Refresh()
         {
             _isDirty = true;
-            // If already visible, we could dispatch here, but Update will catch it.
         }
 
         private void DispatchGeneration()
         {
             if (grassCompute == null || !_volume.IsReady || _grassAppendBuffer == null) return;
             
-            // --- 0. Calculate LOD Scale ---
             float currentVoxelSize = _volume.WorldSize / (float)_volume.Resolution;
             float baseVoxelSize = 1.0f;
             
@@ -159,10 +153,8 @@ namespace VoxelEngine.Core.Rendering
 
             _lodScale = Mathf.Max(1.0f, currentVoxelSize / baseVoxelSize);
 
-            // 1. Reset Counter
             _grassAppendBuffer.SetCounterValue(0);
 
-            // 2. Dispatch Compute
             int kernel = grassCompute.FindKernel("GenerateGrass");
             grassCompute.SetBuffer(kernel, "_NodeBuffer", _volume.NodeBuffer);
             grassCompute.SetBuffer(kernel, "_PayloadBuffer", _volume.PayloadBuffer);
@@ -170,7 +162,9 @@ namespace VoxelEngine.Core.Rendering
             grassCompute.SetBuffer(kernel, "_PageTableBuffer", _volume.BufferManager.PageTableBuffer);
             grassCompute.SetBuffer(kernel, "_GrassAppendBuffer", _grassAppendBuffer);
 
-            grassCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin);
+            // [UPDATED] World Origin not needed in compute anymore (it produces local coords)
+            // grassCompute.SetVector("_ChunkWorldOrigin", _volume.WorldOrigin); 
+            
             grassCompute.SetFloat("_ChunkWorldSize", _volume.WorldSize);
             grassCompute.SetInt("_GridSize", _volume.Resolution);
             
@@ -185,7 +179,6 @@ namespace VoxelEngine.Core.Rendering
             int groups = Mathf.CeilToInt((_volume.Resolution / 4.0f) / 4.0f);
             grassCompute.Dispatch(kernel, groups, groups, groups);
             
-            // 3. Set Mesh Data
             _argsData[0] = (uint)_grassMesh.GetIndexCount(0);
             _argsData[1] = 0; 
             _argsData[2] = (uint)_grassMesh.GetIndexStart(0);
@@ -194,24 +187,24 @@ namespace VoxelEngine.Core.Rendering
             
             _indirectArgsBuffer.SetData(_argsData); 
 
-            // 4. Copy Instance Count
             ComputeBuffer.CopyCount(_grassAppendBuffer, _indirectArgsBuffer, 4); 
             
             _renderBounds = _volume.WorldBounds;
         }
 
-        // --- Render Called by RenderFeature ---
         public void Draw(RasterCommandBuffer cmd)
         {
             if (_grassMaterial == null || _indirectArgsBuffer == null || !_volume.gameObject.activeInHierarchy) return;
 
-            // Update Material Properties
+            // [UPDATED] Pass the dynamic transform matrix
+            _grassMaterial.SetMatrix("_ObjectToWorld", _volume.transform.localToWorldMatrix);
+
             _grassMaterial.SetBuffer("_GrassInstanceBuffer", _grassAppendBuffer);
             _grassMaterial.SetColor("_BaseColor", baseColor);
             _grassMaterial.SetColor("_TipColor", tipColor);
             
-            _grassMaterial.SetFloat("_BladeWidth", bladeWidth * _lodScale);
-            _grassMaterial.SetFloat("_BladeHeight", bladeHeight * _lodScale);
+            _grassMaterial.SetFloat("_BladeWidth", bladeWidth);
+            _grassMaterial.SetFloat("_BladeHeight", bladeHeight);
             
             _grassMaterial.SetFloat("_CelSteps", celSteps);
             _grassMaterial.SetFloat("_ShadowBrightness", shadowBrightness);
@@ -224,7 +217,6 @@ namespace VoxelEngine.Core.Rendering
             if (windTexture != null)
                 _grassMaterial.SetTexture("_WindTex", windTexture);
 
-            // Issue Draw Call via RasterCommandBuffer
             cmd.DrawMeshInstancedIndirect(
                 _grassMesh,
                 0,

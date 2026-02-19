@@ -21,6 +21,7 @@ namespace VoxelEngine.Core.Rendering
 
         [Header("Quality")]
         public QualityLevel qualityLevel = QualityLevel.High;
+        [Range(0, 8)] public int bounceCount = 3;
         [Range(0.1f, 1.0f)]
         public float renderScale = 1.0f;
         [Range(0.01f, 10.0f)] public float textureScale = 1.0f;

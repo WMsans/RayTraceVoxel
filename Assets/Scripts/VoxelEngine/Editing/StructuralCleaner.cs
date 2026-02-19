@@ -28,6 +28,28 @@ namespace VoxelEngine.Core.Editing
         [Tooltip("Minimum number of voxels required to generate debris. If less, the floating voxels are ignored (remain in source).")]
         public int minimumDebrisVoxelCount = 10;
 
+        [Header("Stitching")]
+        [Tooltip("If true, attempts to physically link debris chunks that span across chunk boundaries.")]
+        public bool stitchDebris = true;
+        
+        [Tooltip("The time window (in seconds) to consider separate debris pieces as part of the same structural failure.")]
+        public float stitchingTimeWindow = 0.5f;
+
+        [Tooltip("The overlap/touch tolerance distance for stitching detection.")]
+        public float stitchingTolerance = 0.1f;
+
+        // Internal Stitching Tracking
+        private struct DebrisFragment
+        {
+            public VoxelVolume Debris;
+            public VoxelVolume Source;
+            public Bounds WorldBounds;
+            public float Timestamp;
+        }
+        
+        // Tracks recently created debris to find matches
+        private List<DebrisFragment> _recentFragments = new List<DebrisFragment>();
+
         private void Start()
         {
             if (analyzer != null)
@@ -151,13 +173,17 @@ namespace VoxelEngine.Core.Editing
             int resBricks = vol.Resolution / 4;
             Vector3Int maxBrickIdx = new Vector3Int(resBricks - 1, resBricks - 1, resBricks - 1);
 
-            Vector3Int[] neighborOffsets = new Vector3Int[]
+            List<Vector3Int> neighborOffsets = new List<Vector3Int>();
+            for (int z = -1; z <= 1; z++)
             {
-                Vector3Int.zero,
-                Vector3Int.up, Vector3Int.down, 
-                Vector3Int.left, Vector3Int.right,
-                new Vector3Int(0, 0, 1), new Vector3Int(0, 0, -1)
-            };
+                for (int y = -1; y <= 1; y++)
+                {
+                    for (int x = -1; x <= 1; x++)
+                    {
+                        neighborOffsets.Add(new Vector3Int(x, y, z));
+                    }
+                }
+            }
 
             float inverseVoxelSize = 1.0f / voxelSize;
 
@@ -167,7 +193,7 @@ namespace VoxelEngine.Core.Editing
                 Vector3 localPos = vol.transform.InverseTransformPoint(worldPos);
                 Vector3Int centerIdx = Vector3Int.FloorToInt(localPos * inverseVoxelSize);
 
-                int iterations = erodeFloatingVoxels ? 7 : 1; 
+                int iterations = erodeFloatingVoxels ? neighborOffsets.Count : 1; 
 
                 for (int i = 0; i < iterations; i++)
                 {
@@ -229,7 +255,7 @@ namespace VoxelEngine.Core.Editing
             
             voxelModifierShader.SetInts("_MaxBrickIndex", new int[] {resBricks-1, resBricks-1, resBricks-1});
             voxelModifierShader.SetInts("_MinBrickIndex", new int[] {0, 0, 0});
-             
+            
             int groupsAlloc = Mathf.CeilToInt(brickCount / 64.0f);
             voxelModifierShader.Dispatch(kernelAlloc, groupsAlloc, 1, 1);
             
@@ -257,7 +283,7 @@ namespace VoxelEngine.Core.Editing
             SetCommonBuffers(kernelRemove, vol);
             voxelModifierShader.SetBuffer(kernelRemove, "_TargetPositions", positionsBuffer);
             voxelModifierShader.SetInt("_TargetCount", voxelCount);
-             
+            
             int groupsRemove = Mathf.CeilToInt(voxelCount / 64.0f);
             voxelModifierShader.Dispatch(kernelRemove, groupsRemove, 1, 1);
 
@@ -265,6 +291,10 @@ namespace VoxelEngine.Core.Editing
             {
                 VoxelPhysicsManager.Instance.Enqueue(vol);
             }
+
+            // Update Source Vegetation
+            if (vol.grassRenderer != null) vol.grassRenderer.Refresh();
+            if (vol.leafRenderer != null) vol.leafRenderer.Refresh();
 
             // 6. Readback with Data Interception (Phase 3) OR Cleanup
             if (createDebris && readbackBuffer != null)
@@ -523,7 +553,97 @@ namespace VoxelEngine.Core.Editing
                     debrisVol.gameObject.SetActive(true);
                     VoxelPhysicsManager.Instance.Enqueue(debrisVol);
                 }
+
+                // Update Debris Vegetation
+                if (debrisVol.grassRenderer != null) debrisVol.grassRenderer.Refresh();
+                if (debrisVol.leafRenderer != null) debrisVol.leafRenderer.Refresh();
+
+                // Phase 4: Register for Stitching
+                RegisterDebrisFragment(debrisVol, sourceVol);
             }
+        }
+
+        private void RegisterDebrisFragment(VoxelVolume debrisVol, VoxelVolume sourceVol)
+        {
+            if (!stitchDebris || debrisVol == null) return;
+
+            // 1. Cleanup old fragments to keep the list fresh
+            float now = Time.time;
+            _recentFragments.RemoveAll(x => now - x.Timestamp > stitchingTimeWindow || x.Debris == null);
+
+            // 2. Get the bounds of the new debris for intersection checks
+            Bounds bounds = new Bounds();
+            Collider col = debrisVol.GetComponent<Collider>();
+            
+            // Handle both Box and Mesh colliders
+            if (col != null) 
+            {
+                bounds = col.bounds;
+            }
+            else 
+            {
+                // Fallback if collider isn't ready immediately (though it should be setup above)
+                return;
+            }
+
+            // Expand bounds slightly to catch adjacent chunks that are technically just touching
+            bounds.Expand(stitchingTolerance);
+
+            // 3. Scan recently created debris for neighbors
+            foreach (var frag in _recentFragments)
+            {
+                // Rule 1: Must be from different source volumes (chunks)
+                // If they are from the same chunk, they were likely already split by the analyzer 
+                // because they were disjoint islands, so we shouldn't stitch them back.
+                if (frag.Source == sourceVol) continue;
+                
+                // Rule 2: Debris must be active
+                if (frag.Debris == null || !frag.Debris.gameObject.activeInHierarchy) continue;
+
+                // Rule 3: Spatial intersection
+                if (bounds.Intersects(frag.WorldBounds))
+                {
+                    Stitch(debrisVol, frag.Debris);
+                }
+            }
+
+            // 4. Register this new piece
+            _recentFragments.Add(new DebrisFragment
+            {
+                Debris = debrisVol,
+                Source = sourceVol,
+                WorldBounds = bounds,
+                Timestamp = now
+            });
+        }
+
+        private void Stitch(VoxelVolume a, VoxelVolume b)
+        {
+            Rigidbody rbA = a.GetComponent<Rigidbody>();
+            Rigidbody rbB = b.GetComponent<Rigidbody>();
+            
+            if (rbA == null || rbB == null) return;
+
+            // Check if a joint already exists between these two
+            FixedJoint[] existingJoints = a.GetComponents<FixedJoint>();
+            foreach(var j in existingJoints) 
+            {
+                if (j.connectedBody == rbB) return;
+            }
+
+            // Create the joint
+            FixedJoint joint = a.gameObject.AddComponent<FixedJoint>();
+            joint.connectedBody = rbB;
+            
+            // Disable collision between the stitched parts to prevent physics jitter/explosion
+            joint.enableCollision = false; 
+            
+            // Heuristic for break force: based on mass of the connected parts
+            float combinedMass = rbA.mass + rbB.mass;
+            joint.breakForce = combinedMass * 50.0f; 
+            joint.breakTorque = combinedMass * 50.0f;
+
+            Debug.Log($"[StructuralCleaner] Stitched {a.name} to {b.name} (Source: {a.transform.parent?.name} & {b.transform.parent?.name})");
         }
 
         private static uint PackVoxelData(float sdf, Vector3 normal, uint materialID)
