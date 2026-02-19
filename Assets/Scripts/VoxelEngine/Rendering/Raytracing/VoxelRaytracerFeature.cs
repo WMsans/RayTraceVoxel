@@ -244,7 +244,7 @@ namespace VoxelEngine.Core.Rendering
                     if (_normalHandle != null) data.normalArray = renderGraph.ImportTexture(_normalHandle);
                     if (_maskHandle != null) data.maskArray = renderGraph.ImportTexture(_maskHandle);
                     if (_blueNoiseHandle != null) data.blueNoise = renderGraph.ImportTexture(_blueNoiseHandle);
-                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(ShaderParamIDs.ZBufferParams); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol;
+                    data.width = scaledWidth; data.height = scaledHeight; data.cameraToWorld = cameraData.camera.cameraToWorldMatrix; data.cameraInverseProjection = cameraData.camera.projectionMatrix.inverse; data.viewProj = viewProj; data.prevViewProj = prevViewProj; data.zBufferParams = Shader.GetGlobalVector(ShaderParamIDs._ZBufferParamsID); data.sourceDepth = resourceData.cameraDepthTexture; data.sourceColor = resourceData.activeColorTexture; data.targetColor = lowResResult; data.targetDepth = lowResDepth; data.targetNormals = lowResNormals; data.targetMotionVector = motionVectorTex; data.mainLightPosition = mainPos; data.mainLightColor = mainCol;
                     data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, _settings.textureScale);
                     data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale; data.maxIterations = iterations; data.maxMarchSteps = marchSteps;
                     data.debugNormals = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Normals) ? 1.0f : 0.0f;
@@ -264,28 +264,28 @@ namespace VoxelEngine.Core.Rendering
                     builder.SetRenderFunc((PassDataClasses.PassData pd, ComputeGraphContext ctx) =>
                     {
                         var cs = pd.computeShader; var ker = pd.kernel; var cmd = ctx.cmd;
-                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.GlobalNodeBuffer, pd.nodeBuffer);
-                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.GlobalPayloadBuffer, pd.payloadBuffer);
-                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.GlobalBrickDataBuffer, pd.brickDataBuffer);
-                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.PageTableBuffer, pd.pageTableBuffer);
-                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.ChunkBuffer, pd.chunkBuffer);
-                        cmd.SetComputeIntParam(cs, ShaderParamIDs.ChunkCount, pd.chunkCount);
-                        if (pd.tlasGridBuffer != null) cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.TLASGridBuffer, pd.tlasGridBuffer);
-                        if (pd.tlasChunkIndexBuffer != null) cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.TLASChunkIndexBuffer, pd.tlasChunkIndexBuffer);
-                        cmd.SetComputeVectorParam(cs, ShaderParamIDs.TLASBoundsMin, pd.tlasBoundsMin); cmd.SetComputeVectorParam(cs, ShaderParamIDs.TLASBoundsMax, pd.tlasBoundsMax); cmd.SetComputeIntParam(cs, ShaderParamIDs.TLASResolution, pd.tlasResolution); cmd.SetComputeIntParam(cs, ShaderParamIDs.FrameCount, pd.frameCount); cmd.SetComputeVectorParam(cs, ShaderParamIDs.MousePosition, pd.mousePosition); cmd.SetComputeIntParam(cs, ShaderParamIDs.MaxIterations, pd.maxIterations); cmd.SetComputeIntParam(cs, ShaderParamIDs.MaxMarchSteps, pd.maxMarchSteps);
-                        if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.BlueNoiseTexture, pd.blueNoise);
-                        if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.VoxelMaterialBuffer, pd.materialBuffer);
-                        if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.AlbedoTextureArray, pd.albedoArray);
-                        if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.NormalTextureArray, pd.normalArray);
-                        if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.MaskTextureArray, pd.maskArray);
-                        cmd.SetComputeMatrixParam(cs, ShaderParamIDs.CameraToWorld, pd.cameraToWorld); cmd.SetComputeMatrixParam(cs, ShaderParamIDs.CameraInverseProjection, pd.cameraInverseProjection); cmd.SetComputeMatrixParam(cs, ShaderParamIDs.CameraViewProjection, pd.viewProj); cmd.SetComputeMatrixParam(cs, ShaderParamIDs.PrevViewProjMatrix, pd.prevViewProj);
-                        cmd.SetComputeVectorParam(cs, ShaderParamIDs.ZBufferParams, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.CameraDepthTexture, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.SourceTex, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.Result, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.ResultDepth, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.ResultNormals, pd.targetNormals); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs.MotionVectorTexture, pd.targetMotionVector);
-                        cmd.SetComputeVectorParam(cs, ShaderParamIDs.MainLightPosition, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, ShaderParamIDs.MainLightColor, pd.mainLightColor); cmd.SetComputeVectorParam(cs, ShaderParamIDs.RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs.RaycastBuffer, pd.raycastBuffer);
-                        cmd.SetComputeFloatParam(cs, ShaderParamIDs.DebugViewNormals, pd.debugNormals);
-                        cmd.SetComputeFloatParam(cs, ShaderParamIDs.DebugViewBricks, pd.debugBricks);
-                        cmd.SetComputeVectorParam(cs, ShaderParamIDs.CelShadeParams, pd.celShadeParams);
-                        cmd.SetComputeVectorParam(cs, ShaderParamIDs.AtmosphereParams, pd.atmosphereParams);
-                        cmd.SetComputeVectorParam(cs, ShaderParamIDs.AtmosphereColor, pd.atmosphereColor);
+                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._GlobalNodeBufferParams, pd.nodeBuffer);
+                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._GlobalPayloadBufferParams, pd.payloadBuffer);
+                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._GlobalBrickDataBufferParams, pd.brickDataBuffer);
+                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._PageTableBufferParams, pd.pageTableBuffer);
+                        cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._ChunkBufferParams, pd.chunkBuffer);
+                        cmd.SetComputeIntParam(cs, ShaderParamIDs._ChunkCountParams, pd.chunkCount);
+                        if (pd.tlasGridBuffer != null) cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._TLASGridBufferParams, pd.tlasGridBuffer);
+                        if (pd.tlasChunkIndexBuffer != null) cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._TLASChunkIndexBufferParams, pd.tlasChunkIndexBuffer);
+                        cmd.SetComputeVectorParam(cs, ShaderParamIDs._TLASBoundsMinParams, pd.tlasBoundsMin); cmd.SetComputeVectorParam(cs, ShaderParamIDs._TLASBoundsMaxParams, pd.tlasBoundsMax); cmd.SetComputeIntParam(cs, ShaderParamIDs._TLASResolutionParams, pd.tlasResolution); cmd.SetComputeIntParam(cs, ShaderParamIDs._FrameCountParams, pd.frameCount); cmd.SetComputeVectorParam(cs, ShaderParamIDs._MousePositionParams, pd.mousePosition); cmd.SetComputeIntParam(cs, ShaderParamIDs._MaxIterationsParams, pd.maxIterations); cmd.SetComputeIntParam(cs, ShaderParamIDs._MaxMarchStepsParams, pd.maxMarchSteps);
+                        if (pd.blueNoise.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._BlueNoiseTextureParams, pd.blueNoise);
+                        if (pd.materialBuffer != null) cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._VoxelMaterialBufferParams, pd.materialBuffer);
+                        if (pd.albedoArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._AlbedoTextureArrayParams, pd.albedoArray);
+                        if (pd.normalArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._NormalTextureArrayParams, pd.normalArray);
+                        if (pd.maskArray.IsValid()) cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._MaskTextureArrayParams, pd.maskArray);
+                        cmd.SetComputeMatrixParam(cs, ShaderParamIDs._CameraToWorldParams, pd.cameraToWorld); cmd.SetComputeMatrixParam(cs, ShaderParamIDs._CameraInverseProjectionParams, pd.cameraInverseProjection); cmd.SetComputeMatrixParam(cs, ShaderParamIDs._CameraViewProjectionParams, pd.viewProj); cmd.SetComputeMatrixParam(cs, ShaderParamIDs._PrevViewProjMatrixParams, pd.prevViewProj);
+                        cmd.SetComputeVectorParam(cs, ShaderParamIDs._ZBufferParamsID, pd.zBufferParams); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._CameraDepthTextureParams, pd.sourceDepth); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._SourceTexParams, pd.sourceColor); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._ResultParams, pd.targetColor); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._ResultDepthParams, pd.targetDepth); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._ResultNormalsParams, pd.targetNormals); cmd.SetComputeTextureParam(cs, ker, ShaderParamIDs._MotionVectorTextureParams, pd.targetMotionVector);
+                        cmd.SetComputeVectorParam(cs, ShaderParamIDs._MainLightPositionParams, pd.mainLightPosition); cmd.SetComputeVectorParam(cs, ShaderParamIDs._MainLightColorParams, pd.mainLightColor); cmd.SetComputeVectorParam(cs, ShaderParamIDs._RaytraceParams, pd.raytraceParams); cmd.SetComputeBufferParam(cs, ker, ShaderParamIDs._RaycastBufferParams, pd.raycastBuffer);
+                        cmd.SetComputeFloatParam(cs, ShaderParamIDs._DebugViewNormalsParams, pd.debugNormals);
+                        cmd.SetComputeFloatParam(cs, ShaderParamIDs._DebugViewBricksParams, pd.debugBricks);
+                        cmd.SetComputeVectorParam(cs, ShaderParamIDs._CelShadeParams, pd.celShadeParams);
+                        cmd.SetComputeVectorParam(cs, ShaderParamIDs._AtmosphereParams, pd.atmosphereParams);
+                        cmd.SetComputeVectorParam(cs, ShaderParamIDs._AtmosphereColor, pd.atmosphereColor);
 
                         int groupsX = Mathf.CeilToInt(pd.width / 8.0f); int groupsY = Mathf.CeilToInt(pd.height / 8.0f);
                         cmd.DispatchCompute(cs, ker, groupsX, groupsY, 1);
@@ -336,7 +336,7 @@ namespace VoxelEngine.Core.Rendering
                         builder.SetRenderFunc((PassDataClasses.VegetationPassData vData, RasterGraphContext context) =>
                         {
                             context.cmd.ClearRenderTarget(true, false, Color.black);
-                            context.cmd.SetGlobalTexture(ShaderParamIDs.VoxelDepthCopy, vData.depthCopy);
+                            context.cmd.SetGlobalTexture(ShaderParamIDs._VoxelDepthCopyParams, vData.depthCopy);
                             if (hasGrass) { foreach (var renderer in VoxelGrassRenderer.ActiveRenderers) renderer.Draw(context.cmd); }
                             if (hasLeaves) { foreach (var renderer in VoxelLeafRenderer.ActiveLeafRenderers) renderer.Draw(context.cmd); }
                         });
@@ -381,10 +381,10 @@ namespace VoxelEngine.Core.Rendering
 
                         builder.SetRenderFunc((PassDataClasses.GodRayPassData d, RasterGraphContext ctx) =>
                         {
-                            ctx.cmd.SetGlobalTexture(ShaderParamIDs.VoxelDepthTexture, d.sourceDepth);
-                            d.material.SetVector(ShaderParamIDs.LightPosition, d.lightPosScreen);
-                            d.material.SetColor(ShaderParamIDs.LightColor, d.lightColor);
-                            d.material.SetFloat(ShaderParamIDs.SunThreshold, d.sunThreshold);
+                            ctx.cmd.SetGlobalTexture(ShaderParamIDs._VoxelDepthTextureParams, d.sourceDepth);
+                            d.material.SetVector(ShaderParamIDs._LightPositionParams, d.lightPosScreen);
+                            d.material.SetColor(ShaderParamIDs._LightColorGodRayParams, d.lightColor);
+                            d.material.SetFloat(ShaderParamIDs._SunThresholdParams, d.sunThreshold);
                             Blitter.BlitTexture(ctx.cmd, d.sourceDepth, new Vector4(1, 1, 0, 0), d.material, 0);
                         });
                     }
@@ -406,12 +406,12 @@ namespace VoxelEngine.Core.Rendering
 
                         builder.SetRenderFunc((PassDataClasses.GodRayPassData d, RasterGraphContext ctx) =>
                         {
-                            d.material.SetVector(ShaderParamIDs.LightPosition, d.lightPosScreen);
-                            d.material.SetFloat(ShaderParamIDs.Density, d.density);
-                            d.material.SetFloat(ShaderParamIDs.Decay, d.decay);
-                            d.material.SetFloat(ShaderParamIDs.Weight, d.weight);
-                            d.material.SetFloat(ShaderParamIDs.Exposure, d.exposure);
-                            d.material.SetInt(ShaderParamIDs.Samples, d.samples);
+                            d.material.SetVector(ShaderParamIDs._LightPositionParams, d.lightPosScreen);
+                            d.material.SetFloat(ShaderParamIDs._DensityParams, d.density);
+                            d.material.SetFloat(ShaderParamIDs._DecayParams, d.decay);
+                            d.material.SetFloat(ShaderParamIDs._WeightParams, d.weight);
+                            d.material.SetFloat(ShaderParamIDs._ExposureParams, d.exposure);
+                            d.material.SetInt(ShaderParamIDs._SamplesParams, d.samples);
                             Blitter.BlitTexture(ctx.cmd, d.occluderTex, new Vector4(1, 1, 0, 0), d.material, 1);
                         });
                     }
@@ -438,7 +438,7 @@ namespace VoxelEngine.Core.Rendering
                     {
                         taaData.source = lowResResult; taaData.history = historyRead; taaData.motion = motionVectorTex; taaData.destination = historyWrite; taaData.material = _taaMaterial; taaData.blend = _settings.taaBlend;
                         builder.UseTexture(taaData.source, AccessFlags.Read); builder.UseTexture(taaData.history, AccessFlags.Read); builder.UseTexture(taaData.motion, AccessFlags.Read); builder.SetRenderAttachment(taaData.destination, 0, AccessFlags.Write);
-                        builder.SetRenderFunc((PassDataClasses.TAAPassData tData, RasterGraphContext context) => { tData.material.SetTexture(ShaderParamIDs.HistoryTex, tData.history); tData.material.SetTexture(ShaderParamIDs.MotionVectorTexture, tData.motion); tData.material.SetFloat(ShaderParamIDs.Blend, tData.blend); Blitter.BlitTexture(context.cmd, tData.source, new Vector4(1, 1, 0, 0), tData.material, 0); });
+                        builder.SetRenderFunc((PassDataClasses.TAAPassData tData, RasterGraphContext context) => { tData.material.SetTexture(ShaderParamIDs._HistoryTexParams, tData.history); tData.material.SetTexture(ShaderParamIDs._MotionVectorTextureParams, tData.motion); tData.material.SetFloat(ShaderParamIDs._BlendParams, tData.blend); Blitter.BlitTexture(context.cmd, tData.source, new Vector4(1, 1, 0, 0), tData.material, 0); });
                     }
                     compositeSource = historyWrite;
                 }
@@ -477,9 +477,9 @@ namespace VoxelEngine.Core.Rendering
                     {
                         if (useFXAA) { context.cmd.ClearRenderTarget(false, true, Color.clear); }
 
-                        cData.material.SetTexture(ShaderParamIDs.VoxelDepthTexture, cData.depthSource);
-                        cData.material.SetTexture(ShaderParamIDs.VoxelNormalTexture, cData.normalSource);
-                        cData.material.SetFloat(ShaderParamIDs.Sharpness, cData.sharpness);
+                        cData.material.SetTexture(ShaderParamIDs._VoxelDepthTextureParams, cData.depthSource);
+                        cData.material.SetTexture(ShaderParamIDs._VoxelNormalTextureParams, cData.normalSource);
+                        cData.material.SetFloat(ShaderParamIDs._SharpnessParams, cData.sharpness);
 
                         if (cData.useFSR) cData.material.EnableKeyword("_UPSCALING_FSR");
                         else cData.material.DisableKeyword("_UPSCALING_FSR");
@@ -488,15 +488,15 @@ namespace VoxelEngine.Core.Rendering
                         {
                             cData.material.EnableKeyword("_OUTLINE_ON");
 
-                            cData.material.SetColor(ShaderParamIDs.MainLightColor, cData.mainLightColor);
-                            cData.material.SetVector(ShaderParamIDs.MainLightDirection, cData.mainLightDirection);
+                            cData.material.SetColor(ShaderParamIDs._MainLightColorParams, cData.mainLightColor);
+                            cData.material.SetVector(ShaderParamIDs._MainLightDirectionID, cData.mainLightDirection);
 
-                            cData.material.SetColor(ShaderParamIDs.OutlineColor, cData.outlineColor);
-                            cData.material.SetVector(ShaderParamIDs.OutlineParams, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
-                            cData.material.SetFloat(ShaderParamIDs.OutlineShadowStrength, cData.outlineShadowStrength);
+                            cData.material.SetColor(ShaderParamIDs._OutlineColorParams, cData.outlineColor);
+                            cData.material.SetVector(ShaderParamIDs._OutlineParamsID, new Vector4(cData.outlineThickness, cData.outlineStrength, 0, 0));
+                            cData.material.SetFloat(ShaderParamIDs._OutlineShadowStrengthID, cData.outlineShadowStrength);
 
-                            cData.material.SetColor(ShaderParamIDs.NormalOutlineColor, cData.normalColor);
-                            cData.material.SetVector(ShaderParamIDs.NormalOutlineParams, new Vector4(cData.normalThreshold, cData.normalStrength, cData.normalFadeDistance, 0));
+                            cData.material.SetColor(ShaderParamIDs._NormalOutlineColorParams, cData.normalColor);
+                            cData.material.SetVector(ShaderParamIDs._NormalOutlineParamsID, new Vector4(cData.normalThreshold, cData.normalStrength, cData.normalFadeDistance, 0));
                         }
                         else
                         {
