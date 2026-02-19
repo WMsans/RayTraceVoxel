@@ -212,6 +212,7 @@ namespace VoxelEngine.Core.Rendering
                 if (useEdgeBlur)
                 {
                     edgeScale = Mathf.Clamp(_settings.edgeRenderScale, 0.1f, 1.0f);
+                    edgeScale = Mathf.Min(edgeScale, currentScale);
                     if (edgeScale < 1.0f)
                     {
                         int edgeScaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * edgeScale));
