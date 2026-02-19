@@ -12,13 +12,11 @@ namespace VoxelEngine.Core.Rendering
             if (material == null)
                 return fullSource;
 
-            material.SetTexture(ShaderParamIDs._EdgeSourceParams, edgeSource);
-            material.SetFloat(ShaderParamIDs._EdgeWidthParams, edgeWidth);
-
             var passName = "VoxelEdgeBlend";
             var builder = renderGraph.AddRasterRenderPass<PassData>(passName, out var passData);
             passData.source = fullSource;
-            passData.target = target;
+            passData.edgeSource = edgeSource;
+            passData.edgeWidth = edgeWidth;
             passData.material = material;
 
             builder.UseTexture(fullSource);
@@ -27,6 +25,8 @@ namespace VoxelEngine.Core.Rendering
 
             builder.SetRenderFunc((PassData data, RasterGraphContext ctx) =>
             {
+                data.material.SetTexture(ShaderParamIDs._EdgeSourceParams, data.edgeSource);
+                data.material.SetFloat(ShaderParamIDs._EdgeWidthParams, data.edgeWidth);
                 Blitter.BlitTexture(ctx.cmd, data.source, new Vector4(1, 1, 0, 0), data.material, 0);
             });
 
@@ -36,7 +36,8 @@ namespace VoxelEngine.Core.Rendering
         private sealed class PassData
         {
             public TextureHandle source;
-            public TextureHandle target;
+            public TextureHandle edgeSource;
+            public float edgeWidth;
             public Material material;
         }
     }
