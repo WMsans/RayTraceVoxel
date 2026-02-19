@@ -16,6 +16,7 @@ namespace VoxelEngine.Core.Rendering
         private Material _taaMaterial;
         private Material _godRayMaterial;
         private Material _copyMaterial;
+        private Material _edgeBlendMaterial;
 
         public static Vector2 MousePosition;
         public static GraphicsBuffer RaycastHitBuffer;
@@ -39,6 +40,9 @@ namespace VoxelEngine.Core.Rendering
                 _godRayMaterial = new Material(settings.godRayShader);
 
             _copyMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/Universal Render Pipeline/Blit"));
+
+            if (settings.edgeBlendShader != null)
+                _edgeBlendMaterial = new Material(settings.edgeBlendShader);
         }
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -47,7 +51,7 @@ namespace VoxelEngine.Core.Rendering
             if (VoxelVolumePool.Instance == null) return;
 
             _pass.UpdateSettings(settings);
-            _pass.Setup(_compositeMaterial, _fxaaMaterial, _taaMaterial, _godRayMaterial, _copyMaterial);
+            _pass.Setup(_compositeMaterial, _fxaaMaterial, _taaMaterial, _godRayMaterial, _copyMaterial, _edgeBlendMaterial);
             renderer.EnqueuePass(_pass);
         }
 
@@ -58,6 +62,7 @@ namespace VoxelEngine.Core.Rendering
             CoreUtils.Destroy(_taaMaterial);
             CoreUtils.Destroy(_godRayMaterial);
             CoreUtils.Destroy(_copyMaterial);
+            CoreUtils.Destroy(_edgeBlendMaterial);
             _pass?.Dispose();
         }
 
@@ -69,6 +74,7 @@ namespace VoxelEngine.Core.Rendering
             private Material _taaMaterial;
             private Material _godRayMaterial;
             private Material _copyMaterial;
+            private Material _edgeBlendMaterial;
 
             private readonly CameraHistoryManager _cameraHistoryManager = new CameraHistoryManager();
             private readonly VoxelRaytracePass _raytracePass;
@@ -77,6 +83,7 @@ namespace VoxelEngine.Core.Rendering
             private readonly TAAPass _taaPass = new TAAPass();
             private readonly CompositePass _compositePass = new CompositePass();
             private readonly FXAAPass _fxaaPass = new FXAAPass();
+            private readonly EdgeBlendPass _edgeBlendPass = new EdgeBlendPass();
 
             public VoxelRaytracerOrchestratorPass(VoxelRaytracerSettings settings)
             {
@@ -92,13 +99,14 @@ namespace VoxelEngine.Core.Rendering
                 _raytracePass.UpdateSettings(newSettings);
             }
 
-            public void Setup(Material composite, Material fxaa, Material taa, Material godrays, Material copyMaterial)
+            public void Setup(Material composite, Material fxaa, Material taa, Material godrays, Material copyMaterial, Material edgeBlendMaterial)
             {
                 _compositeMaterial = composite;
                 _fxaaMaterial = fxaa;
                 _taaMaterial = taa;
                 _godRayMaterial = godrays;
                 _copyMaterial = copyMaterial;
+                _edgeBlendMaterial = edgeBlendMaterial;
             }
 
             public void Dispose()
@@ -198,8 +206,35 @@ namespace VoxelEngine.Core.Rendering
                 var raytraceResult = _raytracePass.Record(renderGraph, cameraData, resourceData, mainPos, mainCol, viewProj, prevViewProj, scaledWidth, scaledHeight, currentScale, finalSpread, new Vector2(jitterX, jitterY), iterations, marchSteps);
                 TextureHandle compositeSource = raytraceResult.LowResResult;
 
+                VoxelRaytracePass.RaytraceOutput edgeRaytraceResult = default;
+                bool useEdgeBlur = _settings.enableEdgeBlur && _edgeBlendMaterial != null;
+                float edgeScale = 1.0f;
+                if (useEdgeBlur)
+                {
+                    edgeScale = Mathf.Clamp(_settings.edgeRenderScale, 0.1f, 1.0f);
+                    edgeScale = Mathf.Min(edgeScale, currentScale);
+                    if (edgeScale < 1.0f)
+                    {
+                        int edgeScaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * edgeScale));
+                        int edgeScaledHeight = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.height * edgeScale));
+                        edgeRaytraceResult = _raytracePass.Record(renderGraph, cameraData, resourceData, mainPos, mainCol, viewProj, prevViewProj, edgeScaledWidth, edgeScaledHeight, edgeScale, finalSpread, new Vector2(jitterX, jitterY), iterations, marchSteps);
+                    }
+                }
+
                 _vegetationPass.Record(renderGraph, scaledWidth, scaledHeight, raytraceResult.LowResResult, raytraceResult.LowResDepth, raytraceResult.LowResNormals, _copyMaterial);
                 _godRaysPass.Record(renderGraph, cameraData, _settings, _godRayMaterial, raytraceResult.LowResDepth, raytraceResult.LowResResult, mainPos, scaledWidth, scaledHeight);
+
+                if (useEdgeBlur && edgeScale < 1.0f)
+                {
+                    TextureDesc edgeBlendDesc = new TextureDesc(scaledWidth, scaledHeight)
+                    {
+                        colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat,
+                        name = "VoxelEdgeBlend"
+                    };
+                    TextureHandle edgeBlendTarget = renderGraph.CreateTexture(edgeBlendDesc);
+                    compositeSource = _edgeBlendPass.Record(renderGraph, compositeSource, edgeRaytraceResult.LowResResult, edgeBlendTarget, _edgeBlendMaterial, _settings.edgeWidthPercent);
+                }
+
                 compositeSource = _taaPass.Record(renderGraph, useTAA, _taaMaterial, compositeSource, historyRead, historyWrite, raytraceResult.MotionVectors, _settings.taaBlend);
                 _compositePass.Record(renderGraph, _settings, _compositeMaterial, compositeSource, raytraceResult.LowResDepth, raytraceResult.LowResNormals, compositeOutput, resourceData.activeDepthTexture, useFXAA, mainPos, mainCol);
                 _fxaaPass.Record(renderGraph, useFXAA, _fxaaMaterial, compositeOutput, resourceData.activeColorTexture);

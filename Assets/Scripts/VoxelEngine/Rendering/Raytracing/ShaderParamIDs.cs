@@ -45,9 +45,11 @@ namespace VoxelEngine.Core.Rendering
         public static readonly int _PrevViewProjMatrixParams = Shader.PropertyToID("_PrevViewProjMatrix");
         public static readonly int _MotionVectorTextureParams = Shader.PropertyToID("_MotionVectorTexture");
         public static readonly int _SourceTexParams = Shader.PropertyToID("_SourceTex");
+        public static readonly int _EdgeSourceParams = Shader.PropertyToID("_EdgeSource");
         public static readonly int _SharpnessParams = Shader.PropertyToID("_Sharpness");
         public static readonly int _HistoryTexParams = Shader.PropertyToID("_HistoryTex");
         public static readonly int _BlendParams = Shader.PropertyToID("_Blend");
+        public static readonly int _EdgeWidthParams = Shader.PropertyToID("_EdgeWidth");
 
         public static readonly int _OutlineParamsID = Shader.PropertyToID("_OutlineParams");
         public static readonly int _OutlineColorParams = Shader.PropertyToID("_OutlineColor");

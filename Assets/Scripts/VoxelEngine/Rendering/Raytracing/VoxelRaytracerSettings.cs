@@ -62,6 +62,12 @@ namespace VoxelEngine.Core.Rendering
         public bool enableTAA = true;
         [Range(0.0f, 1.0f)] public float taaBlend = 0.93f;
 
+        [Header("Edge Blur")]
+        public bool enableEdgeBlur = true;
+        [Range(0.01f, 0.5f)] public float edgeWidthPercent = 0.1f;
+        [Range(0.1f, 1.0f)] public float edgeRenderScale = 0.5f;
+        public Shader edgeBlendShader;
+
         [Header("Outline")]
         public bool enableOutline = false;
         [Range(0.0f, 5.0f)] public float outlineThickness = 1.0f;
