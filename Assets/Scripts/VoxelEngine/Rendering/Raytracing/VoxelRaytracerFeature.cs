@@ -5,7 +5,6 @@ using UnityEngine.Rendering.RenderGraphModule;
 using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Streaming;
-using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Rendering
 {
@@ -74,13 +73,7 @@ namespace VoxelEngine.Core.Rendering
             private RTHandle _maskHandle;
             private RTHandle _blueNoiseHandle;
 
-            class CameraHistory
-            {
-                public RTHandle[] historyTextures = new RTHandle[2];
-                public int currentIndex = 0;
-            }
-            private Dictionary<Camera, CameraHistory> _cameraHistory = new Dictionary<Camera, CameraHistory>();
-            private Dictionary<Camera, Matrix4x4> _prevMatrices = new Dictionary<Camera, Matrix4x4>();
+            private readonly CameraHistoryManager _cameraHistoryManager = new CameraHistoryManager();
 
             public VoxelRaytracerPass(VoxelRaytracerSettings settings)
             {
@@ -107,17 +100,13 @@ namespace VoxelEngine.Core.Rendering
                 _blueNoiseHandle?.Release();
                 CoreUtils.Destroy(_compositeMaterial);
 
+                _cameraHistoryManager.Release();
+
                 if (VoxelRaytracerFeature.RaycastHitBuffer != null)
                 {
                     VoxelRaytracerFeature.RaycastHitBuffer.Release();
                     VoxelRaytracerFeature.RaycastHitBuffer = null;
                 }
-                foreach (var kvp in _cameraHistory)
-                {
-                    kvp.Value.historyTextures[0]?.Release();
-                    kvp.Value.historyTextures[1]?.Release();
-                }
-                _cameraHistory.Clear();
             }
 
             private void CheckTextureHandle(ref RTHandle handle, Texture texture)
@@ -191,25 +180,13 @@ namespace VoxelEngine.Core.Rendering
                 Matrix4x4 view = cam.worldToCameraMatrix;
                 Matrix4x4 proj = GL.GetGPUProjectionMatrix(cam.projectionMatrix, true);
                 Matrix4x4 viewProj = proj * view;
-                if (!_prevMatrices.TryGetValue(cam, out Matrix4x4 prevViewProj)) prevViewProj = viewProj;
-                _prevMatrices[cam] = viewProj;
+                _cameraHistoryManager.TryGetPrevViewProj(cam, viewProj, out Matrix4x4 prevViewProj);
 
                 TextureHandle historyRead = TextureHandle.nullHandle;
                 TextureHandle historyWrite = TextureHandle.nullHandle;
                 if (useTAA)
                 {
-                    if (!_cameraHistory.TryGetValue(cam, out CameraHistory hist)) { hist = new CameraHistory(); _cameraHistory[cam] = hist; }
-                    for (int i = 0; i < 2; i++)
-                    {
-                        if (hist.historyTextures[i] == null || hist.historyTextures[i].rt.width != scaledWidth || hist.historyTextures[i].rt.height != scaledHeight)
-                        {
-                            hist.historyTextures[i]?.Release();
-                            hist.historyTextures[i] = RTHandles.Alloc(scaledWidth, scaledHeight, colorFormat: UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat, name: $"VoxelHistory_{i}");
-                        }
-                    }
-                    historyRead = renderGraph.ImportTexture(hist.historyTextures[hist.currentIndex]);
-                    historyWrite = renderGraph.ImportTexture(hist.historyTextures[(hist.currentIndex + 1) % 2]);
-                    hist.currentIndex = (hist.currentIndex + 1) % 2;
+                    _cameraHistoryManager.GetHistoryTextures(cam, renderGraph, scaledWidth, scaledHeight, out historyRead, out historyWrite);
                 }
 
                 TextureHandle compositeOutput;
