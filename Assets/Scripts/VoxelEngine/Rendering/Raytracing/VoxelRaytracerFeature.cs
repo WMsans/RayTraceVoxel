@@ -9,7 +9,7 @@ namespace VoxelEngine.Core.Rendering
     public class VoxelRaytracerFeature : ScriptableRendererFeature
     {
         public VoxelRaytracerSettings settings = new VoxelRaytracerSettings();
-        private VoxelRaytracePass _pass;
+        private VoxelRaytracerOrchestratorPass _pass;
         private Material _compositeMaterial;
         private Material _fxaaMaterial;
         private Material _taaMaterial;
@@ -20,7 +20,7 @@ namespace VoxelEngine.Core.Rendering
 
         public override void Create()
         {
-            _pass = new VoxelRaytracePass(settings);
+            _pass = new VoxelRaytracerOrchestratorPass(settings);
 
             if (settings.compositeShader != null)
                 _compositeMaterial = new Material(settings.compositeShader);

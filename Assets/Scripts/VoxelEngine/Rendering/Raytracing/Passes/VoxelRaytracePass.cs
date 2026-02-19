@@ -8,44 +8,41 @@ using VoxelEngine.Core.Streaming;
 
 namespace VoxelEngine.Core.Rendering
 {
-    internal sealed class VoxelRaytracePass : ScriptableRenderPass
+    internal sealed class VoxelRaytracePass
     {
+        internal struct RaytraceOutput
+        {
+            public TextureHandle LowResResult;
+            public TextureHandle LowResDepth;
+            public TextureHandle LowResNormals;
+            public TextureHandle MotionVectors;
+
+            public RaytraceOutput(TextureHandle lowResResult, TextureHandle lowResDepth, TextureHandle lowResNormals, TextureHandle motionVectors)
+            {
+                LowResResult = lowResResult;
+                LowResDepth = lowResDepth;
+                LowResNormals = lowResNormals;
+                MotionVectors = motionVectors;
+            }
+        }
+
         private VoxelRaytracerSettings _settings;
         private ComputeShader _shader;
-        private Material _compositeMaterial;
-        private Material _fxaaMaterial;
-        private Material _taaMaterial;
-        private Material _godRayMaterial;
-        private Material _copyMaterial;
 
         private RTHandle _albedoHandle;
         private RTHandle _normalHandle;
         private RTHandle _maskHandle;
         private RTHandle _blueNoiseHandle;
 
-        private readonly CameraHistoryManager _cameraHistoryManager = new CameraHistoryManager();
-        private readonly VoxelVegetationPass _vegetationPass = new VoxelVegetationPass();
-        private readonly GodRaysPass _godRaysPass = new GodRaysPass();
-        private readonly TAAPass _taaPass = new TAAPass();
-        private readonly CompositePass _compositePass = new CompositePass();
-        private readonly FXAAPass _fxaaPass = new FXAAPass();
-
         public VoxelRaytracePass(VoxelRaytracerSettings settings)
         {
-            _settings = settings;
-            _shader = settings.raytraceShader;
-            renderPassEvent = settings.injectionPoint;
-            _copyMaterial = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/Universal Render Pipeline/Blit"));
+            UpdateSettings(settings);
         }
 
-        public void UpdateSettings(VoxelRaytracerSettings newSettings) { _settings = newSettings; }
-
-        public void Setup(Material composite, Material fxaa, Material taa, Material godrays)
+        public void UpdateSettings(VoxelRaytracerSettings newSettings)
         {
-            _compositeMaterial = composite;
-            _fxaaMaterial = fxaa;
-            _taaMaterial = taa;
-            _godRayMaterial = godrays;
+            _settings = newSettings;
+            _shader = newSettings.raytraceShader;
         }
 
         public void Dispose()
@@ -54,9 +51,6 @@ namespace VoxelEngine.Core.Rendering
             _normalHandle?.Release();
             _maskHandle?.Release();
             _blueNoiseHandle?.Release();
-            CoreUtils.Destroy(_compositeMaterial);
-
-            _cameraHistoryManager.Release();
 
             if (VoxelRaytracerFeature.RaycastHitBuffer != null)
             {
@@ -65,49 +59,8 @@ namespace VoxelEngine.Core.Rendering
             }
         }
 
-        public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
+        public RaytraceOutput Record(RenderGraph renderGraph, UniversalCameraData cameraData, UniversalResourceData resourceData, Vector4 mainLightPosition, Vector4 mainLightColor, Matrix4x4 viewProj, Matrix4x4 prevViewProj, int scaledWidth, int scaledHeight, float currentScale, float finalSpread, Vector2 jitter, int iterations, int marchSteps)
         {
-            if (VoxelVolumePool.Instance == null) return;
-            var cameraData = frameData.Get<UniversalCameraData>();
-
-            if (_settings.cullFrustum)
-            {
-                Plane[] allPlanes = GeometryUtility.CalculateFrustumPlanes(cameraData.camera);
-                Plane[] cullingPlanes = _settings.useCameraFarPlane ? allPlanes : new Plane[] { allPlanes[0], allPlanes[1], allPlanes[2], allPlanes[3], allPlanes[4] };
-                VoxelVolumePool.Instance.UpdateVisibility(cullingPlanes, cameraData.camera.transform.position, _settings.shadowDistance);
-            }
-            else
-            {
-                VoxelVolumePool.Instance.UpdateVisibility(null);
-            }
-            if (VoxelVolumePool.Instance.VisibleChunkCount == 0) return;
-
-            var resourceData = frameData.Get<UniversalResourceData>();
-            var lightData = frameData.Get<UniversalLightData>();
-            var cameraDesc = cameraData.cameraTargetDescriptor;
-
-            float currentScale = 1.0f;
-            int iterations = 128;
-            int marchSteps = 64;
-            switch (_settings.qualityLevel)
-            {
-                case VoxelRaytracerSettings.QualityLevel.High:
-                    currentScale = 1.0f;
-                    break;
-                case VoxelRaytracerSettings.QualityLevel.Low:
-                    currentScale = 0.5f;
-                    iterations = 64;
-                    marchSteps = 32;
-                    break;
-                case VoxelRaytracerSettings.QualityLevel.Custom:
-                    currentScale = _settings.renderScale;
-                    iterations = _settings.iterations;
-                    marchSteps = _settings.marchSteps;
-                    break;
-            }
-            int scaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * currentScale));
-            int scaledHeight = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.height * currentScale));
-
             TextureDesc colorDesc = new TextureDesc(scaledWidth, scaledHeight)
             {
                 colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat,
@@ -137,54 +90,10 @@ namespace VoxelEngine.Core.Rendering
             };
             TextureHandle motionVectorTex = renderGraph.CreateTexture(mvDesc);
 
-            int frameIndex = Time.frameCount % 16;
-            float jitterX = (Halton(frameIndex + 1, 2) - 0.5f);
-            float jitterY = (Halton(frameIndex + 1, 3) - 0.5f);
-            bool useTAA = _settings.enableTAA && _taaMaterial != null;
-            if (!useTAA)
-            {
-                jitterX = 0;
-                jitterY = 0;
-            }
-
-            var cam = cameraData.camera;
-            Matrix4x4 view = cam.worldToCameraMatrix;
-            Matrix4x4 proj = GL.GetGPUProjectionMatrix(cam.projectionMatrix, true);
-            Matrix4x4 viewProj = proj * view;
-            _cameraHistoryManager.TryGetPrevViewProj(cam, viewProj, out Matrix4x4 prevViewProj);
-
-            TextureHandle historyRead = TextureHandle.nullHandle;
-            TextureHandle historyWrite = TextureHandle.nullHandle;
-            if (useTAA)
-            {
-                _cameraHistoryManager.GetHistoryTextures(cam, renderGraph, scaledWidth, scaledHeight, out historyRead, out historyWrite);
-            }
-
-            TextureHandle compositeOutput;
-            bool useFXAA = _settings.enableFXAA && _fxaaMaterial != null;
-            if (useFXAA)
-            {
-                TextureDesc fullScreenDesc = new TextureDesc(cameraDesc.width, cameraDesc.height)
-                {
-                    colorFormat = cameraDesc.graphicsFormat,
-                    name = "VoxelComposite_PreFXAA"
-                };
-                compositeOutput = renderGraph.CreateTexture(fullScreenDesc);
-            }
-            else
-            {
-                compositeOutput = resourceData.activeColorTexture;
-            }
-
             CheckTextureHandle(ref _albedoHandle, VoxelDefinitionManager.Instance.albedoTextureArray);
             CheckTextureHandle(ref _normalHandle, VoxelDefinitionManager.Instance.normalTextureArray);
             CheckTextureHandle(ref _maskHandle, VoxelDefinitionManager.Instance.maskTextureArray);
             CheckTextureHandle(ref _blueNoiseHandle, _settings.blueNoiseTexture);
-            SetupLights(lightData, out var mainPos, out var mainCol);
-
-            float fov = cameraData.camera.fieldOfView;
-            float rawPixelSpread = Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad) * 2.0f / cameraDesc.height;
-            float finalSpread = rawPixelSpread * _settings.lodBias;
 
             using (var builder = renderGraph.AddComputePass("Voxel Raytracer", out PassDataClasses.PassData data))
             {
@@ -224,9 +133,9 @@ namespace VoxelEngine.Core.Rendering
                 data.targetDepth = lowResDepth;
                 data.targetNormals = lowResNormals;
                 data.targetMotionVector = motionVectorTex;
-                data.mainLightPosition = mainPos;
-                data.mainLightColor = mainCol;
-                data.raytraceParams = new Vector4(finalSpread, jitterX, jitterY, _settings.textureScale);
+                data.mainLightPosition = mainLightPosition;
+                data.mainLightColor = mainLightColor;
+                data.raytraceParams = new Vector4(finalSpread, jitter.x, jitter.y, _settings.textureScale);
                 data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale;
                 data.maxIterations = iterations;
                 data.maxMarchSteps = marchSteps;
@@ -299,13 +208,7 @@ namespace VoxelEngine.Core.Rendering
                 });
             }
 
-            TextureHandle compositeSource = lowResResult;
-
-            _vegetationPass.Record(renderGraph, scaledWidth, scaledHeight, lowResResult, lowResDepth, lowResNormals, _copyMaterial);
-            _godRaysPass.Record(renderGraph, cameraData, _settings, _godRayMaterial, lowResDepth, lowResResult, mainPos, scaledWidth, scaledHeight);
-            compositeSource = _taaPass.Record(renderGraph, useTAA, _taaMaterial, compositeSource, historyRead, historyWrite, motionVectorTex, _settings.taaBlend);
-            _compositePass.Record(renderGraph, _settings, _compositeMaterial, compositeSource, lowResDepth, lowResNormals, compositeOutput, resourceData.activeDepthTexture, useFXAA, mainPos, mainCol);
-            _fxaaPass.Record(renderGraph, useFXAA, _fxaaMaterial, compositeOutput, resourceData.activeColorTexture);
+            return new RaytraceOutput(lowResResult, lowResDepth, lowResNormals, motionVectorTex);
         }
 
         private void CheckTextureHandle(ref RTHandle handle, Texture texture)
@@ -315,37 +218,6 @@ namespace VoxelEngine.Core.Rendering
             {
                 handle?.Release();
                 handle = RTHandles.Alloc(texture);
-            }
-        }
-
-        private float Halton(int index, int radix)
-        {
-            float result = 0f;
-            float fraction = 1f / radix;
-            while (index > 0)
-            {
-                result += (index % radix) * fraction;
-                index /= radix;
-                fraction /= radix;
-            }
-            return result;
-        }
-
-        private void SetupLights(UniversalLightData lightData, out Vector4 mainPos, out Vector4 mainCol)
-        {
-            mainPos = new Vector4(0, 1, 0, 0);
-            mainCol = Color.white;
-            int mainLightIndex = lightData.mainLightIndex;
-            if (mainLightIndex != -1 && mainLightIndex < lightData.visibleLights.Length)
-            {
-                VisibleLight mainLight = lightData.visibleLights[mainLightIndex];
-                if (mainLight.lightType == LightType.Directional)
-                {
-                    Vector4 dir = -mainLight.localToWorldMatrix.GetColumn(2);
-                    dir.w = 0;
-                    mainPos = dir;
-                    mainCol = mainLight.finalColor;
-                }
             }
         }
     }
