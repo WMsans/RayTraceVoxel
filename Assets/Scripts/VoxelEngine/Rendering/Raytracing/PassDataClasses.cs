@@ -50,6 +50,7 @@ namespace VoxelEngine.Core.Rendering
             public float debugNormals;
             public float debugBricks;
             public float debugDepth;
+            public float debugNoCelShading;
             public Vector4 celShadeParams;
             public Vector4 atmosphereParams;
             public Vector4 atmosphereColor;

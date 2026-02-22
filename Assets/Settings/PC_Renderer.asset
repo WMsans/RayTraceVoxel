@@ -25,12 +25,12 @@ MonoBehaviour:
     textureScale: 0.05
     iterations: 64
     marchSteps: 32
-    enableAtmosphere: 1
+    enableAtmosphere: 0
     atmosphereColor: {r: 0.55, g: 0.7, b: 0.9, a: 1}
     atmosphereDensity: 0.0002
     celSteps: 4
     shadowBrightness: 0.1
-    enableGodRays: 1
+    enableGodRays: 0
     godRayShader: {fileID: 4800000, guid: 58301be3dabf73942a8096c13db33c65, type: 3}
     noonSunThreshold: 0.9
     dawnSunThreshold: 0.75
@@ -63,7 +63,7 @@ MonoBehaviour:
     cullFrustum: 1
     shadowDistance: 256
     blueNoiseTexture: {fileID: 2800000, guid: abbd6cebc53adce8b9207a270ab231ee, type: 3}
-    debugMode: 3
+    debugMode: 0
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0

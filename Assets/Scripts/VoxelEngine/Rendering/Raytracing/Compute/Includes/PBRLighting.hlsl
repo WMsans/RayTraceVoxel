@@ -120,16 +120,8 @@ float3 LightingDirect(float3 albedo, float3 N, float3 V, float3 L, float3 lightC
     roughness = max(roughness, 0.05);
     float3 H = normalize(V + L);
 
-    // [CEL SHADING]
     float NdotL_Raw = max(dot(N, L), 0.0) * attenuation;
-    float steps = max(1.0, _CelShadeParams.x);
-    float minBrightness = _CelShadeParams.y;
-    float t = NdotL_Raw * steps;
-    float stepIndex = floor(t);
-    float fraction = t - stepIndex;
-    float smoothFraction = smoothstep(0.0, 0.05 * steps, fraction);
-    float rawLevel = (stepIndex + smoothFraction) / steps;
-    float steppedNdotL = lerp(minBrightness, 1.0, saturate(rawLevel));
+
     float3 F0 = float3(0.04, 0.04, 0.04);
     F0 = lerp(F0, albedo, metallic); 
 
@@ -139,13 +131,31 @@ float3 LightingDirect(float3 albedo, float3 N, float3 V, float3 L, float3 lightC
     float3 numerator = NDF * G * F;
     float denominator = 4.0 * max(dot(N, V), 0.0) * NdotL_Raw + 0.0001;
     float3 specular = numerator / denominator;
+
+    float3 kS = F; 
+    float3 kD = float3(1.0, 1.0, 1.0) - kS; 
+    kD *= 1.0 - metallic;
+
+    // [DEBUG: No Cel Shading] - Use smooth PBR lighting
+    if (_DebugNoCelShading > 0.5)
+    {
+        return (kD * albedo / PI + specular) * lightColor * NdotL_Raw * 3.0;
+    }
+
+    // [CEL SHADING]
+    float steps = max(1.0, _CelShadeParams.x);
+    float minBrightness = _CelShadeParams.y;
+    float t = NdotL_Raw * steps;
+    float stepIndex = floor(t);
+    float fraction = t - stepIndex;
+    float smoothFraction = smoothstep(0.0, 0.05 * steps, fraction);
+    float rawLevel = (stepIndex + smoothFraction) / steps;
+    float steppedNdotL = lerp(minBrightness, 1.0, saturate(rawLevel));
+
     float specLum = dot(specular, float3(0.2126, 0.7152, 0.0722));
     float specThreshold = 0.5 - (roughness * 0.3);
     float steppedSpec = smoothstep(specThreshold, specThreshold + 0.05, specLum);
 
     float3 finalSpecular = steppedSpec * lightColor * 5.0 * attenuation;
-    float3 kS = F; 
-    float3 kD = float3(1.0, 1.0, 1.0) - kS; 
-    kD *= 1.0 - metallic;
     return (kD * albedo / PI * steppedNdotL) * lightColor * 3.0 + finalSpecular;
 }

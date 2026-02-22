@@ -143,6 +143,7 @@ namespace VoxelEngine.Core.Rendering
                 data.debugNormals = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Normals) ? 1.0f : 0.0f;
                 data.debugBricks = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Bricks) ? 1.0f : 0.0f;
                 data.debugDepth = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Depth) ? 1.0f : 0.0f;
+                data.debugNoCelShading = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.NoCelShading) ? 1.0f : 0.0f;
                 data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
                 data.atmosphereParams = new Vector4(_settings.enableAtmosphere ? _settings.atmosphereDensity : 0.0f, 0, 0, 0);
                 data.atmosphereColor = _settings.atmosphereColor;
@@ -202,6 +203,7 @@ namespace VoxelEngine.Core.Rendering
                     cmd.SetComputeFloatParam(cs, ShaderParamIDs._DebugViewNormalsParams, pd.debugNormals);
                     cmd.SetComputeFloatParam(cs, ShaderParamIDs._DebugViewBricksParams, pd.debugBricks);
                     cmd.SetComputeFloatParam(cs, ShaderParamIDs._DebugViewDepthParams, pd.debugDepth);
+                    cmd.SetComputeFloatParam(cs, ShaderParamIDs._DebugNoCelShadingParams, pd.debugNoCelShading);
                     cmd.SetComputeVectorParam(cs, ShaderParamIDs._CelShadeParams, pd.celShadeParams);
                     cmd.SetComputeVectorParam(cs, ShaderParamIDs._AtmosphereParams, pd.atmosphereParams);
                     cmd.SetComputeVectorParam(cs, ShaderParamIDs._AtmosphereColor, pd.atmosphereColor);

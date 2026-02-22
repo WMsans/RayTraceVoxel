@@ -73,6 +73,7 @@ float _DebugNormalDelta;
 float _DebugViewNormals;
 float _DebugViewBricks;
 float _DebugViewDepth;
+float _DebugNoCelShading;
 float4 _MousePosition;
 int _MaxIterations;
 int _MaxMarchSteps;
