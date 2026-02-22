@@ -72,5 +72,6 @@ namespace VoxelEngine.Core.Rendering
 
         public static readonly int _DebugViewNormalsParams = Shader.PropertyToID("_DebugViewNormals");
         public static readonly int _DebugViewBricksParams = Shader.PropertyToID("_DebugViewBricks");
+        public static readonly int _DebugViewDepthParams = Shader.PropertyToID("_DebugViewDepth");
     }
 }

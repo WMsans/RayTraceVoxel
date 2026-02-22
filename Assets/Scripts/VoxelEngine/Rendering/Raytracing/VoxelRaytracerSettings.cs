@@ -11,7 +11,7 @@ namespace VoxelEngine.Core.Rendering
     {
         public enum QualityLevel { High, Low, Custom }
         public enum UpscalingMode { Bilinear, SpatialFSR }
-        public enum DebugMode { None, Normals, Bricks }
+        public enum DebugMode { None, Normals, Bricks, Depth }
 
         public ComputeShader raytraceShader;
         public Shader taaShader;

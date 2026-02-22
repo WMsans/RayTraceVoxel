@@ -49,6 +49,7 @@ namespace VoxelEngine.Core.Rendering
             public int bounceCount;
             public float debugNormals;
             public float debugBricks;
+            public float debugDepth;
             public Vector4 celShadeParams;
             public Vector4 atmosphereParams;
             public Vector4 atmosphereColor;
