@@ -78,11 +78,9 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
 {
     GenerationContext ctx;
     InitContext(ctx, worldPos);
-
-    Stage_Spheres(ctx);
     
     // --- 1. Base Stage (Terrain) ---
-    //Stage_Terrain(ctx);
+    Stage_Terrain(ctx);
     
     // --- 2. Trees Stage (Minecraft-like) ---
     // Stage_Trees(ctx);
