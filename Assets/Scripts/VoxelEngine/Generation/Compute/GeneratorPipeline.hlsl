@@ -51,7 +51,7 @@ void ApplyDynamicObjects(inout GenerationContext ctx, float3 worldPos, uint acti
 {
     if (activeCount > 0)
     {
-        for(int i = 0; i < activeCount; i++)
+        [loop] for(int i = 0; i < activeCount; i++)
         {
             SDFObject obj = _SDFObjectBuffer[activeObjects[i]];
             float3 objGradient;

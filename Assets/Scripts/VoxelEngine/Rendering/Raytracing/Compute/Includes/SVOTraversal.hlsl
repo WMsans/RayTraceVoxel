@@ -57,10 +57,8 @@ HitInfo TraceSVO(ChunkDef chunk, float3 rayOriginNode, float3 rayDir, float maxD
                 uint maskBefore = childMask & ((1 << octant) - 1);
                 uint childNodeIndex = childBase + countbits(maskBefore);
                 float3 childPos = nodePos + float3((octant & 1) ? halfSize : 0, (octant & 2) ? halfSize : 0, (octant & 4) ? halfSize : 0);
-                float3 childSize = halfSize;
-
                 nodeIndex = childNodeIndex;
-                nodeSize = childSize;
+                nodeSize = halfSize;
                 nodePos = childPos;
                 if (nodeSize <= BRICK_SIZE + EPSILON) 
                 { 
