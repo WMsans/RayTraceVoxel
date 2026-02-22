@@ -570,7 +570,7 @@ Transform:
   m_GameObject: {fileID: 587925448}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0.9886768, z: 0, w: 0.150061}
-  m_LocalPosition: {x: 684.5122, y: 364.26038, z: 482.51468}
+  m_LocalPosition: {x: 0, y: 364.26038, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -658,6 +658,7 @@ MonoBehaviour:
   mainCamera: {fileID: 527118853}
   shadowDistance: 256
   disableFrustumCulling: 0
+  slowStreaming: 0
 --- !u!114 &681138558
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -898,6 +899,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 2958ba0bb5c0e396bbd3d8d0a985704d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Testing.InteractiveSphereSDF
+  operationMode: 0
   radius: 20
   blendSmoothness: 5
   materialID: 3

@@ -4,9 +4,20 @@ using VoxelEngine.Core.Data;       // For SDFObject struct
 
 namespace VoxelEngine.Core.Testing
 {
+    public enum SDFOperationMode
+    {
+        Add = 0,      // Union - Add material to the terrain
+        Subtract = 1, // Subtract - Remove material from the terrain
+        Paint = 0     // Union - Add material (same as Add, semantic distinction)
+    }
+
     [ExecuteAlways] // Allows updating in Editor Mode (if Manager is running) or Play Mode
     public class InteractiveSphereSDF : MonoBehaviour
     {
+        [Header("Operation Mode")]
+        [Tooltip("Add: Add material to terrain\nSubtract: Remove material from terrain\nPaint: Add material (same as Add)")]
+        public SDFOperationMode operationMode = SDFOperationMode.Add;
+
         [Header("Shape Settings")]
         [Tooltip("The radius of the sphere in world units.")]
         public float radius = 5.0f;
@@ -27,6 +38,7 @@ namespace VoxelEngine.Core.Testing
         private float _lastRadius;
         private float _lastBlendSmoothness;
         private int _lastMaterialID;
+        private SDFOperationMode _lastOperationMode;
         private bool _isInitialized = false;
 
         private void OnEnable()
@@ -99,6 +111,7 @@ namespace VoxelEngine.Core.Testing
             if (!Mathf.Approximately(radius, _lastRadius)) return true;
             if (!Mathf.Approximately(blendSmoothness, _lastBlendSmoothness)) return true;
             if (materialID != _lastMaterialID) return true;
+            if (operationMode != _lastOperationMode) return true;
 
             return false;
         }
@@ -110,6 +123,7 @@ namespace VoxelEngine.Core.Testing
             _lastRadius = radius;
             _lastBlendSmoothness = blendSmoothness;
             _lastMaterialID = materialID;
+            _lastOperationMode = operationMode;
             _isInitialized = true;
         }
 
@@ -159,9 +173,9 @@ namespace VoxelEngine.Core.Testing
                 boundsMin = pos - Vector3.one * boundRadius,
                 boundsMax = pos + Vector3.one * boundRadius,
                 
-                type = 0,         // 0 = Sphere (defined in VoxelData.cs / GeneratorPipeline.hlsl)
-                operation = 0,    // 0 = Union (triggers UnionSmooth in GeneratorPipeline.hlsl)
-                blendFactor = blendSmoothness, 
+                type = 0,                      // 0 = Sphere (defined in VoxelData.cs / GeneratorPipeline.hlsl)
+                operation = (int)operationMode, // 0 = Union/Add/Paint, 1 = Subtract
+                blendFactor = blendSmoothness,
                 materialId = materialID
             };
 

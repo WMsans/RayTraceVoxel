@@ -31,6 +31,10 @@ namespace VoxelEngine.Core.Streaming
         public float shadowDistance = 256f;
         public bool disableFrustumCulling = false;
 
+        [Header("Debug")]
+        [Tooltip("Disables LOD and generates all chunks at maximum resolution. Very slow — for demonstration purposes only.")]
+        public bool slowStreaming = false;
+
         // --- Native Data ---
         private NativeList<OctreeNodeStruct> _nodeStructs;
         private NativeQueue<int> _splitQueue;
@@ -150,6 +154,7 @@ namespace VoxelEngine.Core.Streaming
                 mergeFactor = mergeFactor,
                 maxDepth = maxDepth,
                 cullEnabled = !disableFrustumCulling,
+                forceMaxResolution = slowStreaming,
                 splitQueue = _splitQueue.AsParallelWriter(),
                 mergeQueue = _mergeQueue.AsParallelWriter(),
                 visibleNodes = _visibleIndices.AsParallelWriter(),

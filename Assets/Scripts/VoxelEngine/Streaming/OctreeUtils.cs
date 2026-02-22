@@ -49,6 +49,7 @@ namespace VoxelEngine.Core.Streaming
         public float mergeFactor;
         public int maxDepth;
         public bool cullEnabled;
+        public bool forceMaxResolution;
 
         // Output Queues
         public NativeQueue<int>.ParallelWriter splitQueue;
@@ -100,15 +101,26 @@ namespace VoxelEngine.Core.Streaming
             {
                 if (node.depth < maxDepth && effectivelyVisible)
                 {
-                    float splitDist = size * splitFactor;
-                    if (distSq < splitDist * splitDist)
+                    if (forceMaxResolution)
                     {
+                        // Always split visible leaves regardless of distance
                         splitQueue.Enqueue(index);
+                    }
+                    else
+                    {
+                        float splitDist = size * splitFactor;
+                        if (distSq < splitDist * splitDist)
+                        {
+                            splitQueue.Enqueue(index);
+                        }
                     }
                 }
             }
             else // Branch
             {
+                // Never merge when forcing max resolution
+                if (forceMaxResolution) return;
+                
                 bool shouldMerge = false;
                 
                 // [FIX] Removed strict frustum culling merge. 
