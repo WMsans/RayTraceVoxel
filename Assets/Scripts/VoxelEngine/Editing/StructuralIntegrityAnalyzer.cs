@@ -183,6 +183,12 @@ namespace VoxelEngine.Core.Editing
             int totalVoxels = res * res * res;
             
             _labelBuffer = new ComputeBuffer(totalVoxels, 4);
+            // Critical: Initialize all labels to AIR (~0u). Without this, uninitialized voxels
+            // default to 0 (GROUNDED), causing PropagateLabels to treat empty space outside
+            // active bricks as stable anchors - which grounds everything and produces zero debris.
+            var initLabels = new uint[totalVoxels];
+            for (int i = 0; i < totalVoxels; i++) initLabels[i] = 0xFFFFFFFF;
+            _labelBuffer.SetData(initLabels);
             _changeFlagBuffer = new ComputeBuffer(1, 4);
             _debrisVoxelOutput = new ComputeBuffer(totalVoxels, 16, ComputeBufferType.Append); 
             _debrisVoxelOutput.SetCounterValue(0);
