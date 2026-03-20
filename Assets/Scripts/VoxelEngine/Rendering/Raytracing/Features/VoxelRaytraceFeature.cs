@@ -117,9 +117,14 @@ namespace VoxelEngine.Core.Rendering
                 int scaledWidth = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.width * currentScale));
                 int scaledHeight = Mathf.Max(1, Mathf.RoundToInt(cameraDesc.height * currentScale));
 
-                int frameIndex = Time.frameCount % 16;
-                float jitterX = Halton(frameIndex + 1, 2) - 0.5f;
-                float jitterY = Halton(frameIndex + 1, 3) - 0.5f;
+                float jitterX = 0f;
+                float jitterY = 0f;
+                if (_settings.enableJitter)
+                {
+                    int frameIndex = Time.frameCount % 16;
+                    jitterX = Halton(frameIndex + 1, 2) - 0.5f;
+                    jitterY = Halton(frameIndex + 1, 3) - 0.5f;
+                }
 
                 SetupLights(lightData, out var mainPos, out var mainCol);
 

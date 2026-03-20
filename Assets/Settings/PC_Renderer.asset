@@ -64,6 +64,34 @@ MonoBehaviour:
     shadowDistance: 256
     blueNoiseTexture: {fileID: 2800000, guid: abbd6cebc53adce8b9207a270ab231ee, type: 3}
     debugMode: 0
+--- !u!114 &-4840072757934228645
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9b79800b201221eeb984942b1831a474, type: 3}
+  m_Name: VoxelCompositeFeature
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Rendering.VoxelCompositeFeature
+  m_Active: 1
+  settings:
+    compositeShader: {fileID: 4800000, guid: 2991eb697ecd14c98a06d3f35413a176, type: 3}
+    fxaaShader: {fileID: 4800000, guid: 33335dbe0b055a94ea1232a1aed98205, type: 3}
+    upscalingMode: 0
+    sharpness: 0.5
+    enableFXAA: 0
+    enableOutline: 1
+    outlineThickness: 1
+    outlineShadowStrength: 0.5
+    outlineStrength: 1
+    outlineColor: {r: 0, g: 0, b: 0, a: 1}
+    normalHighlightStrength: 1
+    normalThreshold: 0.5
+    normalFadeDistance: 50
+    normalHighlightColor: {r: 1, g: 1, b: 1, a: 1}
 --- !u!114 &11400000
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -90,8 +118,9 @@ MonoBehaviour:
     probeVolumeBlendStatesCS: {fileID: 7200000, guid: b9a23f869c4fd45f19c5ada54dd82176, type: 3}
   m_RendererFeatures:
   - {fileID: 7833122117494664109}
-  - {fileID: -5442405872239727637}
-  m_RendererFeatureMap: ad6b866f10d7b46cebaba6bdb1b078b4
+  - {fileID: 8196027506871962632}
+  - {fileID: -4840072757934228645}
+  m_RendererFeatureMap: ad6b866f10d7b46c080c6fd49723be715bfb4870789bd4bc
   m_UseNativeRenderPass: 1
   xrSystemData: {fileID: 0}
   postProcessData: {fileID: 11400000, guid: 41439944d30ece34e96484bdb6645b55, type: 2}
@@ -146,3 +175,41 @@ MonoBehaviour:
     BlurQuality: 0
     Falloff: 100
     SampleCount: -1
+--- !u!114 &8196027506871962632
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 731813fc12cb3857393f4bb9d6bb30c6, type: 3}
+  m_Name: VoxelRaytraceFeature
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Rendering.VoxelRaytraceFeature
+  m_Active: 1
+  settings:
+    raytraceShader: {fileID: 7200000, guid: 3df9fb35cd1f6e6cb98239204f808a24, type: 3}
+    injectionPoint: 400
+    qualityLevel: 2
+    bounceCount: 3
+    renderScale: 0.1
+    textureScale: 0.1
+    iterations: 128
+    marchSteps: 64
+    enableAtmosphere: 1
+    atmosphereColor: {r: 0.55, g: 0.7, b: 0.9, a: 1}
+    atmosphereDensity: 0
+    celSteps: 3
+    shadowBrightness: 0.2
+    enableEdgeBlur: 0
+    edgeWidthPercent: 0.1
+    edgeRenderScale: 0.5
+    edgeBlendShader: {fileID: 4800000, guid: e9d9c1051fb3c2240b0465dfeb0a69d5, type: 3}
+    enableJitter: 0
+    lodBias: 1
+    useCameraFarPlane: 1
+    cullFrustum: 1
+    shadowDistance: 1500
+    blueNoiseTexture: {fileID: 2800000, guid: abbd6cebc53adce8b9207a270ab231ee, type: 3}
+    debugMode: 0

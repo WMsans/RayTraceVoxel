@@ -35,6 +35,9 @@ namespace VoxelEngine.Core.Rendering
         [Range(0.1f, 1.0f)] public float edgeRenderScale = 0.5f;
         public Shader edgeBlendShader;
 
+        [Header("Jitter (enable only with TAA)")]
+        public bool enableJitter = false;
+
         [Header("LOD Settings")]
         [Range(1.0f, 200.0f)] public float lodBias = 1.0f;
 
