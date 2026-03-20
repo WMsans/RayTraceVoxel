@@ -17,6 +17,8 @@ namespace VoxelEngine.Core.Rendering
                 return;
             }
 
+            Vector4 vegScreenSize = new Vector4(scaledWidth, scaledHeight, 1.0f / scaledWidth, 1.0f / scaledHeight);
+
             TextureDesc copyDesc = new TextureDesc(scaledWidth, scaledHeight)
             {
                 colorFormat = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat,
@@ -59,10 +61,13 @@ namespace VoxelEngine.Core.Rendering
                 builder.SetRenderAttachmentDepth(vegData.tempDepthBuffer, AccessFlags.Write);
                 builder.UseTexture(vegData.depthCopy, AccessFlags.Read);
 
+                vegData.vegetationScreenSize = vegScreenSize;
+
                 builder.SetRenderFunc((PassDataClasses.VegetationPassData vData, RasterGraphContext context) =>
                 {
                     context.cmd.ClearRenderTarget(true, false, Color.black);
                     context.cmd.SetGlobalTexture(ShaderParamIDs._VoxelDepthCopyParams, vData.depthCopy);
+                    context.cmd.SetGlobalVector(ShaderParamIDs._VegetationScreenSizeParams, vData.vegetationScreenSize);
                     if (hasGrass)
                     {
                         foreach (var renderer in VoxelGrassRenderer.ActiveRenderers) renderer.Draw(context.cmd);

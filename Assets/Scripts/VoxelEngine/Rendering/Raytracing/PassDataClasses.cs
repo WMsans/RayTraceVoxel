@@ -98,6 +98,7 @@ namespace VoxelEngine.Core.Rendering
             public TextureHandle normalTarget;
             public TextureHandle depthCopy;
             public TextureHandle tempDepthBuffer;
+            public Vector4 vegetationScreenSize;
         }
 
         internal class CopyPassData
