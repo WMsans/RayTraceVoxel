@@ -5,6 +5,7 @@ using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Rendering;
 using VoxelEngine.Core.Streaming;
+using VoxelEngine.Core.Effects;
 using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Editing
@@ -153,6 +154,12 @@ namespace VoxelEngine.Core.Editing
                 // The VoxelModifier handles transforming the world-space brush into local volume space
                 VoxelModifier modifier = new VoxelModifier(voxelModifierShader, vol);
                 modifier.Apply(brush, vol.Resolution);
+            }
+
+            // Spawn debris particles on subtract
+            if (op == BrushOp.Subtract && VoxelVFXManager.Instance != null)
+            {
+                VoxelVFXManager.Instance.SpawnDebris(_currentHitPoint, brushRadius, _currentMaterialId);
             }
 
             // Phase 3 & 4: Recursive Fracturing Pipeline & Sleep Thresholds
