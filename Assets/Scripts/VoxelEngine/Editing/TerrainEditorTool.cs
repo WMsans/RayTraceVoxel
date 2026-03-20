@@ -49,12 +49,12 @@ namespace VoxelEngine.Core.Editing
         {
             // Sync Mouse Position for Raytracer
             Vector2 mousePos = Mouse.current.position.ReadValue();
-            VoxelRaytracerFeature.MousePosition = mousePos;
+            VoxelRaytraceFeature.MousePosition = mousePos;
 
             // Request Readback of Hit Data from Raytracer
-            if (!_readbackPending && VoxelRaytracerFeature.RaycastHitBuffer != null)
+            if (!_readbackPending && VoxelRaytraceFeature.RaycastHitBuffer != null)
             {
-                _readbackRequest = AsyncGPUReadback.Request(VoxelRaytracerFeature.RaycastHitBuffer, OnReadbackComplete);
+                _readbackRequest = AsyncGPUReadback.Request(VoxelRaytraceFeature.RaycastHitBuffer, OnReadbackComplete);
                 _readbackPending = true;
             }
 
