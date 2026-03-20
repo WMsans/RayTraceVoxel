@@ -26,7 +26,7 @@ namespace VoxelEngine.Core.Rendering
             }
         }
 
-        private VoxelRaytracerSettings _settings;
+        private VoxelRaytraceSettings _settings;
         private ComputeShader _shader;
 
         private RTHandle _albedoHandle;
@@ -34,12 +34,12 @@ namespace VoxelEngine.Core.Rendering
         private RTHandle _maskHandle;
         private RTHandle _blueNoiseHandle;
 
-        public VoxelRaytracePass(VoxelRaytracerSettings settings)
+        public VoxelRaytracePass(VoxelRaytraceSettings settings)
         {
             UpdateSettings(settings);
         }
 
-        public void UpdateSettings(VoxelRaytracerSettings newSettings)
+        public void UpdateSettings(VoxelRaytraceSettings newSettings)
         {
             _settings = newSettings;
             _shader = newSettings.raytraceShader;
@@ -52,10 +52,10 @@ namespace VoxelEngine.Core.Rendering
             _maskHandle?.Release();
             _blueNoiseHandle?.Release();
 
-            if (VoxelRaytracerFeature.RaycastHitBuffer != null)
+            if (VoxelRaytraceFeature.RaycastHitBuffer != null)
             {
-                VoxelRaytracerFeature.RaycastHitBuffer.Release();
-                VoxelRaytracerFeature.RaycastHitBuffer = null;
+                VoxelRaytraceFeature.RaycastHitBuffer.Release();
+                VoxelRaytraceFeature.RaycastHitBuffer = null;
             }
         }
 
@@ -99,9 +99,9 @@ namespace VoxelEngine.Core.Rendering
             {
                 data.computeShader = _shader;
                 data.kernel = _shader.FindKernel("CSMain");
-                if (VoxelRaytracerFeature.RaycastHitBuffer == null || !VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
-                    VoxelRaytracerFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2, 16);
-                data.raycastBuffer = VoxelRaytracerFeature.RaycastHitBuffer;
+                if (VoxelRaytraceFeature.RaycastHitBuffer == null || !VoxelRaytraceFeature.RaycastHitBuffer.IsValid())
+                    VoxelRaytraceFeature.RaycastHitBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 2, 16);
+                data.raycastBuffer = VoxelRaytraceFeature.RaycastHitBuffer;
                 var pool = VoxelVolumePool.Instance;
                 data.nodeBuffer = pool.GlobalNodeBuffer;
                 data.payloadBuffer = pool.GlobalPayloadBuffer;
@@ -136,12 +136,12 @@ namespace VoxelEngine.Core.Rendering
                 data.mainLightPosition = mainLightPosition;
                 data.mainLightColor = mainLightColor;
                 data.raytraceParams = new Vector4(finalSpread, jitter.x, jitter.y, _settings.textureScale);
-                data.mousePosition = VoxelRaytracerFeature.MousePosition * currentScale;
+                data.mousePosition = VoxelRaytraceFeature.MousePosition * currentScale;
                 data.maxIterations = iterations;
                 data.maxMarchSteps = marchSteps;
                 data.bounceCount = _settings.bounceCount;
-                data.debugNormals = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Normals) ? 1.0f : 0.0f;
-                data.debugBricks = (_settings.debugMode == VoxelRaytracerSettings.DebugMode.Bricks) ? 1.0f : 0.0f;
+                data.debugNormals = (_settings.debugMode == VoxelRaytraceSettings.DebugMode.Normals) ? 1.0f : 0.0f;
+                data.debugBricks = (_settings.debugMode == VoxelRaytraceSettings.DebugMode.Bricks) ? 1.0f : 0.0f;
                 data.celShadeParams = new Vector4((float)_settings.celSteps, _settings.shadowBrightness, 0, 0);
                 data.atmosphereParams = new Vector4(_settings.enableAtmosphere ? _settings.atmosphereDensity : 0.0f, 0, 0, 0);
                 data.atmosphereColor = _settings.atmosphereColor;
