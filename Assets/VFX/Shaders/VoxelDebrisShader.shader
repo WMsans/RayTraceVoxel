@@ -23,7 +23,6 @@ Shader "VFX/VoxelDebris"
             #pragma target 4.5
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-            #include "Packages/com.unity.visualeffectgraph/Editor/Shaders/VFXCommon.hlsl"
 
             struct Attributes
             {
