@@ -23,6 +23,7 @@ namespace VoxelEngine.Core.Editing
         private InputSystem_Actions _input;
         private Vector3 _currentHitPoint;
         private int _currentHitVolumeIndex = -1;
+        private int _currentMaterialId;
         private bool _hasHit;
         private float _lastEditTime;
 
@@ -81,12 +82,14 @@ namespace VoxelEngine.Core.Editing
             {
                 _currentHitPoint = new Vector3(hitPosData.x, hitPosData.y, hitPosData.z);
                 _currentHitVolumeIndex = (int)data[1].x;
+                _currentMaterialId = (int)data[1].y;
                 _hasHit = true;
             }
             else
             {
                 _hasHit = false;
                 _currentHitVolumeIndex = -1;
+                _currentMaterialId = 0;
             }
         }
 
