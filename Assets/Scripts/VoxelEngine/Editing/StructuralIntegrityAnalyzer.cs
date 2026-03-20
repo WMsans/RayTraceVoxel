@@ -35,9 +35,11 @@ namespace VoxelEngine.Core.Editing
 
         private ComputeBuffer _topologyBuffer;
         private ComputeBuffer _activeBrickBuffer;
+        private ComputeBuffer _activeBrickCountBuffer;
         private ComputeBuffer _labelBuffer;
         private ComputeBuffer _changeFlagBuffer;
         private ComputeBuffer _debrisVoxelOutput;
+        private ComputeBuffer _debrisCountBuffer;
 
         // Definition for cardinal directions to check
         private struct NeighborCheck
@@ -141,8 +143,9 @@ namespace VoxelEngine.Core.Editing
 
             int bricksPerDim = res / 4;
             int maxBricks = bricksPerDim * bricksPerDim * bricksPerDim;
-            _activeBrickBuffer = new ComputeBuffer(maxBricks, sizeof(uint), ComputeBufferType.Append);
-            _activeBrickBuffer.SetCounterValue(0);
+            _activeBrickBuffer = new ComputeBuffer(maxBricks, sizeof(uint));
+            _activeBrickCountBuffer = new ComputeBuffer(1, sizeof(uint));
+            _activeBrickCountBuffer.SetData(new uint[] { 0 });
 
             int kernel = analysisShader.FindKernel("AnalyzeBricks");
             analysisShader.SetBuffer(kernel, "_GlobalNodeBuffer", volume.NodeBuffer);
@@ -151,6 +154,7 @@ namespace VoxelEngine.Core.Editing
             analysisShader.SetBuffer(kernel, "_PageTableBuffer", volume.BufferManager.PageTableBuffer);
             analysisShader.SetBuffer(kernel, "_TopologyBuffer", _topologyBuffer);
             analysisShader.SetBuffer(kernel, "_ActiveBrickBuffer", _activeBrickBuffer);
+            analysisShader.SetBuffer(kernel, "_ActiveBrickCountBuffer", _activeBrickCountBuffer);
 
             analysisShader.SetInt("_Resolution", res);
             analysisShader.SetInt("_PageTableOffset", volume.BufferManager.PageTableOffset);
@@ -159,17 +163,21 @@ namespace VoxelEngine.Core.Editing
             int groups = Mathf.CeilToInt(bricksPerDim / 4.0f);
             analysisShader.Dispatch(kernel, groups, groups, groups);
 
-            ComputeBuffer countBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.IndirectArguments);
-            ComputeBuffer.CopyCount(_activeBrickBuffer, countBuffer, 0);
-
-            AsyncGPUReadback.Request(countBuffer, (req) => OnBrickCountReadback(req, countBuffer, volume));
+            AsyncGPUReadback.Request(_activeBrickCountBuffer, (req) => OnBrickCountReadback(req, volume));
         }
 
-        private void OnBrickCountReadback(AsyncGPUReadbackRequest request, ComputeBuffer countBuf, VoxelVolume vol)
+        private void OnBrickCountReadback(AsyncGPUReadbackRequest request, VoxelVolume vol)
         {
             int brickCount = 0;
-            if (!request.hasError) brickCount = (int)request.GetData<uint>()[0];
-            countBuf.Release();
+            if (!request.hasError)
+            {
+                brickCount = (int)request.GetData<uint>()[0];
+                Debug.Log($"[Structural Analysis] Phase 1 for {vol.name}: {brickCount} active bricks (API: {SystemInfo.graphicsDeviceType})");
+            }
+            else
+            {
+                Debug.LogError($"[Structural Analysis] GPU readback error for {vol.name}");
+            }
 
             if (brickCount == 0)
             {
@@ -190,8 +198,9 @@ namespace VoxelEngine.Core.Editing
             for (int i = 0; i < totalVoxels; i++) initLabels[i] = 0xFFFFFFFF;
             _labelBuffer.SetData(initLabels);
             _changeFlagBuffer = new ComputeBuffer(1, 4);
-            _debrisVoxelOutput = new ComputeBuffer(totalVoxels, 16, ComputeBufferType.Append); 
-            _debrisVoxelOutput.SetCounterValue(0);
+            _debrisVoxelOutput = new ComputeBuffer(totalVoxels, 16);
+            _debrisCountBuffer = new ComputeBuffer(1, sizeof(uint));
+            _debrisCountBuffer.SetData(new uint[] { 0 });
 
             float voxelSize = vol.WorldSize / res;
             float localThreshold = GROUND_THRESHOLD - vol.WorldOrigin.y;
@@ -304,6 +313,7 @@ namespace VoxelEngine.Core.Editing
             }
             else
             {
+                Debug.Log($"[Structural Analysis] Propagation converged for {vol.name} after {_currentPropagationIterations} iterations (changed={changed})");
                 if (_currentPropagationIterations >= MAX_PROPAGATION_ITERATIONS)
                     Debug.LogWarning($"[Structural Analysis] Max propagation iterations ({MAX_PROPAGATION_ITERATIONS}) reached for {vol.name}.");
                 
@@ -318,21 +328,20 @@ namespace VoxelEngine.Core.Editing
             analysisShader.SetBuffer(collectKernel, "_TopologyBuffer", _topologyBuffer);
             analysisShader.SetBuffer(collectKernel, "_LabelBuffer", _labelBuffer);
             analysisShader.SetBuffer(collectKernel, "_DebrisVoxelOutput", _debrisVoxelOutput);
+            analysisShader.SetBuffer(collectKernel, "_DebrisCountBuffer", _debrisCountBuffer);
             analysisShader.SetInt("_Resolution", vol.Resolution);
 
             analysisShader.Dispatch(collectKernel, brickCount, 1, 1);
 
-            ComputeBuffer countBuf = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.IndirectArguments);
-            ComputeBuffer.CopyCount(_debrisVoxelOutput, countBuf, 0);
-
-            AsyncGPUReadback.Request(countBuf, (req) => OnFinalCountReadback(req, countBuf, vol));
+            AsyncGPUReadback.Request(_debrisCountBuffer, (req) => OnFinalCountReadback(req, vol));
         }
 
-        private void OnFinalCountReadback(AsyncGPUReadbackRequest request, ComputeBuffer countBuf, VoxelVolume vol)
+        private void OnFinalCountReadback(AsyncGPUReadbackRequest request, VoxelVolume vol)
         {
             int count = 0;
             if (!request.hasError) count = (int)request.GetData<uint>()[0];
-            countBuf.Release();
+
+            Debug.Log($"[Structural Analysis] Debris collection for {vol.name}: {count} floating voxels found");
 
             if (count > 0)
                 AsyncGPUReadback.Request(_debrisVoxelOutput, (req) => OnFinalDataReadback(req, count, vol));
@@ -464,9 +473,11 @@ namespace VoxelEngine.Core.Editing
         {
             _topologyBuffer?.Release(); _topologyBuffer = null;
             _activeBrickBuffer?.Release(); _activeBrickBuffer = null;
+            _activeBrickCountBuffer?.Release(); _activeBrickCountBuffer = null;
             _labelBuffer?.Release(); _labelBuffer = null;
             _changeFlagBuffer?.Release(); _changeFlagBuffer = null;
             _debrisVoxelOutput?.Release(); _debrisVoxelOutput = null;
+            _debrisCountBuffer?.Release(); _debrisCountBuffer = null;
         }
 
         private void OnDestroy() { CleanupCurrentBuffers(); }
