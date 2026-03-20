@@ -42,11 +42,12 @@ namespace VoxelEngine.Core.Effects
             _poolIndex = (_poolIndex + 1) % poolSize;
 
             vfx.transform.position = position;
-            vfx.SetVector3("Position", position);
+            //vfx.SetVector3("Position", position);
             vfx.SetFloat("Radius", radius);
             vfx.SetInt("MaterialID", materialId);
             
             vfx.Reinit();
+            Debug.Log("On Spawn");
             vfx.Play();
         }
 

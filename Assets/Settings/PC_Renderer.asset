@@ -199,7 +199,7 @@ MonoBehaviour:
     marchSteps: 64
     enableAtmosphere: 1
     atmosphereColor: {r: 0.55, g: 0.7, b: 0.9, a: 1}
-    atmosphereDensity: 0
+    atmosphereDensity: 0.0001
     celSteps: 3
     shadowBrightness: 0.2
     enableEdgeBlur: 0
