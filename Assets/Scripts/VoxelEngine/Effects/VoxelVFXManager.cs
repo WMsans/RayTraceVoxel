@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.VFX;
+using VoxelEngine.Core.Data;
 
 namespace VoxelEngine.Core.Effects
 {
@@ -42,9 +43,12 @@ namespace VoxelEngine.Core.Effects
             _poolIndex = (_poolIndex + 1) % poolSize;
 
             vfx.transform.position = position;
-            //vfx.SetVector3("Position", position);
             vfx.SetFloat("Radius", radius);
-            vfx.SetInt("MaterialID", materialId);
+            
+            int textureIndex = VoxelDefinitionManager.Instance != null 
+                ? VoxelDefinitionManager.Instance.GetAlbedoTextureIndex(materialId) 
+                : 0;
+            vfx.SetInt("MaterialID", textureIndex);
             
             vfx.Reinit();
             Debug.Log("On Spawn");
