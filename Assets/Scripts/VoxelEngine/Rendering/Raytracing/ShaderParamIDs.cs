@@ -60,6 +60,7 @@ namespace VoxelEngine.Core.Rendering
         public static readonly int _OutlineShadowStrengthID = Shader.PropertyToID("_OutlineShadowStrength");
 
         public static readonly int _VoxelDepthCopyParams = Shader.PropertyToID("_VoxelDepthCopy");
+        public static readonly int _VegetationScreenSizeParams = Shader.PropertyToID("_VegetationScreenSize");
 
         public static readonly int _LightPositionParams = Shader.PropertyToID("_LightPosition");
         public static readonly int _SunThresholdParams = Shader.PropertyToID("_SunThreshold");

@@ -649,7 +649,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4ce1e990257a21545af7603536218f89, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Streaming.WorldManager
-  initialWorldSize: 4096
+  initialWorldSize: 1024
   maxDepth: 4
   drawDebugGizmos: 0
   viewer: {fileID: 587925452}
@@ -737,6 +737,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Editing.StructuralIntegrityAnalyzer
   analysisShader: {fileID: 7200000, guid: a9f6db3cbdd10954e9b4515f2934463e, type: 3}
+  safetyVoxelCountLimit: 100000
 --- !u!114 &681138563
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -755,6 +756,9 @@ MonoBehaviour:
   debrisDensity: 10
   smallDebrisVoxelLimit: 128
   minimumDebrisVoxelCount: 16
+  stitchDebris: 1
+  stitchingTimeWindow: 0.5
+  stitchingTolerance: 0.1
 --- !u!114 &681138564
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -806,6 +810,52 @@ Transform:
   - {fileID: 527118856}
   m_Father: {fileID: 587925452}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1156426641
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1156426642}
+  - component: {fileID: 1156426643}
+  m_Layer: 0
+  m_Name: VoxelVFXManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1156426642
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1156426641}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1156426643
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1156426641}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2e932e0425a37186ab0295cb83d776d8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VoxelEngine.Core.Effects.VoxelVFXManager
+  debrisVFXPrefab: {fileID: 4816088566508009451, guid: fcfca4441d71f0cce82778e12d31ed0f, type: 3}
+  poolSize: 3
 --- !u!1 &1540376907
 GameObject:
   m_ObjectHideFlags: 0
@@ -957,3 +1007,4 @@ SceneRoots:
   - {fileID: 1698651181}
   - {fileID: 1540376908}
   - {fileID: 1851211485}
+  - {fileID: 1156426642}

@@ -192,6 +192,6 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     if (all(id.xy == (uint2)_MousePosition)) 
     { 
         _RaycastBuffer[0] = float4(primaryHit.pos, anyPrimaryHit ? 1.0 : 0.0);
-        _RaycastBuffer[1] = float4((float)primaryHit.chunkId, 0, 0, 0);
+        _RaycastBuffer[1] = float4((float)primaryHit.chunkId, (float)primaryHit.matId, 0, 0);
     }
 }

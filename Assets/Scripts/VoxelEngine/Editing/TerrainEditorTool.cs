@@ -5,6 +5,7 @@ using VoxelEngine.Core;
 using VoxelEngine.Core.Data;
 using VoxelEngine.Core.Rendering;
 using VoxelEngine.Core.Streaming;
+using VoxelEngine.Core.Effects;
 using System.Collections.Generic;
 
 namespace VoxelEngine.Core.Editing
@@ -23,6 +24,7 @@ namespace VoxelEngine.Core.Editing
         private InputSystem_Actions _input;
         private Vector3 _currentHitPoint;
         private int _currentHitVolumeIndex = -1;
+        private int _currentMaterialId;
         private bool _hasHit;
         private float _lastEditTime;
 
@@ -49,12 +51,12 @@ namespace VoxelEngine.Core.Editing
         {
             // Sync Mouse Position for Raytracer
             Vector2 mousePos = Mouse.current.position.ReadValue();
-            VoxelRaytracerFeature.MousePosition = mousePos;
+            VoxelRaytraceFeature.MousePosition = mousePos;
 
             // Request Readback of Hit Data from Raytracer
-            if (!_readbackPending && VoxelRaytracerFeature.RaycastHitBuffer != null)
+            if (!_readbackPending && VoxelRaytraceFeature.RaycastHitBuffer != null)
             {
-                _readbackRequest = AsyncGPUReadback.Request(VoxelRaytracerFeature.RaycastHitBuffer, OnReadbackComplete);
+                _readbackRequest = AsyncGPUReadback.Request(VoxelRaytraceFeature.RaycastHitBuffer, OnReadbackComplete);
                 _readbackPending = true;
             }
 
@@ -81,12 +83,14 @@ namespace VoxelEngine.Core.Editing
             {
                 _currentHitPoint = new Vector3(hitPosData.x, hitPosData.y, hitPosData.z);
                 _currentHitVolumeIndex = (int)data[1].x;
+                _currentMaterialId = (int)data[1].y;
                 _hasHit = true;
             }
             else
             {
                 _hasHit = false;
                 _currentHitVolumeIndex = -1;
+                _currentMaterialId = 0;
             }
         }
 
@@ -150,6 +154,12 @@ namespace VoxelEngine.Core.Editing
                 // The VoxelModifier handles transforming the world-space brush into local volume space
                 VoxelModifier modifier = new VoxelModifier(voxelModifierShader, vol);
                 modifier.Apply(brush, vol.Resolution);
+            }
+
+            // Spawn debris particles on subtract
+            if (op == BrushOp.Subtract && VoxelVFXManager.Instance != null)
+            {
+                VoxelVFXManager.Instance.SpawnDebris(_currentHitPoint, brushRadius, _currentMaterialId);
             }
 
             // Phase 3 & 4: Recursive Fracturing Pipeline & Sleep Thresholds

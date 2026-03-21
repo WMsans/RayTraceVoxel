@@ -7,7 +7,7 @@ namespace VoxelEngine.Core.Rendering
 {
     internal sealed class CompositePass
     {
-        public void Record(RenderGraph renderGraph, VoxelRaytracerSettings settings, Material compositeMaterial, TextureHandle source, TextureHandle depthSource, TextureHandle normalSource, TextureHandle compositeOutput, TextureHandle activeDepthTexture, bool useFXAA, Vector4 mainLightDirection, Vector4 mainLightColor)
+        public void Record(RenderGraph renderGraph, VoxelCompositeSettings settings, Material compositeMaterial, TextureHandle source, TextureHandle depthSource, TextureHandle normalSource, TextureHandle compositeOutput, TextureHandle activeDepthTexture, bool useFXAA, Vector4 mainLightDirection, Vector4 mainLightColor)
         {
             using (var builder = renderGraph.AddRasterRenderPass<PassDataClasses.CompositePassData>("Composite & Upscale", out var compData))
             {
@@ -15,7 +15,7 @@ namespace VoxelEngine.Core.Rendering
                 compData.depthSource = depthSource;
                 compData.normalSource = normalSource;
                 compData.material = compositeMaterial;
-                compData.useFSR = (settings.upscalingMode == VoxelRaytracerSettings.UpscalingMode.SpatialFSR);
+                compData.useFSR = (settings.upscalingMode == VoxelCompositeSettings.UpscalingMode.SpatialFSR);
                 compData.sharpness = settings.sharpness;
 
                 compData.enableOutline = settings.enableOutline;

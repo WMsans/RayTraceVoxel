@@ -7,9 +7,9 @@ namespace VoxelEngine.Core.Rendering
 {
     internal sealed class GodRaysPass
     {
-        public void Record(RenderGraph renderGraph, UniversalCameraData cameraData, VoxelRaytracerSettings settings, Material godRayMaterial, TextureHandle lowResDepth, TextureHandle lowResResult, Vector4 mainLightPosition, int scaledWidth, int scaledHeight)
+        public void Record(RenderGraph renderGraph, UniversalCameraData cameraData, VoxelGodRaysSettings settings, Material godRayMaterial, TextureHandle lowResDepth, TextureHandle lowResResult, Vector4 mainLightPosition, int scaledWidth, int scaledHeight)
         {
-            if (!settings.enableGodRays || godRayMaterial == null)
+            if (godRayMaterial == null)
             {
                 return;
             }

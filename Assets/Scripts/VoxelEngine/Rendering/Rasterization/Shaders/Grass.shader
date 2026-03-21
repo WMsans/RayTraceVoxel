@@ -78,6 +78,7 @@ Shader "VoxelEngine/Grass"
             TEXTURE2D(_WindTex);
             SAMPLER(sampler_WindTex);
             TEXTURE2D(_VoxelDepthCopy);
+            float4 _VegetationScreenSize; // xy = width/height, zw = 1/width, 1/height
 
             struct Attributes
             {
@@ -188,7 +189,7 @@ Shader "VoxelEngine/Grass"
 
             FragOutput frag(Varyings input)
             {
-                float2 screenUV = input.positionCS.xy / _ScaledScreenParams.xy;
+                float2 screenUV = input.positionCS.xy * _VegetationScreenSize.zw;
                 float voxelDepth = SAMPLE_TEXTURE2D(_VoxelDepthCopy, sampler_PointClamp, screenUV).r;
                 float myDepth = input.positionCS.z;
 

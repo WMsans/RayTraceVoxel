@@ -83,10 +83,10 @@ GenerationContext RunGeneratorPipeline(float3 worldPos, uint activeObjects[32], 
     Stage_Terrain(ctx);
     
     // --- 2. Trees Stage (Minecraft-like) ---
-    // Stage_Trees(ctx);
+    Stage_Trees(ctx);
     // Existing Sequoias/Big Trees
     
-    Stage_OakTrees(ctx);
+    // Stage_OakTrees(ctx);
 
     // --- 3. Dynamic Objects Stage ---
     ApplyDynamicObjects(ctx, worldPos, activeObjects, activeCount);

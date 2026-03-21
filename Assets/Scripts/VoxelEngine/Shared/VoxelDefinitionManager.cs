@@ -82,5 +82,12 @@ namespace VoxelEngine.Core.Data
             // This ensures the buffer expands to fit the new gpuData count.
             Initialize();
         }
+
+        public int GetAlbedoTextureIndex(int materialId)
+        {
+            if (_packedGpuData == null || materialId < 0 || materialId >= _packedGpuData.Count)
+                return 0;
+            return (int)_packedGpuData[materialId].sideAlbedoIndex;
+        }
     }
 }

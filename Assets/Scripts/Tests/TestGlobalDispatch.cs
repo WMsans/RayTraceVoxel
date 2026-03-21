@@ -35,9 +35,9 @@ public class TestGlobalDispatch : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        if (VoxelRaytracerFeature.RaycastHitBuffer != null && VoxelRaytracerFeature.RaycastHitBuffer.IsValid())
+        if (VoxelRaytraceFeature.RaycastHitBuffer != null && VoxelRaytraceFeature.RaycastHitBuffer.IsValid())
         {
-            VoxelRaytracerFeature.RaycastHitBuffer.GetData(_raycastData);
+            VoxelRaytraceFeature.RaycastHitBuffer.GetData(_raycastData);
             
             Vector3 hitPos = new Vector3(_raycastData[0].x, _raycastData[0].y, _raycastData[0].z);
             if (_raycastData[0].w > 0.0f)
